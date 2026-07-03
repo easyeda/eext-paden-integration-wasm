@@ -3,8 +3,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"syscall/js"
+
+	"github.com/easyeda/paden-wasm/internal/pipeline"
+	"github.com/easyeda/paden-wasm/internal/wasmapi"
 )
 
 func main() {
@@ -41,22 +45,29 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 
 			fmt.Printf("[PADEN WASM] analyzeGerber called: %d bytes, config length %d\n", len(gerberBytes), len(configJson))
 
-			// TODO: implement actual analysis pipeline.
-			result := map[string]interface{}{
-				"success":         true,
-				"message":         "placeholder result",
-				"layer_solutions": []interface{}{},
-				"solver_info": map[string]interface{}{
-					"ground_node_current": 0.0,
-					"residual_norm":       0.0,
-				},
-				"connection_points": map[string]interface{}{},
-				"layer_boundaries":  map[string]interface{}{},
-				"diagnostics":       []interface{}{"[INFO] WASM runtime placeholder"},
-				"current_warnings":  []interface{}{},
+			sol, d, err := pipeline.Analyze(gerberBytes, configJson)
+			if err != nil {
+				errResult := map[string]interface{}{
+					"success":     false,
+					"message":     err.Error(),
+					"diagnostics": d.Lines,
+				}
+				resolve.Invoke(js.Global().Get("JSON").Call("stringify", errResult))
+				return
 			}
 
-			resolve.Invoke(js.Global().Get("JSON").Call("stringify", result))
+			jsonBytes, err := wasmapi.SerializeSolution(sol)
+			if err != nil {
+				errResult := map[string]interface{}{
+					"success":     false,
+					"message":     fmt.Sprintf("serialization failed: %v", err),
+					"diagnostics": d.Lines,
+				}
+				resolve.Invoke(js.Global().Get("JSON").Call("stringify", errResult))
+				return
+			}
+
+			resolve.Invoke(js.Global().Get("JSON").Call("stringify", json.RawMessage(jsonBytes)))
 		}()
 
 		return nil

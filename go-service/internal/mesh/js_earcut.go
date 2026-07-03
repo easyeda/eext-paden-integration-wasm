@@ -8,7 +8,7 @@ import (
 
 // Triangulation holds vertices and triangle indices from earcut.
 type Triangulation struct {
-	Vertices []geometry.Point
+	Vertices  []geometry.Point
 	Triangles [][3]int
 }
 
