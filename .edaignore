@@ -6,6 +6,10 @@
 /coverage/
 /node_modules/
 /src/
+/go-service/
+/paden-service/
+/scripts/
+/ui/*.js
 /.editorconfig
 /.gitattributes
 /.gitignore
