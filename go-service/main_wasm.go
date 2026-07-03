@@ -3,7 +3,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"syscall/js"
 
@@ -67,7 +66,7 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 				return
 			}
 
-			resolve.Invoke(js.Global().Get("JSON").Call("stringify", json.RawMessage(jsonBytes)))
+			resolve.Invoke(js.ValueOf(string(jsonBytes)))
 		}()
 
 		return nil
