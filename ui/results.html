@@ -5,7 +5,7 @@
 <title>PDN 分析结果</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; border: 6px solid #484f58; box-sizing: border-box; }
 
   .toolbar { height: 36px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; padding: 0 8px; gap: 6px; flex-shrink: 0; }
   .toolbar select { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 4px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
@@ -16,6 +16,15 @@
   .toolbar .spacer { flex: 1; }
   .toolbar .btn-close { background: #da3633; border-color: #da3633; color: #fff; }
   .toolbar .btn-close:hover { background: #f85149; }
+  .toolbar .btn-warn { background: #da3633; border-color: #da3633; color: #fff; position: relative; padding: 3px 12px; }
+  .toolbar .btn-warn:hover { background: #f85149; }
+  .toolbar .btn-warn .warn-icon { font-size: 14px; }
+  .toolbar .btn-warn .warn-badge { position: absolute; top: -4px; right: -4px; background: #f85149; color: #fff; font-size: 9px; padding: 1px 4px; border-radius: 8px; min-width: 14px; text-align: center; }
+
+  .result-tabs { height: 30px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; padding: 0 8px; gap: 4px; flex-shrink: 0; }
+  .result-tabs button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+  .result-tabs button:hover { background: #30363d; }
+  .result-tabs button.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 
   .diag-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; display: flex; align-items: center; justify-content: center; }
   .diag-modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; width: 720px; max-height: 80vh; display: flex; flex-direction: column; }
@@ -31,7 +40,8 @@
   .info-panel .diag-link { color: #58a6ff; cursor: pointer; text-decoration: underline; pointer-events: auto; }
 
   .layer-sidebar { width: 170px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
-  .sidebar-header { padding: 8px 10px; font-size: 12px; font-weight: 600; color: #8b949e; border-bottom: 1px solid #30363d; text-transform: uppercase; letter-spacing: 0.5px; }
+  .sidebar-header { padding: 8px 10px; font-size: 12px; font-weight: 600; color: #8b949e; border-bottom: 1px solid #30363d; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between; }
+  .sidebar-header-title { flex: 1; }
   .sidebar-layers { flex: 1; overflow-y: auto; padding: 4px 0; }
   .sidebar-layers::-webkit-scrollbar { width: 5px; }
   .sidebar-layers::-webkit-scrollbar-track { background: transparent; }
@@ -42,12 +52,9 @@
   .layer-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
   .layer-name { flex: 1; font-size: 11px; color: #c9d1d9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .layer-item.active .layer-name { color: #f0f6fc; font-weight: 600; }
-  .layer-eye { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: #8b949e; cursor: pointer; border-radius: 3px; font-size: 13px; flex-shrink: 0; }
+  .layer-eye { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: #8b949e; cursor: pointer; border-radius: 3px; font-size: 16px; flex-shrink: 0; }
   .layer-eye:hover { background: #30363d; color: #e6edf3; }
   .layer-eye.hidden { color: #484f58; }
-  .sidebar-actions { padding: 6px 8px; border-top: 1px solid #30363d; display: flex; gap: 4px; }
-  .sidebar-actions button { flex: 1; background: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 3px; padding: 3px 0; font-size: 10px; cursor: pointer; }
-  .sidebar-actions button:hover { background: #30363d; color: #e6edf3; }
 
   .main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .canvas-wrap { flex: 1; position: relative; overflow: hidden; }
@@ -66,6 +73,7 @@
 
   .statusbar { height: 26px; background: #161b22; border-top: 1px solid #30363d; display: flex; align-items: center; padding: 0 12px; gap: 20px; font-size: 11px; font-family: monospace; color: #8b949e; flex-shrink: 0; }
   .statusbar span { white-space: nowrap; }
+  .statusbar span.hidden, #st-voltage.hidden, #st-delta.hidden { display: none !important; }
 
   .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #484f58; font-size: 14px; }
   .view-tab { padding: 3px 12px; border: 1px solid #ccc; border-radius: 3px; background: #fff; cursor: pointer; font-size: 11px; }
@@ -76,40 +84,60 @@
 <body>
 
 <div class="toolbar" id="toolbar">
-  <select id="cmap-select" title="色彩映射"><option value="plasma">Plasma</option><option value="turbo">Turbo</option><option value="inferno">Inferno</option></select>
-  <div class="sep"></div>
-  <button id="btn-edges" class="active" title="网格线 (E)">网格</button>
-  <button id="btn-outline" class="active" title="轮廓 (O)">轮廓</button>
-  <button id="btn-vias" class="active" title="过孔 (C)">过孔</button>
-  <button id="btn-ctx-tracks" class="active" title="非电源走线 (T)">走线</button>
-  <button id="btn-pads" class="active" title="焊盘 (D)">焊盘</button>
+  <button id="btn-edges" title="网格线 (E)">网格</button>
+  <button id="btn-outline" title="轮廓 (O)">轮廓</button>
+  <button id="btn-vias" title="过孔 (C)">过孔</button>
+  <button id="btn-flow" title="电流流向 (F)">电流</button>
+  <select id="arrow-density" title="箭头密度 (D)" style="margin:0 4px">
+    <option value="0.25">稀疏</option>
+    <option value="0.5">较疏</option>
+    <option value="1" selected>标准</option>
+    <option value="2">较密</option>
+    <option value="4">密集</option>
+  </select>
+  <span id="arrow-size-control" style="display:none;align-items:center;gap:4px;margin:0 4px">
+    <span style="font-size:10px;color:#8b949e">大小:</span>
+    <input type="range" id="arrow-size" min="0.3" max="2.0" step="0.1" value="1.0" style="width:60px;height:16px;cursor:pointer" title="箭头大小">
+  </span>
   <button id="btn-viewmode" title="切换电压/功率密度 (P)">功率密度</button>
+  <button id="btn-gndpower" title="接地功率密度 (G)">GND功率</button>
+  <button id="btn-copper" title="铜箔覆盖视图 (M)">铜箔</button>
   <div class="sep"></div>
+  <button id="btn-diag" title="诊断日志" style="display:none">诊断</button>
+  <button id="btn-warn" title="电流容量警告" style="display:none"><span class="warn-icon">⚠</span></button>
   <button id="btn-reset" title="重置视图 (R)">重置</button>
   <span class="spacer"></span>
   <button id="btn-reanalyze" style="background:#238636;border-color:#238636;color:#fff" onclick="reanalyze()">重新分析</button>
   <button class="btn-close" onclick="closeWindow()">关闭</button>
 </div>
 
+<div class="result-tabs" id="result-tabs" style="display:none"></div>
+
 <div style="flex:1;display:flex;overflow:hidden">
 <div class="layer-sidebar" id="layer-sidebar">
-  <div class="sidebar-header">图层</div>
-  <div class="sidebar-layers" id="sidebar-layers"></div>
-  <div class="sidebar-actions">
-    <button onclick="showAllLayers()">全部显示</button>
-    <button onclick="hideAllLayers()">全部隐藏</button>
+  <div class="sidebar-header">
+    <span class="sidebar-header-title">图层</span>
+    <button class="layer-eye" id="toggle-all-layers" title="切换所有图层显示" onclick="toggleAllLayers()">
+      <span id="toggle-all-icon">&#128065;</span>
+    </button>
   </div>
+  <div class="sidebar-layers" id="sidebar-layers"></div>
 </div>
 <div class="main-area">
 <div class="canvas-wrap">
   <canvas id="gl-canvas"></canvas>
-  <div class="colorbar" id="colorbar" style="display:none">
-    <canvas id="cb-canvas" width="18" height="256"></canvas>
-    <div class="cb-labels"><span id="cb-max">-</span><span id="cb-min">-</span></div>
+  <div class="colorbar" id="colorbar" style="display:none;flex-direction:column;gap:8px">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+      <span id="cb-vcc-label" style="font-size:9px;color:#f0a050;font-weight:600">VCC</span>
+      <div style="display:flex;gap:3px;align-items:stretch">
+        <canvas id="cb-canvas-vcc" width="14" height="110"></canvas>
+        <div class="cb-labels" style="padding:0"><span id="cb-vcc-max">-</span><span id="cb-vcc-min">-</span></div>
+      </div>
+    </div>
   </div>
   <div class="info-panel" id="info-panel" style="display:none"></div>
   <div class="tooltip" id="tooltip" style="display:none"></div>
-  <div class="loading" id="loading">等待分析结果...</div>
+  <div class="loading" id="loading">正在加载分析数据...</div>
 </div>
 </div>
 </div>
@@ -301,6 +329,9 @@ let cmapTex;
 let ext32bit;
 
 let resultData, layerNames, connectionPoints, layerBoundaries, pcbContext;
+let currentResultWarnings = [];
+let networkInfoData = [];
+let vccVoltage = 1.2;
 let currentLayerIdx = 0;
 let layerNamesList = [];
 let layerVisible = [];
@@ -321,14 +352,39 @@ function layerColorHex(i) { const c = LAYER_COLORS[i % LAYER_COLORS.length]; ret
 
 let layerGL = {};
 
+// Multi-result set (N+1 solver runs)
+let resultSet = null;
+let currentResultIdx = 0;
+
+// Data flow diagnostic log (shown in diagnostic popup)
+let dataFlowLog = [];
+function _log(tag, ...args) {
+  const msg = args.map(a => {
+    if (a === null) return 'null';
+    if (a === undefined) return 'undefined';
+    if (typeof a === 'object') try { return JSON.stringify(a).slice(0, 200); } catch { return String(a); }
+    return String(a);
+  }).join(' ');
+  const line = `[${tag}] ${msg}`;
+  dataFlowLog.push(line);
+  console.log('[Results]', tag, ...args);
+}
+
 // PCB context toggle
-let showCtxTracks = true;
 
 let viewCX, viewCY, viewZoom;
 let isDrag = false, lastMX = 0, lastMY = 0;
 
-let showEdges = true, showOutline = true, showVias = true, showPads = true;
-let currentViewMode = 'voltage'; // 'voltage' | 'power'
+let showEdges = false, showOutline = false, showVias = false;
+let showCurrentFlow = false;
+let currentViewMode = 'voltage'; // 'voltage' | 'power' | 'gnd_power' | 'copper_coverage'
+
+// Arrow density control
+let arrowDensityLevel = 1.0;  // 箭头密度系数：0.25~4.0，默认1.0
+
+// Arrow size control
+let arrowSizeLevel = 1.0;  // 箭头大小系数：0.3~2.0，默认1.0
+let arrowSizeUpdateTimeout = null;  // 防抖超时
 
 let bounds = { minX:0, maxX:1, minY:0, maxY:1 };
 
@@ -395,6 +451,27 @@ function updateCmapTexture() {
   gl.bindTexture(gl.TEXTURE_2D, cmapTex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
 }
+
+function fillCmapTexture(tex, cmap) {
+  const n = cmap.length;
+  const data = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255 * (n - 1);
+    const lo = Math.floor(t), hi = Math.min(lo + 1, n - 1);
+    const f = t - lo;
+    data[i*4+0] = Math.round((cmap[lo][0] * (1-f) + cmap[hi][0] * f) * 255);
+    data[i*4+1] = Math.round((cmap[lo][1] * (1-f) + cmap[hi][1] * f) * 255);
+    data[i*4+2] = Math.round((cmap[lo][2] * (1-f) + cmap[hi][2] * f) * 255);
+    data[i*4+3] = 255;
+  }
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+}
+
+function updateCmapTexture() {
+  if (!gl || !cmapTex) return;
+  fillCmapTexture(cmapTex, CMAPS[currentCmap] || PLASMA);
+}
 function initGL() {
   canvas = document.getElementById('gl-canvas');
   gl = canvas.getContext('webgl', { antialias: true, alpha: false, stencil: true });
@@ -432,85 +509,376 @@ function initGL() {
 // ============================================================
 // Data loading & buffer creation
 // ============================================================
-function loadData() {
+function loadResultSet() {
   try {
     const raw = eda.sys_Storage.getExtensionUserConfig('pdn-results');
-    if (!raw || typeof raw !== 'string') return false;
-    const d = JSON.parse(raw);
-    resultData = d.result;
-    layerNames = d.layerNames || {};
-    connectionPoints = d.connectionPoints || {};
-    layerBoundaries = d.layerBoundaries || {};
-    pcbContext = d.pcbContext || null;
-    const warning = d.warningMessage;
-    if (warning) {
-      const banner = document.getElementById('warning-banner');
-      if (banner) { banner.textContent = warning; banner.style.display = 'block'; }
+    if (!raw || typeof raw !== 'string') {
+      _log('Storage', 'no data, type=' + typeof raw);
+      return false;
     }
-    if (!resultData || !resultData.layerSolutions) return false;
+    _log('Storage', 'raw size=' + raw.length + ' chars');
+    const d = JSON.parse(raw);
+    resultSet = d.resultSet;
+    layerNames = d.layerNames || {};
+    if (!resultSet || !resultSet.results || resultSet.results.length === 0) {
+      _log('Storage', 'parsed but no valid resultSet');
+      return false;
+    }
+    _log('Storage', 'OK, results=' + resultSet.results.length);
 
     try {
       const rawImgs = eda.sys_Storage.getExtensionUserConfig('pdn-results-images');
       if (rawImgs && typeof rawImgs === 'string') images = JSON.parse(rawImgs);
     } catch(e) {}
 
-    layerNamesList = resultData.layerSolutions.map((ls, i) => ls.layerName || layerNames[i] || ('Layer ' + i));
-    layerVisible = layerNamesList.map(() => true);
-
-    let bx0=Infinity, bx1=-Infinity, by0=Infinity, by1=-Infinity;
-    for (const ls of resultData.layerSolutions) {
-      for (const m of ls.meshes) {
-        for (const v of m.vertices) {
-          const x = vx(v), y = vy(v);
-          if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
-          if (y < by0) by0 = y; if (y > by1) by1 = y;
-        }
-      }
-    }
-    if (bx0 === Infinity) return false;
-    bounds = { minX: bx0, maxX: bx1, minY: by0, maxY: by1 };
-
-    // Expand bounds with PCB context tracks and pads
-    if (pcbContext) {
-      for (const t of (pcbContext.contextTracks || [])) {
-        if (t.x1 < bounds.minX) bounds.minX = t.x1; if (t.x1 > bounds.maxX) bounds.maxX = t.x1;
-        if (t.y1 < bounds.minY) bounds.minY = t.y1; if (t.y1 > bounds.maxY) bounds.maxY = t.y1;
-        if (t.x2 < bounds.minX) bounds.minX = t.x2; if (t.x2 > bounds.maxX) bounds.maxX = t.x2;
-        if (t.y2 < bounds.minY) bounds.minY = t.y2; if (t.y2 > bounds.maxY) bounds.maxY = t.y2;
-      }
-      for (const p of (pcbContext.contextPads || [])) {
-        const hw = p.width / 2, hh = p.height / 2;
-        if (p.x - hw < bounds.minX) bounds.minX = p.x - hw;
-        if (p.x + hw > bounds.maxX) bounds.maxX = p.x + hw;
-        if (p.y - hh < bounds.minY) bounds.minY = p.y - hh;
-        if (p.y + hh > bounds.maxY) bounds.maxY = p.y + hh;
-      }
-    }
-
-    buildAllLayerBuffers();
-    resetView();
     return true;
-  } catch(e) { console.error('[Results] Load error:', e); return false; }
+  } catch(e) { _log('Storage', 'PARSE ERROR: ' + (e.message || e)); return false; }
+}
+
+function loadResult(idx) {
+  const entry = resultSet.results[idx];
+  if (!entry) { _log('loadResult', 'no entry at index ' + idx); return false; }
+  currentResultIdx = idx;
+
+  resultData = entry.result;
+  connectionPoints = entry.connectionPoints || {};
+  layerBoundaries = entry.layerBoundaries || {};
+  pcbContext = entry.pcbContext || null;
+  networkInfoData = entry.networkInfo || [];
+  currentResultWarnings = entry.currentWarnings || [];
+  // Try also getting from resultData if entry.currentWarnings is empty
+  if (!currentResultWarnings || currentResultWarnings.length === 0) {
+    currentResultWarnings = resultData.currentWarnings || [];
+  }
+  // 保存提取器诊断日志
+  dataFlowLog = entry.extractorDiagnostics || [];
+
+  _log('loadResult', 'entry keys=' + Object.keys(entry).join(','));
+  _log('loadResult', 'entry.currentWarnings=' + (entry.currentWarnings?.length || 0));
+  _log('loadResult', 'resultData.currentWarnings=' + (resultData.currentWarnings?.length || 0));
+  _log('loadResult', 'currentResultWarnings=' + currentResultWarnings.length);
+
+  // Determine VCC voltage (highest non-GND network voltage)
+  vccVoltage = 1.2;
+  for (const ni of networkInfoData) {
+    const nameUp = (ni.name || '').toUpperCase();
+    if (!nameUp.includes('GND') && ni.voltage > vccVoltage) vccVoltage = ni.voltage;
+  }
+  dataFlowLog.push(`[VCC电压检测] 网络数=${networkInfoData.length}, 设定VCC电压=${vccVoltage.toFixed(2)}V`);
+  if (networkInfoData.length > 0) {
+    for (const ni of networkInfoData) {
+      dataFlowLog.push(`  网络: ${ni.name}, 电压=${ni.voltage.toFixed(2)}V`);
+    }
+  }
+
+  const warning = entry.warningMessage;
+  const banner = document.getElementById('warning-banner');
+  if (banner) {
+    if (warning) { banner.textContent = warning; banner.style.display = 'block'; }
+    else { banner.style.display = 'none'; }
+  }
+
+  if (!resultData || !resultData.layerSolutions) {
+    _log('loadResult', 'FAIL: resultData=' + !!resultData + ' layerSolutions=' + !!resultData?.layerSolutions);
+    return false;
+  }
+  _log('loadResult', 'layerSolutions=' + resultData.layerSolutions.length);
+
+  layerNamesList = resultData.layerSolutions.map((ls, i) => ls.layerName || layerNames[i] || ('Layer ' + i));
+  layerVisible = layerNamesList.map(() => true);
+  currentLayerIdx = 0;
+
+
+  let bx0=Infinity, bx1=-Infinity, by0=Infinity, by1=-Infinity;
+  for (const ls of resultData.layerSolutions) {
+    for (const m of ls.meshes) {
+      for (const v of m.vertices) {
+        const x = vx(v), y = vy(v);
+        if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
+        if (y < by0) by0 = y; if (y > by1) by1 = y;
+      }
+    }
+  }
+  if (bx0 === Infinity) {
+    _log('loadResult', 'FAIL: no vertex bounds (all meshes empty?)');
+    return false;
+  }
+  _log('loadResult', 'bounds X=[' + bx0.toFixed(2) + ',' + bx1.toFixed(2) + '] Y=[' + by0.toFixed(2) + ',' + by1.toFixed(2) + ']');
+  bounds = { minX: bx0, maxX: bx1, minY: by0, maxY: by1 };
+
+  if (pcbContext) {
+    for (const t of (pcbContext.contextTracks || [])) {
+      if (t.x1 < bounds.minX) bounds.minX = t.x1; if (t.x1 > bounds.maxX) bounds.maxX = t.x1;
+      if (t.y1 < bounds.minY) bounds.minY = t.y1; if (t.y1 > bounds.maxY) bounds.maxY = t.y1;
+      if (t.x2 < bounds.minX) bounds.minX = t.x2; if (t.x2 > bounds.maxX) bounds.maxX = t.x2;
+      if (t.y2 < bounds.minY) bounds.minY = t.y2; if (t.y2 > bounds.maxY) bounds.maxY = t.y2;
+    }
+    for (const p of (pcbContext.contextPads || [])) {
+      const hw = p.width / 2, hh = p.height / 2;
+      if (p.x - hw < bounds.minX) bounds.minX = p.x - hw;
+      if (p.x + hw > bounds.maxX) bounds.maxX = p.x + hw;
+      if (p.y - hh < bounds.minY) bounds.minY = p.y - hh;
+      if (p.y + hh > bounds.maxY) bounds.maxY = p.y + hh;
+    }
+  }
+
+  if (useWebGL) {
+    try {
+      buildAllLayerBuffers();
+      _log('loadResult', 'WebGL buffers built OK');
+    } catch (e) {
+      _log('loadResult', 'FAIL: buildAllLayerBuffers crashed: ' + (e.message || e));
+      return false;
+    }
+  }
+  resetView();
+  _log('loadResult', '=== loadResult(0) complete ===');
+  return true;
+}
+
+let meshDiagLines = [];
+
+// Show warning modal when mesh is too large for WebGL visualization
+function _showLargeMeshWarning(totalVertices) {
+  const canvasWrap = document.querySelector('.canvas-wrap');
+  if (!canvasWrap) return;
+
+  canvasWrap.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:40px;text-align:center">
+      <div style="font-size:64px;margin-bottom:20px">⚠️</div>
+      <h2 style="color:#f0883e;margin:0 0 16px 0">网格过大，无法可视化</h2>
+      <p style="color:#8b949e;margin:0 0 24px 0;max-width:400px;line-height:1.6">
+        此 PCB 的网格顶点数 (<strong>${totalVertices.toLocaleString()}</strong>) 超过了 WebGL 可视化限制 (500K)。<br>
+        当前显示仅包含诊断数据，无法渲染图形。
+      </p>
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;max-width:400px;text-align:left">
+        <div style="color:#f0f6fc;font-weight:600;margin-bottom:8px">建议解决方案:</div>
+        <ul style="color:#8b949e;margin:0;padding-left:20px;line-height:1.8">
+          <li>在后端增加网格简化功能</li>
+          <li>仅分析特定网络而非整个PCB</li>
+          <li>使用更粗的网格进行初步分析</li>
+        </ul>
+      </div>
+      <button onclick="document.getElementById('btn-diag').click()" style="margin-top:24px;background:#1f6feb;color:#fff;border:none;border-radius:4px;padding:8px 16px;font-size:12px;cursor:pointer">
+        查看诊断日志
+      </button>
+    </div>
+  `;
+  document.getElementById('colorbar').style.display = 'none';
+  document.getElementById('info-panel').style.display = 'none';
+  _log('MeshWarning', `Mesh too large: ${totalVertices.toLocaleString()} vertices`);
 }
 
 function buildAllLayerBuffers() {
   layerGL = {};
-  for (let li = 0; li < resultData.layerSolutions.length; li++) {
-    layerGL[li] = buildLayerBuffers(resultData.layerSolutions[li], li);
+  meshDiagLines = [];
+  meshDiagLines.push(`========== Mesh 数据诊断 ==========`);
+  meshDiagLines.push(`总层数: ${resultData.layerSolutions.length}`);
+
+  // Check total vertex count before processing to prevent stack overflow
+  let totalVertices = 0;
+  for (const ls of resultData.layerSolutions) {
+    for (const m of ls.meshes) {
+      totalVertices += (m.vertices?.length || 0);
+    }
   }
+  meshDiagLines.push(`总顶点数: ${totalVertices.toLocaleString()}`);
+
+  // Warn if mesh is too large for WebGL visualization
+  if (totalVertices > 500000) {
+    meshDiagLines.push(``);
+    meshDiagLines.push(`⚠️  警告: 网格顶点数 (${totalVertices.toLocaleString()}) 超过 WebGL 可视化限制 (500K)`);
+    meshDiagLines.push(`   建议在后端增加网格简化功能`);
+    meshDiagLines.push(`   当前仅显示诊断数据，不显示可视化图形。`);
+    _showLargeMeshWarning(totalVertices);
+    return;  // Skip WebGL buffer building
+  }
+
+  // Compute global voltage range across ALL layers — exclude GND meshes
+  let globalVMin = Infinity, globalVMax = -Infinity;
+  for (let li = 0; li < resultData.layerSolutions.length; li++) {
+    for (const m of resultData.layerSolutions[li].meshes) {
+      // Compute average voltage to identify net (VCC vs GND)
+      let sum = 0, cnt = 0;
+      for (const p of m.potentials) {
+        if (p != null && isFinite(p)) { sum += p; cnt++; }
+      }
+      const avg = cnt > 0 ? sum / cnt : 0;
+      // Skip GND meshes (average voltage near 0V)
+      if (avg < vccVoltage * 0.3) continue;
+      for (const p of m.potentials) {
+        if (p != null && isFinite(p)) {
+          if (p < globalVMin) globalVMin = p;
+          if (p > globalVMax) globalVMax = p;
+        }
+      }
+    }
+  }
+  meshDiagLines.push(`[电压范围计算] VCC电压=${vccVoltage.toFixed(2)}V, 全局电压范围=[${globalVMin === Infinity ? '未计算' : globalVMin.toFixed(4)}, ${globalVMax === -Infinity ? '未计算' : globalVMax.toFixed(4)}]V, 网络数量=${networkInfoData.length}`);
+  if (globalVMin === Infinity) { globalVMin = 0; globalVMax = 1; }
+
+  // Compute global power density range across ALL layers — exclude GND meshes
+  let globalPdMin = Infinity, globalPdMax = -Infinity;
+  for (let li = 0; li < resultData.layerSolutions.length; li++) {
+    for (const m of resultData.layerSolutions[li].meshes) {
+      let vSum = 0, vCnt = 0;
+      for (const p of m.potentials) {
+        if (p != null && isFinite(p)) { vSum += p; vCnt++; }
+      }
+      const avg = vCnt > 0 ? vSum / vCnt : 0;
+      if (avg < vccVoltage * 0.3) continue;
+      const pd = m.powerDensities || [];
+      for (const v of pd) {
+        if (v != null && isFinite(v) && v > 0) {
+          if (v < globalPdMin) globalPdMin = v;
+          if (v > globalPdMax) globalPdMax = v;
+        }
+      }
+    }
+  }
+  if (globalPdMin === Infinity) { globalPdMin = 0; globalPdMax = 1; }
+
+  // Compute global GND power density range — only GND meshes
+  let globalGndPdMin = Infinity, globalGndPdMax = -Infinity;
+  for (let li = 0; li < resultData.layerSolutions.length; li++) {
+    for (const m of resultData.layerSolutions[li].meshes) {
+      let vSum = 0, vCnt = 0;
+      for (const p of m.potentials) { if (p != null && isFinite(p)) { vSum += p; vCnt++; } }
+      const avg = vCnt > 0 ? vSum / vCnt : 0;
+      if (avg >= vccVoltage * 0.3) continue; // Skip VCC meshes
+      const pd = m.powerDensities || [];
+      for (const v of pd) {
+        if (v != null && isFinite(v) && v > 0) {
+          if (v < globalGndPdMin) globalGndPdMin = v;
+          if (v > globalGndPdMax) globalGndPdMax = v;
+        }
+      }
+    }
+  }
+  if (globalGndPdMin === Infinity) { globalGndPdMin = 0; globalGndPdMax = 1; }
+
+  for (let li = 0; li < resultData.layerSolutions.length; li++) {
+    _log('buildBuffers', 'Layer ' + li + ' starting...');
+    const ls = resultData.layerSolutions[li];
+    const meshCount = ls.meshes.length;
+    const discCount = ls.disconnectedMeshes ? ls.disconnectedMeshes.length : 0;
+    meshDiagLines.push(`\n层${li} "${ls.layerName}": ${meshCount} 个已连接mesh, ${discCount} 个断开mesh`);
+    for (let mi = 0; mi < meshCount; mi++) {
+      const m = ls.meshes[mi];
+      const vMin = Math.min(...m.potentials);
+      const vMax = Math.max(...m.potentials);
+      const hasCD = m.currentDensities && m.currentDensities.length > 0;
+      const hasPD = m.powerDensities && m.powerDensities.length > 0;
+      let cdInfo = hasCD ? '有' : '无';
+      if (hasCD) {
+        let cdMax = 0;
+        for (const jv of m.currentDensities) { const mag = Math.sqrt(jv[0]*jv[0]+jv[1]*jv[1]); if(mag>cdMax) cdMax=mag; }
+        cdInfo += ` (max=${cdMax.toExponential(3)})`;
+      }
+      meshDiagLines.push(`  mesh[${mi}]: ${m.vertices.length}顶点, ${m.triangles.length}三角, 电压=[${vMin.toFixed(4)}, ${vMax.toFixed(4)}]V, 电流密度=${cdInfo}, 功率密度=${hasPD?'有':'无'}`);
+    }
+    if (discCount > 0) {
+      for (let di = 0; di < ls.disconnectedMeshes.length; di++) {
+        const dm = ls.disconnectedMeshes[di];
+        meshDiagLines.push(`  断开mesh[${di}]: ${dm.vertices.length}顶点, ${dm.triangles.length}三角 (无求解数据)`);
+      }
+    }
+    try {
+      layerGL[li] = buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPdMax, globalGndPdMin, globalGndPdMax);
+      _log('buildBuffers', 'Layer ' + li + ' OK, meshVBO=' + !!layerGL[li].meshVBO + ' discVBO=' + !!layerGL[li].discVBO);
+    } catch (e) {
+      _log('buildBuffers', 'Layer ' + li + ' CRASHED: ' + (e.message || e));
+      layerGL[li] = {};
+    }
+  }
+
+  // Add load voltage diagnostics at the top of meshDiagLines
+  const loadDiagLines = [];
+  loadDiagLines.push('========== 负载电压诊断 ==========');
+  for (let li = 0; li < resultData.layerSolutions.length; li++) {
+    const layerName = layerNamesList[li];
+    for (const ni of networkInfoData) {
+      const srcOnLayer = ni.sourcePads.filter(p => !p.layer || p.layer === layerName);
+      const srcGndOnLayer = (ni.sourceGndPads || []).filter(p => !p.layer || p.layer === layerName);
+      const loadOnLayer = ni.loadPads.filter(p => !p.layer || p.layer === layerName);
+      const loadGndOnLayer = (ni.loadGndPads || []).filter(p => !p.layer || p.layer === layerName);
+      if (srcOnLayer.length === 0 && srcGndOnLayer.length === 0 && loadOnLayer.length === 0 && loadGndOnLayer.length === 0) continue;
+      let srcSum = 0, srcCnt = 0, loadSum = 0, loadCnt = 0;
+      let srcGndSum = 0, srcGndCnt = 0, loadGndSum = 0, loadGndCnt = 0;
+      for (const p of srcOnLayer) {
+        const v = pickValueAtLayer(p.x, p.y, li);
+        if (v != null && isFinite(v)) { srcSum += v; srcCnt++; }
+      }
+      for (const p of srcGndOnLayer) {
+        const v = pickValueAtLayer(p.x, p.y, li);
+        if (v != null && isFinite(v)) { srcGndSum += v; srcGndCnt++; }
+      }
+      for (const p of loadOnLayer) {
+        const v = pickValueAtLayer(p.x, p.y, li);
+        if (v != null && isFinite(v)) { loadSum += v; loadCnt++; }
+      }
+      for (const p of loadGndOnLayer) {
+        const v = pickValueAtLayer(p.x, p.y, li);
+        if (v != null && isFinite(v)) { loadGndSum += v; loadGndCnt++; }
+      }
+      loadDiagLines.push(`\n层${li} "${layerName}" 网络 "${ni.net}":`);
+      if (srcCnt > 0) loadDiagLines.push(`  源端VCC: ${srcCnt} pads, 平均电压=${(srcSum/srcCnt).toFixed(6)} V`);
+      else loadDiagLines.push(`  源端VCC: 该层无源端 pad`);
+      if (srcGndCnt > 0) loadDiagLines.push(`  源端GND: ${srcGndCnt} pads, 平均电压=${(srcGndSum/srcGndCnt).toFixed(6)} V`);
+      else loadDiagLines.push(`  源端GND: 该层无源端 GND pad`);
+      for (const p of loadOnLayer) {
+        const v = pickValueAtLayer(p.x, p.y, li);
+        loadDiagLines.push(`  负载VCC pad (${p.x.toFixed(3)}, ${p.y.toFixed(3)}) => ${v != null ? v.toFixed(6) + ' V' : '未命中 mesh'}`);
+      }
+      for (const p of loadGndOnLayer) {
+        const v = pickValueAtLayer(p.x, p.y, li);
+        loadDiagLines.push(`  负载GND pad (${p.x.toFixed(3)}, ${p.y.toFixed(3)}) => ${v != null ? v.toExponential(6) + ' V' : '未命中 mesh'}`);
+      }
+      if (loadCnt > 0) {
+        const avgLoad = loadSum / loadCnt;
+        const srcV = srcCnt > 0 ? srcSum / srcCnt : vccVoltage;
+        const drop = srcV - avgLoad;
+        loadDiagLines.push(`  VCC压降: ${drop.toFixed(6)} V (${(drop/srcV*100).toFixed(2)}%)`);
+      }
+      if (loadCnt > 0 && loadGndCnt > 0) {
+        const vccAtLoad = loadSum / loadCnt;
+        const gndAtLoad = loadGndSum / loadGndCnt;
+        const totalDrop = vccAtLoad - gndAtLoad;
+        loadDiagLines.push(`  负载有效电压(VCC-GND): ${totalDrop.toFixed(6)} V (额定${ni.voltage}V)`);
+      }
+    }
+  }
+  meshDiagLines = [...loadDiagLines, '', ...meshDiagLines];
 }
 
-function buildLayerBuffers(ls, li) {
+function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPdMax, globalGndPdMin, globalGndPdMax) {
   const glData = {};
   let positions = [], voltages = [], powerDensities = [], indices = [];
   let offset = 0;
-  for (const m of ls.meshes) {
+  // 记录���个 mesh 的顶点范围，用于独立归一化
+  const meshVoltageRanges = [];
+  const meshPDRanges = [];
+  // 记录每个 mesh 的三角形索引范围，用于按网络选择性绘制
+  const perMeshIdxRanges = [];
+  for (let mi = 0; mi < ls.meshes.length; mi++) {
+    const m = ls.meshes[mi];
     const n = m.vertices.length;
+    const vBase = voltages.length;
+    const idxStart = indices.length;
     for (let i = 0; i < n; i++) {
       positions.push(vx(m.vertices[i]), vy(m.vertices[i]));
       voltages.push(m.potentials[i] != null && isFinite(m.potentials[i]) ? m.potentials[i] : 0);
     }
+    // 记录此 mesh 的电压范围
+    let mVMin = Infinity, mVMax = -Infinity;
+    for (let i = vBase; i < voltages.length; i++) {
+      if (voltages[i] < mVMin) mVMin = voltages[i];
+      if (voltages[i] > mVMax) mVMax = voltages[i];
+    }
+    if (mVMin === Infinity) { mVMin = 0; mVMax = 1; }
+    meshVoltageRanges.push({ vMin: mVMin, vMax: mVMax, start: vBase, count: n });
     // Power density: may be per-face or per-vertex
+    const pdBase = powerDensities.length;
     const pd = m.powerDensities || [];
     if (pd.length === m.triangles.length && pd.length !== m.vertices.length) {
       // Per-face → average to per-vertex
@@ -529,11 +897,20 @@ function buildLayerBuffers(ls, li) {
     } else {
       for (let i = 0; i < n; i++) powerDensities.push(0);
     }
+    // 记录此 mesh 的功率密度范围
+    let mPdMin = Infinity, mPdMax = -Infinity;
+    for (let i = pdBase; i < powerDensities.length; i++) {
+      const v = powerDensities[i];
+      if (v > 0) { if (v < mPdMin) mPdMin = v; if (v > mPdMax) mPdMax = v; }
+    }
+    if (mPdMin === Infinity) { mPdMin = 0; mPdMax = 1; }
+    meshPDRanges.push({ pdMin: mPdMin, pdMax: mPdMax, start: pdBase, count: n });
     for (const tri of m.triangles) {
       const v = Array.isArray(tri) ? tri : (tri.vertices || tri);
       if (!v || v.length < 3) continue;
       indices.push(v[0]+offset, v[1]+offset, v[2]+offset);
     }
+    perMeshIdxRanges.push({ start: idxStart, count: indices.length - idxStart });
     offset += n;
   }
 
@@ -610,68 +987,6 @@ function buildLayerBuffers(ls, li) {
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glData.boardQuadIBO);
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2, 0,2,3]), gl.STATIC_DRAW);
 
-  // Context tracks (per-layer, bound to this layer)
-  if (pcbContext && pcbContext.contextTracks) {
-    let layerId = -1;
-    for (const [id, name] of Object.entries(layerNames)) {
-      if (name === lname) { layerId = Number(id); break; }
-    }
-    if (layerId >= 0) {
-      const tracks = pcbContext.contextTracks.filter(t => t.layer === layerId);
-      if (tracks.length > 0) {
-        const trackVerts = [];
-        for (const t of tracks) {
-          trackVerts.push(t.x1, t.y1, t.x2, t.y2);
-        }
-        glData.ctxTracksVBO = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, glData.ctxTracksVBO);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(trackVerts), gl.STATIC_DRAW);
-        glData.ctxTracksCount = tracks.length;
-      }
-    }
-  }
-
-  // Pads (per-layer): rectangle outline + inner circle for hole
-  if (pcbContext && pcbContext.contextPads) {
-    let padLayerId = -1;
-    for (const [id, name] of Object.entries(layerNames)) {
-      if (name === lname) { padLayerId = Number(id); break; }
-    }
-    if (padLayerId >= 0) {
-      const pads = pcbContext.contextPads.filter(p => p.layer == null || p.layer === padLayerId);
-      if (pads.length > 0) {
-        const padVerts = [];
-        for (const p of pads) {
-          const hw = p.width / 2, hh = p.height / 2;
-          // Rectangle outline: 4 edges
-          padVerts.push(
-            p.x - hw, p.y - hh,  p.x + hw, p.y - hh,
-            p.x + hw, p.y - hh,  p.x + hw, p.y + hh,
-            p.x + hw, p.y + hh,  p.x - hw, p.y + hh,
-            p.x - hw, p.y + hh,  p.x - hw, p.y - hh,
-          );
-          // Circle for hole (12 segments)
-          const hr = p.hole_diameter / 2;
-          if (hr > 0) {
-            const nSeg = 12;
-            for (let k = 0; k < nSeg; k++) {
-              const a1 = (k / nSeg) * 2 * Math.PI;
-              const a2 = ((k + 1) / nSeg) * 2 * Math.PI;
-              padVerts.push(
-                p.x + hr * Math.cos(a1), p.y + hr * Math.sin(a1),
-                p.x + hr * Math.cos(a2), p.y + hr * Math.sin(a2),
-              );
-            }
-          }
-        }
-        glData.padsVBO = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, glData.padsVBO);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(padVerts), gl.STATIC_DRAW);
-        glData.padsLineCount = padVerts.length / 4;
-      }
-    }
-  }
-
   // Disconnected meshes
   const discMeshes = ls.disconnectedMeshes || [];
   if (discMeshes.length > 0) {
@@ -709,41 +1024,121 @@ function buildLayerBuffers(ls, li) {
   }
 
   // === Build connected mesh buffers ===
-  let vMin = Infinity, vMax = -Infinity;
-  for (const v of voltages) { if (v < vMin) vMin = v; if (v > vMax) vMax = v; }
-  if (vMin === Infinity) { vMin = 0; vMax = 1; }
-  glData.vMin = vMin; glData.vMax = vMax;
+  // 计算源端电压和负载端电压
+  let srcVoltage = null, loadVoltage = null;
+  for (const ni of networkInfoData) {
+    const srcOnLayer = ni.sourcePads.filter(p => !p.layer || p.layer === lname);
+    const loadOnLayer = ni.loadPads.filter(p => !p.layer || p.layer === lname);
+    let srcSum = 0, srcCnt = 0, loadSum = 0, loadCnt = 0;
+    for (const sp of srcOnLayer) {
+      let bestDist = Infinity, bestV = 0;
+      for (let vi = 0; vi < positions.length / 2; vi++) {
+        const dx = positions[vi * 2] - sp.x, dy = positions[vi * 2 + 1] - sp.y;
+        const d = dx * dx + dy * dy;
+        if (d < bestDist) { bestDist = d; bestV = voltages[vi]; }
+      }
+      if (bestDist < Infinity) { srcSum += bestV; srcCnt++; }
+    }
+    for (const lp of loadOnLayer) {
+      let bestDist = Infinity, bestV = 0;
+      for (let vi = 0; vi < positions.length / 2; vi++) {
+        const dx = positions[vi * 2] - lp.x, dy = positions[vi * 2 + 1] - lp.y;
+        const d = dx * dx + dy * dy;
+        if (d < bestDist) { bestDist = d; bestV = voltages[vi]; }
+      }
+      if (bestDist < Infinity) { loadSum += bestV; loadCnt++; }
+    }
+    if (srcCnt > 0) srcVoltage = srcSum / srcCnt;
+    if (loadCnt > 0) loadVoltage = loadSum / loadCnt;
+  }
 
-  // Normalize voltages to [0,1] in JS to avoid GPU precision loss with small ranges
-  const vRange = vMax - vMin;
+  // 根据是否是"全部"视图选择归一化方式
+  const isAllNetworksView = isShowingAllNetworks();
+  glData.vMin = globalVMin; glData.vMax = globalVMax;
+  glData.srcVoltage = srcVoltage; glData.loadVoltage = loadVoltage;
+
   const verts = new Float32Array(positions.length / 2 * 3);
-  for (let i = 0, j = 0; i < positions.length; i += 2, j += 3) {
-    verts[j] = positions[i]; verts[j+1] = positions[i+1];
-    verts[j+2] = vRange > 0 ? (voltages[i/2] - vMin) / vRange : 0.5;
+
+  if (isAllNetworksView) {
+    // 多网络"全部"视图：使用 per-mesh 归一化
+    // 每个网络使用自己的电压范围，避免不同电压网络的颜色冲突
+    for (let i = 0; i < voltages.length; i++) {
+      const j = i * 3;
+      verts[j] = positions[i * 2]; verts[j+1] = positions[i * 2 + 1];
+      // Find which mesh this vertex belongs to and use that mesh's voltage range
+      let t = 0.5;
+      for (const mvr of meshVoltageRanges) {
+        if (i >= mvr.start && i < mvr.start + mvr.count) {
+          const mRange = mvr.vMax - mvr.vMin;
+          t = mRange > 0 ? (voltages[i] - mvr.vMin) / mRange : 0.5;
+          break;
+        }
+      }
+      verts[j+2] = Math.max(0, Math.min(1, t));
+    }
+  } else {
+    // 单网络视图：使用全局电压范围归一化
+    // 这样可以看到从源到负载的电压下降趋势
+    const globalVRange = globalVMax - globalVMin;
+    for (let i = 0; i < voltages.length; i++) {
+      const j = i * 3;
+      verts[j] = positions[i * 2]; verts[j+1] = positions[i * 2 + 1];
+      // 使用全局电压范围归一化，这样可以看到整体电压分布
+      const t = globalVRange > 0 ? (voltages[i] - globalVMin) / globalVRange : 0.5;
+      verts[j+2] = Math.max(0, Math.min(1, t));
+    }
   }
   glData.meshVBO = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, glData.meshVBO);
   gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
 
-  // Power density VBO — 对数刻度
-  let pdMin = Infinity, pdMax = -Infinity;
-  for (const v of powerDensities) {
-    if (v > 0) { if (v < pdMin) pdMin = v; if (v > pdMax) pdMax = v; }
-  }
-  if (pdMin === Infinity) { pdMin = 0; pdMax = 1; }
-  glData.pdMin = pdMin; glData.pdMax = pdMax;
-  const logMin = Math.log10(Math.max(pdMin, 1e-30));
-  const logMax = Math.log10(Math.max(pdMax, 1e-30));
+  // Power density — global log scale across all layers
+  glData.pdMin = globalPdMin; glData.pdMax = globalPdMax;
+
+  const logMin = globalPdMin > 0 ? Math.log10(globalPdMin) : (globalPdMax > 0 ? Math.log10(globalPdMax) - 1 : -50);
+  const logMax = globalPdMax > 0 ? Math.log10(globalPdMax) : (globalPdMin > 0 ? Math.log10(globalPdMin) + 1 : -50);
   const logRange = logMax - logMin;
-  const pdVerts = new Float32Array(positions.length / 2 * 3);
-  for (let i = 0, j = 0; i < positions.length; i += 2, j += 3) {
-    pdVerts[j] = positions[i]; pdVerts[j+1] = positions[i+1];
-    const v = powerDensities[i/2];
+
+  const pdVerts = new Float32Array(powerDensities.length * 3);
+  for (let i = 0; i < powerDensities.length; i++) {
+    const j = i * 3;
+    pdVerts[j] = positions[i * 2]; pdVerts[j+1] = positions[i * 2 + 1];
+    const v = powerDensities[i];
     pdVerts[j+2] = v > 0 && logRange > 0 ? (Math.log10(v) - logMin) / logRange : 0.0;
   }
   glData.meshPDVBO = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, glData.meshPDVBO);
   gl.bufferData(gl.ARRAY_BUFFER, pdVerts, gl.STATIC_DRAW);
+
+  // GND Power density — per-mesh identification + GND-only log scale
+  glData.gndPdMin = globalGndPdMin; glData.gndPdMax = globalGndPdMax;
+  const gndLogMin = globalGndPdMin > 0 ? Math.log10(globalGndPdMin) : (globalGndPdMax > 0 ? Math.log10(globalGndPdMax) - 1 : -50);
+  const gndLogMax = globalGndPdMax > 0 ? Math.log10(globalGndPdMax) : (globalGndPdMin > 0 ? Math.log10(globalGndPdMin) + 1 : -50);
+  const gndLogRange = gndLogMax - gndLogMin;
+  const meshIsGnd = [];
+  const gndPdVerts = new Float32Array(powerDensities.length * 3);
+  for (let mi = 0; mi < meshVoltageRanges.length; mi++) {
+    const mvr = meshVoltageRanges[mi];
+    const isGnd = mvr.vMax < vccVoltage * 0.3;
+    meshIsGnd.push(isGnd);
+    for (let i = 0; i < mvr.count; i++) {
+      const idx = mvr.start + i;
+      const j = idx * 3;
+      gndPdVerts[j] = positions[idx * 2]; gndPdVerts[j+1] = positions[idx * 2 + 1];
+      if (isGnd) {
+        const v = powerDensities[idx];
+        gndPdVerts[j+2] = v > 0 && gndLogRange > 0 ? (Math.log10(v) - gndLogMin) / gndLogRange : 0.0;
+      } else {
+        gndPdVerts[j+2] = 0.0;
+      }
+    }
+  }
+  glData.meshIsGnd = meshIsGnd;
+  glData.meshGndPDVBO = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, glData.meshGndPDVBO);
+  gl.bufferData(gl.ARRAY_BUFFER, gndPdVerts, gl.STATIC_DRAW);
+
+
 
   // Index buffer with 32-bit extension check
   if (indices.length >= 65536 && !ext32bit) {
@@ -757,6 +1152,7 @@ function buildLayerBuffers(ls, li) {
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idxArr, gl.STATIC_DRAW);
   glData.indexType = need32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
   glData.triCount = indices.length;
+  glData.perMeshIdxRanges = perMeshIdxRanges;
 
   // Edges
   const edgeSet = new Set();
@@ -780,6 +1176,156 @@ function buildLayerBuffers(ls, li) {
   }
 
   console.log('[Results] Layer', li, ': mesh OK, board =', !!glData.copperStencilVBO, 'fans =', glData.copperStencilFans?.length, 'disc =', !!glData.discVBO);
+
+  // === Current flow arrows (按网格显示) ===
+  const arrowVerts = [];
+  let meshVtxOffset = 0;  // 追踪每个 mesh 的顶点偏移
+
+  // 构建边界三角形集合（用于过滤边界密集箭头）
+  // 边界三角形是指至少有一条边是边界边的三角形
+  const boundaryTris = new Set();
+
+  for (let mi = 0; mi < ls.meshes.length; mi++) {
+    const m = ls.meshes[mi];
+    // 统计每条边的出现次数，出现次数为1的边是边界边
+    const edgeCount = new Map();
+    for (const tri of m.triangles) {
+      const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
+      if (!tv || tv.length < 3) continue;
+      // 三角形的三条边（顶点索引从小到大排序以确保一致性）
+      const edges = [
+        [Math.min(tv[0], tv[1]), Math.max(tv[0], tv[1])].join(','),
+        [Math.min(tv[1], tv[2]), Math.max(tv[1], tv[2])].join(','),
+        [Math.min(tv[2], tv[0]), Math.max(tv[2], tv[0])].join(',')
+      ];
+      for (const e of edges) {
+        edgeCount.set(e, (edgeCount.get(e) || 0) + 1);
+      }
+    }
+    // 找出边界边（只出现一次的边）
+    const boundaryEdges = new Set();
+    edgeCount.forEach((cnt, e) => {
+      if (cnt === 1) boundaryEdges.add(e);
+    });
+    // 标记包含边界边的三角形
+    let triIdx = 0;
+    for (const tri of m.triangles) {
+      const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
+      if (!tv || tv.length < 3) { triIdx++; continue; }
+      const edges = [
+        [Math.min(tv[0], tv[1]), Math.max(tv[0], tv[1])].join(','),
+        [Math.min(tv[1], tv[2]), Math.max(tv[1], tv[2])].join(','),
+        [Math.min(tv[2], tv[0]), Math.max(tv[2], tv[0])].join(',')
+      ];
+      let isBoundaryTri = false;
+      for (const e of edges) {
+        if (boundaryEdges.has(e)) { isBoundaryTri = true; break; }
+      }
+      if (isBoundaryTri) {
+        boundaryTris.add(`${mi}_${triIdx}`);
+      }
+      triIdx++;
+    }
+  }
+
+  console.log('[Results] Layer', li, ': boundary triangles =', boundaryTris.size);
+
+  for (let mi = 0; mi < ls.meshes.length; mi++) {
+    const m = ls.meshes[mi];
+    // 跳过没有电流密度的 mesh
+    if (!m.currentDensities || m.currentDensities.length === 0) {
+      meshVtxOffset += m.vertices.length;
+      continue;
+    }
+
+    let triIdx = 0;
+    for (const tri of m.triangles) {
+      const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
+      if (!tv || tv.length < 3) { triIdx++; continue; }
+
+      // 边界三角形过滤：边界箭头保留约25%（减少密集边界的箭头数量）
+      const isBoundary = boundaryTris.has(`${mi}_${triIdx}`);
+      if (isBoundary && (triIdx + mi * 13) % 4 !== 0) {
+        triIdx++;
+        continue;
+      }
+
+      // 获取三角形三个顶点的坐标（���虑 mesh 偏移）
+      const ax = positions[(tv[0] + meshVtxOffset) * 2], ay = positions[(tv[0] + meshVtxOffset) * 2 + 1];
+      const bx = positions[(tv[1] + meshVtxOffset) * 2], by = positions[(tv[1] + meshVtxOffset) * 2 + 1];
+      const cx = positions[(tv[2] + meshVtxOffset) * 2], cy = positions[(tv[2] + meshVtxOffset) * 2 + 1];
+
+      // 计算三角形尺寸（使用最长边长度）
+      const abLen = Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2);
+      const bcLen = Math.sqrt((cx - bx) ** 2 + (cy - by) ** 2);
+      const caLen = Math.sqrt((ax - cx) ** 2 + (ay - cy) ** 2);
+      const triSize = Math.max(abLen, bcLen, caLen);
+
+      // 箭头密度控制：基于三角形大小的自适应采样
+      // 三角形越小，采样间隔越大（密度越低）
+      const baseThreshold = 2.0; // 基准阈值（毫米）
+      const densityFactor = Math.max(0.25, arrowDensityLevel); // 确保最小为0.25
+      const samplingInterval = Math.max(1, Math.floor(baseThreshold / (triSize * densityFactor + 0.001)));
+      if (triIdx % samplingInterval !== 0) {
+        triIdx++;
+        continue;
+      }
+
+      // 三角形中心
+      const cx_tri = (ax + bx + cx) / 3;
+      const cy_tri = (ay + by + cy) / 3;
+
+      // 获取三个顶点的电流密度向量并平均
+      const cd_a = m.currentDensities[tv[0]] || [0, 0];
+      const cd_b = m.currentDensities[tv[1]] || [0, 0];
+      const cd_c = m.currentDensities[tv[2]] || [0, 0];
+      const jx = (cd_a[0] + cd_b[0] + cd_c[0]) / 3;
+      const jy = (cd_a[1] + cd_b[1] + cd_c[1]) / 3;
+
+      // 计算电流密度幅值
+      const mag = Math.sqrt(jx * jx + jy * jy);
+
+      // 归一化方向
+      const dirX = mag > 0 ? jx / mag : 0;
+      const dirY = mag > 0 ? jy / mag : 0;
+
+      // 箭头长度撑满三角形的一半，乘以用户设置的大小系数
+      const arrowLen = triSize * 0.5 * arrowSizeLevel;
+
+      // 箭头几何（主线 + 箭头头部）
+      const headSize = triSize * 0.15 * arrowSizeLevel;
+
+      // 主线（从箭尾到箭头基部）
+      const tailX = cx_tri - dirX * arrowLen * 0.5;
+      const tailY = cy_tri - dirY * arrowLen * 0.5;
+      const tipX = cx_tri + dirX * arrowLen * 0.5;
+      const tipY = cy_tri + dirY * arrowLen * 0.5;
+
+      arrowVerts.push(tailX, tailY, tipX, tipY);
+
+      // 箭头头部（V 形）
+      const headBaseX = tipX - dirX * headSize;
+      const headBaseY = tipY - dirY * headSize;
+      const perpX = -dirY * headSize * 0.6;
+      const perpY = dirX * headSize * 0.6;
+
+      arrowVerts.push(headBaseX + perpX, headBaseY + perpY, tipX, tipY);
+      arrowVerts.push(headBaseX - perpX, headBaseY - perpY, tipX, tipY);
+      triIdx++;
+    }
+    // 更新偏移，指向下一个 mesh 的起始位置
+    meshVtxOffset += m.vertices.length;
+  }
+
+  if (arrowVerts.length > 0) {
+    glData.arrowVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glData.arrowVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arrowVerts), gl.STATIC_DRAW);
+    glData.arrowLineCount = arrowVerts.length / 4;
+    console.log('[Results] Layer', li, ': arrows =', glData.arrowLineCount, ', density =', arrowDensityLevel, ', size =', arrowSizeLevel, ', boundaryTris =', boundaryTris.size, ', meshVtxOffset =', meshVtxOffset);
+  }
+
+
   return glData;
 }
 
@@ -875,7 +1421,12 @@ function renderSingleLayer(li, mvp) {
     gl.colorMask(true, true, true, true);
     gl.stencilFunc(gl.NOTEQUAL, 0, 0xFF);
     gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
-    gl.uniform4f(lineProg.u.u_color, 0.04, 0.10, 0.06, 1.0);
+    // In copper_coverage mode, use cold gray for areas without current
+    if (currentViewMode === 'copper_coverage') {
+      gl.uniform4f(lineProg.u.u_color, 0.15, 0.18, 0.22, 1.0); // Cold gray
+    } else {
+      gl.uniform4f(lineProg.u.u_color, 0.04, 0.10, 0.06, 1.0); // Default green
+    }
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.boardQuadVBO);
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.boardQuadIBO);
@@ -885,24 +1436,75 @@ function renderSingleLayer(li, mvp) {
     gl.disable(gl.STENCIL_TEST);
   }
 
-  // 1) Mesh triangles
-  if (gd.meshVBO && meshProg.prog) {
+  // 1) Mesh triangles — per-mesh rendering with VCC/GND colormaps
+  if (gd.meshVBO && meshProg.prog && gd.perMeshIdxRanges) {
     gl.useProgram(meshProg.prog);
     gl.uniformMatrix4fv(meshProg.u.u_mvp, false, mvp);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, cmapTex);
-    gl.uniform1i(meshProg.u.u_cmap, 0);
     gl.uniform1f(meshProg.u.u_alpha, 1.0);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, currentViewMode === 'power' ? gd.meshPDVBO : gd.meshVBO);
+    // Select VBO based on view mode
+    let activeVBO = gd.meshVBO;
+    if (currentViewMode === 'power') activeVBO = gd.meshPDVBO;
+    else if (currentViewMode === 'gnd_power') activeVBO = gd.meshGndPDVBO || gd.meshVBO;
+    gl.bindBuffer(gl.ARRAY_BUFFER, activeVBO);
     const stride = 3 * 4;
     gl.enableVertexAttribArray(meshProg.a.a_pos);
     gl.vertexAttribPointer(meshProg.a.a_pos, 2, gl.FLOAT, false, stride, 0);
     gl.enableVertexAttribArray(meshProg.a.a_val);
     gl.vertexAttribPointer(meshProg.a.a_val, 1, gl.FLOAT, false, stride, 8);
-
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.meshIBO);
-    gl.drawElements(gl.TRIANGLES, gd.triCount, gd.indexType, 0);
+
+    const idxSize = gd.indexType === gl.UNSIGNED_INT ? 4 : 2;
+
+    // In copper_coverage mode: VCC uses heatmap, GND uses solid color
+    if (currentViewMode === 'copper_coverage') {
+      // First, render VCC meshes with heatmap (using voltage colormap)
+      for (let mi = 0; mi < gd.perMeshIdxRanges.length; mi++) {
+        const range = gd.perMeshIdxRanges[mi];
+        let isGndMesh = gd.meshIsGnd && gd.meshIsGnd[mi];
+        // Skip GND meshes in first pass
+        if (isGndMesh) continue;
+        // Render VCC mesh with colormap
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, cmapTex);
+        gl.uniform1i(meshProg.u.u_cmap, 0);
+        gl.drawElements(gl.TRIANGLES, range.count, gd.indexType, range.start * idxSize);
+      }
+      // Then, render GND meshes with solid purple color
+      const gndColor = new Uint8Array(256 * 4);
+      for (let i = 0; i < 256; i++) {
+        gndColor[i*4] = Math.round(0.6 * 255);
+        gndColor[i*4+1] = Math.round(0.5 * 255);
+        gndColor[i*4+2] = Math.round(0.7 * 255);
+        gndColor[i*4+3] = 255;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, cmapTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, gndColor);
+      for (let mi = 0; mi < gd.perMeshIdxRanges.length; mi++) {
+        const range = gd.perMeshIdxRanges[mi];
+        let isGndMesh = gd.meshIsGnd && gd.meshIsGnd[mi];
+        // Only render GND meshes
+        if (!isGndMesh) continue;
+        gl.activeTexture(gl.TEXTURE0);
+        gl.uniform1i(meshProg.u.u_cmap, 0);
+        gl.drawElements(gl.TRIANGLES, range.count, gd.indexType, range.start * idxSize);
+      }
+      // Restore original colormap after drawing
+      updateCmapTexture();
+    } else {
+      // Normal colormap rendering
+      for (let mi = 0; mi < gd.perMeshIdxRanges.length; mi++) {
+        const range = gd.perMeshIdxRanges[mi];
+        // In gnd_power mode, skip non-GND meshes
+        if (currentViewMode === 'gnd_power' && gd.meshIsGnd && !gd.meshIsGnd[mi]) continue;
+        // In voltage mode, skip GND meshes (only show VCC/power meshes)
+        if (currentViewMode === 'voltage' && gd.meshIsGnd && gd.meshIsGnd[mi]) continue;
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, cmapTex);
+        gl.uniform1i(meshProg.u.u_cmap, 0);
+        gl.drawElements(gl.TRIANGLES, range.count, gd.indexType, range.start * idxSize);
+      }
+    }
 
     gl.disableVertexAttribArray(meshProg.a.a_val);
   }
@@ -944,30 +1546,6 @@ function renderSingleLayer(li, mvp) {
     gl.disableVertexAttribArray(lineProg.a.a_pos);
   }
 
-  // 3.5) Context tracks (per-layer)
-  if (showCtxTracks && gd.ctxTracksVBO && gd.ctxTracksCount > 0) {
-    gl.useProgram(lineProg.prog);
-    gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
-    gl.uniform4f(lineProg.u.u_color, 0.35, 0.35, 0.3, 0.45);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gd.ctxTracksVBO);
-    gl.enableVertexAttribArray(lineProg.a.a_pos);
-    gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
-    gl.drawArrays(gl.LINES, 0, gd.ctxTracksCount * 2);
-    gl.disableVertexAttribArray(lineProg.a.a_pos);
-  }
-
-  // 3.6) Pads: rectangle + circle
-  if (showPads && gd.padsVBO && gd.padsLineCount > 0) {
-    gl.useProgram(lineProg.prog);
-    gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
-    gl.uniform4f(lineProg.u.u_color, 0.75, 0.65, 0.30, 0.7);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gd.padsVBO);
-    gl.enableVertexAttribArray(lineProg.a.a_pos);
-    gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
-    gl.drawArrays(gl.LINES, 0, gd.padsLineCount * 2);
-    gl.disableVertexAttribArray(lineProg.a.a_pos);
-  }
-
   // 4) Connection points
   if (showVias && gd.pointVBO) {
     gl.useProgram(pointProg.prog);
@@ -985,6 +1563,25 @@ function renderSingleLayer(li, mvp) {
     gl.drawArrays(gl.POINTS, 0, gd.pointCount);
     gl.disableVertexAttribArray(pointProg.a.a_pos);
     gl.disableVertexAttribArray(pointProg.a.a_col);
+  }
+
+  // 5) Current flow arrows
+  if (showCurrentFlow && gd.arrowVBO) {
+    gl.useProgram(lineProg.prog);
+    gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gd.arrowVBO);
+    gl.enableVertexAttribArray(lineProg.a.a_pos);
+    gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
+    // Outline pass (dark) - 使箭头在任意背景下可见
+    gl.lineWidth(2.5);
+    gl.uniform4f(lineProg.u.u_color, 0.0, 0.0, 0.0, 0.8);
+    gl.drawArrays(gl.LINES, 0, gd.arrowLineCount * 2);
+    // Arrow pass (bright) - 始终使用亮绿色
+    gl.lineWidth(1.2);
+    gl.uniform4f(lineProg.u.u_color, 0.2, 1.0, 0.4, 1.0); // 亮绿色
+    gl.drawArrays(gl.LINES, 0, gd.arrowLineCount * 2);
+    gl.lineWidth(1.0);
+    gl.disableVertexAttribArray(lineProg.a.a_pos);
   }
 }
 
@@ -1028,44 +1625,171 @@ function setupInteraction() {
     if (e.key === 'v' || e.key === 'V') toggleLayer();
     if (e.key === 'r' || e.key === 'R') { resetView(); render(); }
     if (e.key === 'c' || e.key === 'C') { showVias = !showVias; updateToggles(); render(); }
-    if (e.key === 't' || e.key === 'T') { showCtxTracks = !showCtxTracks; updateToggles(); render(); }
-    if (e.key === 'd' || e.key === 'D') { showPads = !showPads; updateToggles(); render(); }
+    if (e.key === 'f' || e.key === 'F') { showCurrentFlow = !showCurrentFlow; updateToggles(); render(); }
+    if (e.key === 'd' || e.key === 'D') {
+      // 循环切换箭头密度: 0.25 -> 0.5 -> 1 -> 2 -> 4 -> 0.25
+      const densityLevels = [0.25, 0.5, 1, 2, 4];
+      const currentIdx = densityLevels.findIndex(d => d === arrowDensityLevel);
+      const nextIdx = (currentIdx + 1) % densityLevels.length;
+      arrowDensityLevel = densityLevels[nextIdx];
+      // 更新UI
+      const select = document.getElementById('arrow-density');
+      if (select) select.value = arrowDensityLevel;
+      console.log('[Results] Arrow density (D key):', arrowDensityLevel);
+      // 重建箭头缓冲并重新渲染
+      if (useWebGL && resultData) {
+        buildAllLayerBuffers();
+        render();
+      }
+    }
     if (e.key === 'p' || e.key === 'P') toggleViewMode();
+    if (e.key === 'g' || e.key === 'G') { document.getElementById('btn-gndpower').click(); }
+    if (e.key === 'm' || e.key === 'M') { document.getElementById('btn-copper').click(); }
   });
 
   window.addEventListener('resize', render);
+}
+
+// Check if current result is "all networks" combined view
+function isShowingAllNetworks() {
+  if (!resultSet || !resultSet.results) return false;
+  const currentLabel = resultSet.results[currentResultIdx]?.label || '';
+  // Detect if this is the combined/all networks view
+  // Check for "全部" (all in Chinese) or English "all" in the label
+  const result = currentLabel.includes('全部') || currentLabel.toLowerCase().includes('all');
+  _log('Debug', 'isShowingAllNetworks: label="' + currentLabel + '" result=' + result);
+  return result;
 }
 
 function updateStatus(mx, my) {
   const w = screenToWorld(mx, my);
   document.getElementById('st-pos').textContent = `X: ${w.x.toFixed(3)}  Y: ${w.y.toFixed(3)}`;
 
+  // Hide voltage display when showing all networks (multi-network view)
+  const isAll = isShowingAllNetworks();
+  if (isAll) {
+    document.getElementById('st-voltage').classList.add('hidden');
+    document.getElementById('st-delta').classList.add('hidden');
+    // Keep tooltip working even in all-networks mode
+    const value = pickValue(w.x, w.y);
+    updateTooltip(value, w);
+    return;
+  } else {
+    document.getElementById('st-voltage').classList.remove('hidden');
+    document.getElementById('st-delta').classList.remove('hidden');
+  }
+
   const gd = layerGL[currentLayerIdx];
   if (!gd) { updateTooltip(null, w); return; }
 
   const value = pickValue(w.x, w.y);
   if (value != null && isFinite(value)) {
-    if (currentViewMode === 'power') {
-      document.getElementById('st-voltage').textContent = `功率密度: ${value.toExponential(4)} W/m²`;
-      document.getElementById('st-delta').textContent = `Δ: ${(value > 0 ? value - (gd.pdMin || 0) : 0).toExponential(4)} W/m²`;
+    if (currentViewMode === 'power' || currentViewMode === 'gnd_power') {
+      document.getElementById('st-voltage').textContent = `功率密度: ${value.toExponential(4)} W/mm²`;
+      const pdMin = currentViewMode === 'gnd_power' ? (gd.gndPdMin || 0) : (gd.pdMin || 0);
+      document.getElementById('st-delta').textContent = `Δ: ${(value > 0 ? value - pdMin : 0).toExponential(4)} W/mm²`;
     } else {
       document.getElementById('st-voltage').textContent = `电压: ${value.toFixed(6)} V`;
       const delta = value - (gd.vMin || 0);
       document.getElementById('st-delta').textContent = `Δ: ${delta.toFixed(6)} V`;
     }
   } else {
-    document.getElementById('st-voltage').textContent = currentViewMode === 'power' ? '功率密度: --' : '电压: --';
+    document.getElementById('st-voltage').textContent = (currentViewMode === 'power' || currentViewMode === 'gnd_power') ? '功率密度: --' : '电压: --';
     document.getElementById('st-delta').textContent = 'Δ: --';
   }
   updateTooltip(value, w);
 }
 
+// Find the network name at the given position by matching mesh average voltage
+function findNetworkNameAt(wx, wy, layerIdx) {
+  if (!networkInfoData || networkInfoData.length === 0) return null;
+  if (layerIdx < 0 || layerIdx >= resultData.layerSolutions.length) return null;
+
+  const ls = resultData.layerSolutions[layerIdx];
+
+  // Find the mesh containing the cursor position and get its average voltage
+  for (let mi = 0; mi < ls.meshes.length; mi++) {
+    const m = ls.meshes[mi];
+
+    // Check if cursor is inside this mesh
+    for (let i = 0; i < m.triangles.length; i++) {
+      const tri = m.triangles[i];
+      const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
+      if (!tv || tv.length < 3) continue;
+
+      const ax = vx(m.vertices[tv[0]]), ay = vy(m.vertices[tv[0]]);
+      const bx = vx(m.vertices[tv[1]]), by = vy(m.vertices[tv[1]]);
+      const cx = vx(m.vertices[tv[2]]), cy = vy(m.vertices[tv[2]]);
+      const tMinX = Math.min(ax,bx,cx), tMaxX = Math.max(ax,bx,cx);
+      const tMinY = Math.min(ay,by,cy), tMaxY = Math.max(ay,by,cy);
+
+      if (wx < tMinX || wx > tMaxX || wy < tMinY || wy > tMaxY) continue;
+
+      const denom = (by-cy)*(ax-cx) + (cx-bx)*(ay-cy);
+      if (Math.abs(denom) < 1e-12) continue;
+      const la = ((by-cy)*(wx-cx) + (cx-bx)*(wy-cy)) / denom;
+      const lb = ((cy-ay)*(wx-cx) + (ax-cx)*(wy-cy)) / denom;
+      const lc = 1 - la - lb;
+      if (la >= -0.001 && lb >= -0.001 && lc >= -0.001) {
+        // Cursor is inside this triangle, calculate mesh average voltage
+        let sum = 0, cnt = 0;
+        for (const p of m.potentials) {
+          if (p != null && isFinite(p)) { sum += p; cnt++; }
+        }
+        if (cnt === 0) continue;
+        const meshAvgV = sum / cnt;
+
+        // Match with network by voltage
+        // GND networks have voltage near 0
+        if (meshAvgV < vccVoltage * 0.3) {
+          // Find GND network
+          for (const ni of networkInfoData) {
+            if (ni.gnd_net) {
+              const nameUp = ni.gnd_net.toUpperCase();
+              return nameUp.includes('GND') ? ni.gnd_net : ni.gnd_net + ' (GND)';
+            }
+          }
+          return 'GND';
+        }
+
+        // VCC network - match by voltage
+        let bestMatch = null;
+        let minVDiff = Infinity;
+        for (const ni of networkInfoData) {
+          const vDiff = Math.abs(ni.voltage - meshAvgV);
+          if (vDiff < minVDiff) {
+            minVDiff = vDiff;
+            bestMatch = ni.name;
+          }
+        }
+        // Only return match if voltage difference is reasonable (within 0.5V)
+        if (bestMatch && minVDiff < 0.5) {
+          return bestMatch;
+        }
+        return bestMatch;
+      }
+    }
+  }
+  return null;
+}
+
 function pickValue(wx, wy) {
-  const ls = resultData.layerSolutions[currentLayerIdx];
-  for (const m of ls.meshes) {
-    const values = currentViewMode === 'power' ? (m.powerDensities || []) : m.potentials;
+  return pickValueAtLayer(wx, wy, currentLayerIdx);
+}
+
+function pickValueAtLayer(wx, wy, layerIdx) {
+  if (layerIdx < 0 || layerIdx >= resultData.layerSolutions.length) return null;
+  const ls = resultData.layerSolutions[layerIdx];
+  for (let mi = 0; mi < ls.meshes.length; mi++) {
+    const m = ls.meshes[mi];
+    const values = (currentViewMode === 'power' || currentViewMode === 'gnd_power') ? (m.powerDensities || []) : m.potentials;
+    // Skip non-GND meshes in gnd_power mode
+    if (currentViewMode === 'gnd_power') {
+      const gd = layerGL[layerIdx];
+      if (gd && gd.meshIsGnd && !gd.meshIsGnd[mi]) continue;
+    }
     // If powerDensities is per-face, use per-face lookup
-    const isPerFace = currentViewMode === 'power' && values.length === m.triangles.length && values.length !== m.vertices.length;
+    const isPerFace = (currentViewMode === 'power' || currentViewMode === 'gnd_power') && values.length === m.triangles.length && values.length !== m.vertices.length;
     for (let i = 0; i < m.triangles.length; i++) {
       const tri = m.triangles[i];
       const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
@@ -1100,8 +1824,21 @@ function updateTooltip(voltage, w) {
   const el = document.getElementById('tooltip');
   if (!tooltipEvent || !resultData) { el.style.display = 'none'; return; }
   if (voltage != null && isFinite(voltage)) {
-    const valStr = currentViewMode === 'power' ? `${voltage.toExponential(4)} W/m²` : `${voltage.toFixed(6)} V`;
-    el.innerHTML = `${valStr}<br><span style="color:#8b949e">${w.x.toFixed(3)}, ${w.y.toFixed(3)}</span>`;
+    let valStr;
+    if (currentViewMode === 'power' || currentViewMode === 'gnd_power') {
+      valStr = `VCC: ${voltage.toExponential(4)} W/mm²`;
+    } else {
+      valStr = `VCC: ${voltage.toFixed(6)} V`;
+    }
+
+    // Try to find network name by matching mesh voltage
+    let netInfo = '';
+    const netName = findNetworkNameAt(w.x, w.y, currentLayerIdx);
+    if (netName) {
+      netInfo = `<br><span style="color:#58a6ff">Net: ${netName}</span>`;
+    }
+
+    el.innerHTML = `${valStr}${netInfo}<br><span style="color:#8b949e">X: ${w.x.toFixed(3)} Y: ${w.y.toFixed(3)}</span>`;
     el.style.display = '';
   } else {
     el.style.display = 'none';
@@ -1118,9 +1855,10 @@ function updateToggles() {
   document.getElementById('btn-edges').classList.toggle('active', showEdges);
   document.getElementById('btn-outline').classList.toggle('active', showOutline);
   document.getElementById('btn-vias').classList.toggle('active', showVias);
-  document.getElementById('btn-ctx-tracks').classList.toggle('active', showCtxTracks);
-  document.getElementById('btn-pads').classList.toggle('active', showPads);
+  document.getElementById('btn-flow').classList.toggle('active', showCurrentFlow);
   document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
+  document.getElementById('btn-gndpower').classList.toggle('active', currentViewMode === 'gnd_power');
+  document.getElementById('btn-copper').classList.toggle('active', currentViewMode === 'copper_coverage');
 }
 
 function toggleLayer() {
@@ -1130,8 +1868,10 @@ function toggleLayer() {
 }
 
 function toggleViewMode() {
-  currentViewMode = currentViewMode === 'voltage' ? 'power' : 'voltage';
+  const modes = ['voltage', 'power'];
+  currentViewMode = modes[(modes.indexOf(currentViewMode) + 1) % modes.length];
   document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
+  document.getElementById('btn-gndpower').classList.toggle('active', currentViewMode === 'gnd_power');
   drawColorbar();
   updateInfoPanel();
   render();
@@ -1145,25 +1885,140 @@ function onLayerChange() {
 }
 
 // ============================================================
+// Result tabs (N+1 solver runs)
+// ============================================================
+// Result tabs (N+1 solver runs) - 显示所有结果标签，包括单网络
+// ============================================================
+function buildResultTabs() {
+  const bar = document.getElementById('result-tabs');
+  if (!bar || !resultSet || resultSet.results.length < 1) {
+    if (bar) bar.style.display = 'none';
+    return;
+  }
+
+  bar.style.display = 'flex';
+  bar.innerHTML = '';
+
+  // 即使只有一个结果也显示标签，让用户知道当前网络名称
+
+  for (let i = 0; i < resultSet.results.length; i++) {
+    const btn = document.createElement('button');
+    btn.textContent = resultSet.results[i].label;
+    if (i === currentResultIdx) btn.className = 'active';
+    btn.addEventListener('click', () => switchResult(i));
+    bar.appendChild(btn);
+  }
+}
+
+function switchResult(idx) {
+  if (idx === currentResultIdx) return;
+  if (!loadResult(idx)) return;
+  buildResultTabs();
+  buildSidebar();
+  onLayerChange();
+  // Update voltage display visibility based on result type
+  const isAll = isShowingAllNetworks();
+  _log('SwitchResult', 'idx=' + idx + ' label="' + (resultSet.results[idx]?.label || '') + '" isAll=' + isAll);
+  if (isAll) {
+    document.getElementById('st-voltage').classList.add('hidden');
+    document.getElementById('st-delta').classList.add('hidden');
+    _log('SwitchResult', 'HIDING voltage display');
+  } else {
+    document.getElementById('st-voltage').classList.remove('hidden');
+    document.getElementById('st-delta').classList.remove('hidden');
+    _log('SwitchResult', 'SHOWING voltage display');
+  }
+
+  // 更新警告按钮显示
+  updateWarningButton();
+}
+
+// ============================================================
 // UI
 // ============================================================
 function setupUI() {
+  buildResultTabs();
   buildSidebar();
+
+  // Apply voltage display visibility based on result type
+  const isAll = isShowingAllNetworks();
+  const vEl = document.getElementById('st-voltage');
+  const dEl = document.getElementById('st-delta');
+  _log('UI', 'isShowingAllNetworks=' + isAll + ' vEl.classList=' + (vEl?.classList?.value || 'null'));
+  if (isAll) {
+    vEl?.classList.add('hidden');
+    dEl?.classList.add('hidden');
+    _log('UI', 'HIDING voltage display (all networks mode), vEl.classList=' + (vEl?.classList?.value || 'null'));
+  } else {
+    vEl?.classList.remove('hidden');
+    dEl?.classList.remove('hidden');
+    _log('UI', 'SHOWING voltage display (single network mode)');
+  }
 
   document.getElementById('btn-edges').addEventListener('click', () => { showEdges = !showEdges; updateToggles(); render(); });
   document.getElementById('btn-outline').addEventListener('click', () => { showOutline = !showOutline; updateToggles(); render(); });
   document.getElementById('btn-vias').addEventListener('click', () => { showVias = !showVias; updateToggles(); render(); });
-  document.getElementById('btn-ctx-tracks').addEventListener('click', () => { showCtxTracks = !showCtxTracks; updateToggles(); render(); });
-  document.getElementById('btn-pads').addEventListener('click', () => { showPads = !showPads; updateToggles(); render(); });
-  document.getElementById('btn-viewmode').addEventListener('click', toggleViewMode);
-  document.getElementById('btn-reset').addEventListener('click', () => { resetView(); render(); });
-
-  document.getElementById('cmap-select').addEventListener('change', e => {
-    currentCmap = e.target.value;
-    updateCmapTexture();
-    drawColorbar();
+  document.getElementById('btn-flow').addEventListener('click', () => {
+    showCurrentFlow = !showCurrentFlow;
+    updateToggles();
+    // 显示/隐藏箭头大小控制
+    const sizeControl = document.getElementById('arrow-size-control');
+    if (sizeControl) {
+      sizeControl.style.display = showCurrentFlow ? 'flex' : 'none';
+    }
     render();
   });
+  document.getElementById('btn-viewmode').addEventListener('click', toggleViewMode);
+  document.getElementById('btn-gndpower').addEventListener('click', () => {
+    currentViewMode = currentViewMode === 'gnd_power' ? 'voltage' : 'gnd_power';
+    document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
+    document.getElementById('btn-gndpower').classList.toggle('active', currentViewMode === 'gnd_power');
+    document.getElementById('btn-copper').classList.toggle('active', currentViewMode === 'copper_coverage');
+    drawColorbar(); updateInfoPanel(); render();
+  });
+  const btnWarn = document.getElementById('btn-warn');
+  if (btnWarn) {
+    btnWarn.addEventListener('click', () => { showWarning(); });
+  }
+  document.getElementById('btn-copper').addEventListener('click', () => {
+    currentViewMode = currentViewMode === 'copper_coverage' ? 'voltage' : 'copper_coverage';
+    document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
+    document.getElementById('btn-gndpower').classList.toggle('active', currentViewMode === 'gnd_power');
+    document.getElementById('btn-copper').classList.toggle('active', currentViewMode === 'copper_coverage');
+    drawColorbar(); updateInfoPanel(); render();
+  });
+  document.getElementById('btn-reset').addEventListener('click', () => { resetView(); render(); });
+
+  // 箭头密度控制
+  const arrowDensitySelect = document.getElementById('arrow-density');
+  if (arrowDensitySelect) {
+    arrowDensitySelect.addEventListener('change', (e) => {
+      arrowDensityLevel = parseFloat(e.target.value);
+      console.log('[Results] Arrow density changed to:', arrowDensityLevel);
+      // 重建箭头缓冲并重新渲染
+      if (useWebGL && resultData) {
+        buildAllLayerBuffers();
+        render();
+      }
+    });
+  }
+
+  // 箭头大小控制
+  const arrowSizeInput = document.getElementById('arrow-size');
+  if (arrowSizeInput) {
+    arrowSizeInput.addEventListener('input', (e) => {
+      arrowSizeLevel = parseFloat(e.target.value);
+      // 实时更新箭头大小（使用防抖提高性能）
+      if (arrowSizeUpdateTimeout) clearTimeout(arrowSizeUpdateTimeout);
+      arrowSizeUpdateTimeout = setTimeout(() => {
+        console.log('[Results] Arrow size changed to:', arrowSizeLevel);
+        if (useWebGL && resultData) {
+          buildAllLayerBuffers();
+          render();
+        }
+      }, 50);
+    });
+  }
 
   document.getElementById('st-layer').textContent = '层: ' + layerNamesList[currentLayerIdx];
   updateInfoPanel();
@@ -1188,15 +2043,15 @@ function buildSidebar() {
 
     const eye = document.createElement('button');
     eye.className = 'layer-eye' + (layerVisible[i] ? '' : ' hidden');
-    eye.innerHTML = layerVisible[i] ? '&#128065;' : '&#9673;';
+    eye.innerHTML = '&#128065;'; // 始终显示眼睛图标
     eye.title = layerVisible[i] ? '隐藏' : '显示';
     eye.addEventListener('click', (e) => {
       e.stopPropagation();
       layerVisible[i] = !layerVisible[i];
       eye.className = 'layer-eye' + (layerVisible[i] ? '' : ' hidden');
-      eye.innerHTML = layerVisible[i] ? '&#128065;' : '&#9673;';
       eye.title = layerVisible[i] ? '隐藏' : '显示';
       render();
+      updateToggleAllIcon();
     });
 
     item.appendChild(dot);
@@ -1209,6 +2064,8 @@ function buildSidebar() {
     });
     container.appendChild(item);
   }
+  // 同步全局眼睛图标状态
+  updateToggleAllIcon();
 }
 
 function updateSidebarActive() {
@@ -1216,6 +2073,35 @@ function updateSidebarActive() {
   items.forEach(el => {
     el.classList.toggle('active', parseInt(el.dataset.idx) === currentLayerIdx);
   });
+  // 同步全局眼睛图标状态
+  updateToggleAllIcon();
+}
+
+function updateToggleAllIcon() {
+  const icon = document.getElementById('toggle-all-icon');
+  const btn = document.getElementById('toggle-all-layers');
+  if (!icon || !btn) return;
+  // 始终使用眼睛图标，通过高亮/灰暗区分状态
+  icon.innerHTML = '&#128065;'; // 始终显示睁眼图标
+  // 如果所有图层都可见，高亮显示；否则灰暗显示
+  const allVisible = layerVisible.every(v => v);
+  if (allVisible) {
+    btn.classList.remove('hidden');
+  } else {
+    btn.classList.add('hidden');
+  }
+}
+
+function toggleAllLayers() {
+  // 检查当前状态：如果全部可见，则全部隐藏；否则全部显示
+  const allVisible = layerVisible.every(v => v);
+  if (allVisible) {
+    layerVisible = layerNamesList.map(() => false);
+  } else {
+    layerVisible = layerNamesList.map(() => true);
+  }
+  buildSidebar();
+  render();
 }
 
 function showAllLayers() {
@@ -1232,36 +2118,96 @@ function hideAllLayers() {
 
 function updateInfoPanel() {
   const panel = document.getElementById('info-panel');
+  // Hide info panel when showing all networks
+  if (isShowingAllNetworks()) {
+    panel.style.display = 'none';
+    return;
+  }
   const ls = resultData.layerSolutions[currentLayerIdx];
   if (!ls) { panel.style.display = 'none'; return; }
 
+  // In copper_coverage mode, show simplified info
+  if (currentViewMode === 'copper_coverage') {
+    const gd = layerGL[currentLayerIdx];
+    let totalVerts = 0, totalTris = 0;
+    for (const m of ls.meshes) {
+      totalVerts += m.vertices.length;
+      totalTris += m.triangles.length;
+    }
+    let html = `<span class="label">模式:</span> <span class="value">铜箔覆盖视图</span><br>`;
+    html += `<span class="label">层:</span> <span class="value">${layerNamesList[currentLayerIdx]}</span><br>`;
+    html += `<span class="label">网格:</span> <span class="value">${totalVerts} 顶点, ${totalTris} 三角形</span><br>`;
+    html += `<span class="label" style="color:#f0883e">热力图区域</span> <span class="value">VCC网络(电压分布)</span><br>`;
+    html += `<span class="label" style="color:#9b8db3">紫色区域</span> <span class="value">GND网络(有电流)</span><br>`;
+    html += `<span class="label" style="color:#8b949e">灰色区域</span> <span class="value">无电流铜箔</span>`;
+    panel.innerHTML = html;
+    panel.style.display = '';
+    return;
+  }
+
   let totalVerts = 0, totalTris = 0, minV = Infinity, maxV = -Infinity;
   let minPD = Infinity, maxPD = -Infinity;
-  for (const m of ls.meshes) {
+  // Use global voltage range across ALL layers for consistent display
+  for (let ali = 0; ali < resultData.layerSolutions.length; ali++) {
+    for (const m of resultData.layerSolutions[ali].meshes) {
+      for (const p of m.potentials) {
+        if (p != null && isFinite(p)) { if (p < minV) minV = p; if (p > maxV) maxV = p; }
+      }
+    }
+  }
+  for (let mi = 0; mi < ls.meshes.length; mi++) {
+    const m = ls.meshes[mi];
     totalVerts += m.vertices.length;
     totalTris += m.triangles.length;
-    for (const p of m.potentials) {
-      if (p != null && isFinite(p)) { if (p < minV) minV = p; if (p > maxV) maxV = p; }
-    }
     for (const p of (m.powerDensities || [])) {
       if (p != null && isFinite(p)) { if (p < minPD) minPD = p; if (p > maxPD) maxPD = p; }
     }
   }
   if (minV === Infinity) { minV = 0; maxV = 0; }
   if (minPD === Infinity) { minPD = 0; maxPD = 0; }
-  const drop = maxV - minV;
+
+  // Look up actual voltages at source/load pad positions for the current layer
+  const currentLayerName = layerNamesList[currentLayerIdx];
+  let sourceVoltage = null, loadVoltage = null;
+  for (const ni of networkInfoData) {
+    const srcOnLayer = ni.sourcePads.filter(p => !p.layer || p.layer === currentLayerName);
+    const loadOnLayer = ni.loadPads.filter(p => !p.layer || p.layer === currentLayerName);
+    let srcSum = 0, srcCnt = 0, loadSum = 0, loadCnt = 0;
+    for (const p of srcOnLayer) {
+      const v = pickValueAtLayer(p.x, p.y, currentLayerIdx);
+      if (v != null && isFinite(v)) { srcSum += v; srcCnt++; }
+    }
+    for (const p of loadOnLayer) {
+      const v = pickValueAtLayer(p.x, p.y, currentLayerIdx);
+      if (v != null && isFinite(v)) { loadSum += v; loadCnt++; }
+    }
+    if (srcCnt > 0) sourceVoltage = srcSum / srcCnt;
+    if (loadCnt > 0) loadVoltage = loadSum / loadCnt;
+  }
+
+
+  const gd = layerGL[currentLayerIdx];
 
   const info = resultData.solverInfo;
   let html = `<span class="label">层:</span> <span class="value">${layerNamesList[currentLayerIdx]}</span><br>`;
   html += `<span class="label">网格:</span> <span class="value">${totalVerts} 顶点, ${totalTris} 三角形</span><br>`;
   if (currentViewMode === 'power') {
     const pdRangeStr = maxPD > 0
-      ? `${minPD.toExponential(2)} ~ ${maxPD.toExponential(2)} W/m² (log)`
+      ? `${minPD.toExponential(2)} ~ ${maxPD.toExponential(2)} W/mm² (log)`
       : '无功率密度数据';
     html += `<span class="label">功率密度:</span> <span class="value">${pdRangeStr}</span><br>`;
   } else {
-    html += `<span class="label">电压范围:</span> <span class="value">${minV.toFixed(4)} ~ ${maxV.toFixed(4)} V</span><br>`;
-    html += `<span class="label">压降:</span> <span class="value${drop > 0.1 ? ' warn' : ''}">${drop.toFixed(4)} V</span>`;
+    html += `<span class="label">电源电压:</span> <span class="value">${vccVoltage.toFixed(2)} V</span><br>`;
+    html += `<span class="label">全局电压范围:</span> <span class="value">${minV.toFixed(4)} ~ ${maxV.toFixed(4)} V</span><br>`;
+    if (sourceVoltage != null) {
+      html += `<span class="label">本层源端:</span> <span class="value">${sourceVoltage.toFixed(4)} V</span><br>`;
+    }
+    if (loadVoltage != null) {
+      html += `<span class="label">本层负载:</span> <span class="value">${loadVoltage.toFixed(4)} V</span><br>`;
+      const effectiveSource = sourceVoltage != null ? sourceVoltage : vccVoltage;
+      const drop = effectiveSource - loadVoltage;
+      html += `<span class="label">压降:</span> <span class="value${drop > 0.1 ? ' warn' : ''}">${drop.toFixed(4)} V (${(drop / effectiveSource * 100).toFixed(2)}%)</span>`;
+    }
   }
   if (info) {
     const gniVal = info.groundNodeCurrent;
@@ -1278,24 +2224,59 @@ function drawColorbar() {
   if (!gd) return;
   const el = document.getElementById('colorbar');
   el.style.display = '';
-  const c = document.getElementById('cb-canvas');
-  const ctx = c.getContext('2d');
-  const h = c.height, w = c.width;
-  const cmap = CMAPS[currentCmap] || PLASMA;
-  const cn = cmap.length;
-  for (let y = 0; y < h; y++) {
-    const t = 1 - y / h;
-    const pos = t * (cn - 1);
-    const lo = Math.floor(pos), hi = Math.min(lo + 1, cn - 1);
-    const f = pos - lo;
-    const r = Math.round((cmap[lo][0]*(1-f) + cmap[hi][0]*f)*255);
-    const g = Math.round((cmap[lo][1]*(1-f) + cmap[hi][1]*f)*255);
-    const b = Math.round((cmap[lo][2]*(1-f) + cmap[hi][2]*f)*255);
-    ctx.fillStyle = `rgb(${r},${g},${b})`;
-    ctx.fillRect(0, y, w, 1);
+  el.style.display = 'flex';
+
+  // Draw a single canvas colorbar from a colormap array
+  function drawBar(canvasId, cmap) {
+    const c = document.getElementById(canvasId);
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    const h = c.height, w = c.width;
+    const cn = cmap.length;
+    for (let y = 0; y < h; y++) {
+      const t = 1 - y / h;
+      const pos = t * (cn - 1);
+      const lo = Math.floor(pos), hi = Math.min(lo + 1, cn - 1);
+      const f = pos - lo;
+      const r = Math.round((cmap[lo][0]*(1-f) + cmap[hi][0]*f)*255);
+      const g = Math.round((cmap[lo][1]*(1-f) + cmap[hi][1]*f)*255);
+      const b = Math.round((cmap[lo][2]*(1-f) + cmap[hi][2]*f)*255);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(0, y, w, 1);
+    }
   }
-  document.getElementById('cb-max').textContent = (currentViewMode === 'power' ? gd.pdMax.toExponential(2) : gd.vMax.toFixed(4)) + (currentViewMode === 'power' ? ' W/m²' : ' V');
-  document.getElementById('cb-min').textContent = (currentViewMode === 'power' ? gd.pdMin.toExponential(2) : gd.vMin.toFixed(4)) + (currentViewMode === 'power' ? ' W/m²' : ' V');
+
+  const cmap = CMAPS[currentCmap] || PLASMA;
+  drawBar('cb-canvas-vcc', cmap);
+
+  // Hide numeric labels in copper_coverage mode or when showing all networks
+  const isAll = isShowingAllNetworks();
+  const isCopperMode = currentViewMode === 'copper_coverage';
+  const labelEl = document.querySelector('.cb-labels');
+  if (labelEl) {
+    labelEl.style.display = (isAll || isCopperMode) ? 'none' : '';
+  }
+
+  // Hide colorbar entirely in copper_coverage mode
+  if (isCopperMode) {
+    el.style.display = 'none';
+    return;
+  }
+
+  const isGndPower = currentViewMode === 'gnd_power';
+  const isPower = currentViewMode === 'power';
+  const unit = (isPower || isGndPower) ? ' W/mm²' : ' V';
+  const fmtV = v => v != null ? ((isPower || isGndPower) ? v.toExponential(2) : v.toFixed(4)) : '--';
+
+  if (isGndPower) {
+    document.getElementById('cb-vcc-max').textContent = fmtV(gd.gndPdMax ?? 0) + unit;
+    document.getElementById('cb-vcc-min').textContent = fmtV(gd.gndPdMin ?? 0) + unit;
+    document.getElementById('cb-vcc-label').textContent = 'GND功率';
+  } else {
+    document.getElementById('cb-vcc-max').textContent = isPower ? fmtV(gd.pdMax ?? 0) + unit : fmtV(gd.vMax ?? 0) + ' V';
+    document.getElementById('cb-vcc-min').textContent = isPower ? fmtV(gd.pdMin ?? 0) + unit : fmtV(gd.vMin ?? 0) + ' V';
+    document.getElementById('cb-vcc-label').textContent = 'VCC';
+  }
 }
 
 function closeWindow() {
@@ -1312,69 +2293,78 @@ function reanalyze() {
 let useWebGL = false;
 
 function main() {
+  _log('Main', '=== results.html starting ===');
   const glOk = initGL();
   useWebGL = !!glOk;
+  _log('Main', 'WebGL=' + useWebGL + ' stencil=' + (gl ? gl.getParameter(gl.STENCIL_BITS) : 'N/A'));
 
   eda.sys_MessageBus.subscribe('pdn-results-data', onMessageBusData);
 
-  if (!loadData()) {
+  const storageOk = loadResultSet();
+  _log('Main', 'Storage load result: ok=' + storageOk + ' resultSet=' + !!resultSet + ' count=' + (resultSet?.results?.length ?? 0));
+
+  if (storageOk && loadResult(0)) {
+    _log('Main', '=== Data loaded from Storage OK ===');
     eda.sys_MessageBus.publish('padne-results-ready', {});
-    setTimeout(() => {
-      if (!resultData && loadData()) startUI();
-    }, 1500);
+    startUI();
     return;
   }
+
+  // Storage failed or loadResult failed — clear resultSet so message bus fallback works
+  if (resultSet) {
+    _log('Main', 'Storage had data but loadResult(0) FAILED, clearing resultSet for message bus fallback');
+    resultSet = null;
+  }
+
+  _log('Main', 'Waiting for message bus data...');
   eda.sys_MessageBus.publish('padne-results-ready', {});
-  startUI();
+
+  // Retry from Storage after delay as last resort
+  setTimeout(() => {
+    if (!resultSet && loadResultSet() && loadResult(0)) {
+      _log('Main', 'Delayed Storage retry succeeded');
+      startUI();
+    }
+  }, 2000);
 }
 
 function onMessageBusData(msg) {
-  if (resultData) return;
-  resultData = msg.result;
-  layerNames = msg.layerNames || {};
-  connectionPoints = msg.connectionPoints || {};
-  layerBoundaries = msg.layerBoundaries || {};
-  pcbContext = msg.pcbContext || null;
-  images = msg.images || null;
-  const warning = msg.warningMessage;
-  if (warning) {
-    const banner = document.getElementById('warning-banner');
-    if (banner) { banner.textContent = warning; banner.style.display = 'block'; }
-  }
-  if (!resultData || !resultData.layerSolutions) return;
+  _log('MsgBus', 'Received, resultSet already=' + !!resultSet + ' msg keys=' + (msg ? Object.keys(msg).join(',') : 'null'));
+  if (resultSet) return;
 
-  layerNamesList = resultData.layerSolutions.map((ls, i) => ls.layerName || layerNames[i] || ('Layer ' + i));
-  layerVisible = layerNamesList.map(() => true);
-  let bx0=Infinity,bx1=-Infinity,by0=Infinity,by1=-Infinity;
-  for (const ls of resultData.layerSolutions) for (const m of ls.meshes) for (const v of m.vertices) {
-    const x=vx(v),y=vy(v);
-    if(x<bx0)bx0=x;if(x>bx1)bx1=x;if(y<by0)by0=y;if(y>by1)by1=y;
+  // Handle possible message wrapping by different EasyEDA versions
+  const data = msg?.data?.resultSet ? msg.data : msg;
+  resultSet = data.resultSet;
+  layerNames = data.layerNames || {};
+  images = data.images || null;
+
+  _log('MsgBus', 'resultSet=' + !!resultSet + ' count=' + (resultSet?.results?.length ?? 0));
+
+  if (!resultSet || !resultSet.results || resultSet.results.length === 0) {
+    _log('MsgBus', 'FAIL: no valid results');
+    return;
   }
-  if(bx0!==Infinity) bounds={minX:bx0,maxX:bx1,minY:by0,maxY:by1};
-  // Expand bounds with PCB context
-  if (pcbContext) {
-    for (const s of (pcbContext.boardOutline || [])) {
-      if (s.x1<bounds.minX)bounds.minX=s.x1;if(s.x1>bounds.maxX)bounds.maxX=s.x1;
-      if (s.y1<bounds.minY)bounds.minY=s.y1;if(s.y1>bounds.maxY)bounds.maxY=s.y1;
-      if (s.x2<bounds.minX)bounds.minX=s.x2;if(s.x2>bounds.maxX)bounds.maxX=s.x2;
-      if (s.y2<bounds.minY)bounds.minY=s.y2;if(s.y2>bounds.maxY)bounds.maxY=s.y2;
-    }
-    for (const c of (pcbContext.components || [])) {
-      if (c.x<bounds.minX)bounds.minX=c.x;if(c.x>bounds.maxX)bounds.maxX=c.x;
-      if (c.y<bounds.minY)bounds.minY=c.y;if(c.y>bounds.maxY)bounds.maxY=c.y;
-    }
+
+  const entry = resultSet.results[0];
+  _log('MsgBus', 'First result: label=' + entry?.label + ' hasResult=' + !!entry?.result
+    + ' hasLayerSolutions=' + !!entry?.result?.layerSolutions
+    + ' lsCount=' + (entry?.result?.layerSolutions?.length ?? 0));
+
+  if (!loadResult(0)) {
+    _log('MsgBus', 'FAIL: loadResult(0) failed');
+    return;
   }
-  if (useWebGL) {
-    buildAllLayerBuffers();
-  }
-  resetView();
+
+  _log('MsgBus', '=== Starting UI from message bus data ===');
   startUI();
 }
 
 function startUI() {
+  _log('startUI', '=== startUI called ===');
   document.getElementById('loading').style.display = 'none';
 
   const hasMeshData = resultData?.layerSolutions?.some(ls => ls.meshes?.length > 0 && ls.meshes.some(m => m.vertices?.length > 0));
+  _log('startUI', 'hasMeshData=' + hasMeshData + ' layerNamesList=' + layerNamesList.length);
 
   if (!hasMeshData) {
     const wrap = document.querySelector('.canvas-wrap');
@@ -1384,15 +2374,32 @@ function startUI() {
     return;
   }
 
-  // WebGL 渲染
-  if (useWebGL && layerGL[currentLayerIdx] && layerGL[currentLayerIdx].meshVBO) {
-    setupUI();
-    setupInteraction();
-    drawColorbar();
-    render();
+  // WebGL 渲染 — 只要有任意层有数据即可，自动切到第一个有数据的层
+  if (useWebGL) {
+    // 当前层没有连通 mesh 时，自动切换到第一个有 meshVBO 的层
+    if (!layerGL[currentLayerIdx] || !layerGL[currentLayerIdx].meshVBO) {
+      for (let li = 0; li < layerNamesList.length; li++) {
+        if (layerGL[li] && layerGL[li].meshVBO) {
+          currentLayerIdx = li;
+          break;
+        }
+      }
+    }
+    try {
+      setupUI();
+      setupInteraction();
+      drawColorbar();
+      render();
+      _log('startUI', '=== WebGL rendering started ===');
+    } catch (e) {
+      _log('startUI', 'WARN: render setup error: ' + (e.message || e));
+    }
   } else {
     showImageFallback();
   }
+
+  // 更��警告按钮显示
+  updateWarningButton();
 }
 
 function showImageFallback() {
@@ -1439,16 +2446,146 @@ function showImageFallback() {
   }
 }
 
-main();
+// ============================================================
+// 警告按钮相关函数
+// ============================================================
+function updateWarningButton() {
+  const btnWarn = document.getElementById('btn-warn');
+  const currentWarnings = currentResultWarnings || [];
+  // 过滤掉线宽摘要
+  const realWarnings = currentWarnings.filter(w => w.network_name !== '[线宽摘要]');
+  _log('WarnBtn', 'realWarnings=' + realWarnings.length);
+  if (realWarnings.length > 0) {
+    _log('WarnBtn', 'warnings=' + JSON.stringify(realWarnings));
+  }
+  // 只要有真正的电流容量警告就显示按钮（包括超限和接近上限）
+  if (realWarnings.length > 0 && btnWarn) {
+    btnWarn.style.display = '';
+    _log('WarnBtn', 'Showing button');
+    // 统计超限数量
+    const exceededCount = realWarnings.filter(w => w.is_exceeded).length;
+    if (exceededCount > 0) {
+      btnWarn.title = `电流容量警告 (${exceededCount}个网络超限)`;
+    } else {
+      btnWarn.title = `电流容量警告 (${realWarnings.length}个网络接近上限)`;
+    }
+  } else if (btnWarn) {
+    btnWarn.style.display = 'none';
+    _log('WarnBtn', 'Hiding button');
+  } else {
+    _log('WarnBtn', 'btnWarn element not found');
+  }
+}
+
+function showWarning() {
+  const overlay = document.getElementById('warn-overlay');
+  const body = document.getElementById('warn-content');
+  const currentWarnings = currentResultWarnings || [];
+
+  // 过滤掉线宽摘要，只显示真正的警告
+  const realWarnings = currentWarnings.filter(w => w.network_name !== '[线宽摘要]');
+
+  if (realWarnings.length === 0) {
+    body.innerHTML = '<div style="text-align:center;padding:40px;color:#3fb950"><span style="font-size:48px">✓</span><p style="margin-top:16px">电流容量检查通过，无超限警告</p></div>';
+  } else {
+    // 统计信息
+    const exceededCount = realWarnings.filter(w => w.is_exceeded).length;
+    const nearLimitCount = realWarnings.length - exceededCount;
+
+    let html = '<div style="padding:8px 16px;margin-bottom:16px;background:#161b22;border-radius:6px;border:1px solid #30363d">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+    if (exceededCount > 0) {
+      html += '<span style="font-size:20px;color:#f85149">⚠</span>';
+      html += '<span style="color:#f85149;font-weight:600">发现 ' + exceededCount + ' 个网络电流超限！</span>';
+    } else {
+      html += '<span style="font-size:20px;color:#f0883e">⚠</span>';
+      html += '<span style="color:#f0883e;font-weight:600">发现 ' + nearLimitCount + ' 个网络接近上限</span>';
+    }
+    html += '</div></div>';
+
+    // 每个警告详情
+    for (const w of realWarnings) {
+      const severity = w.is_exceeded ? 'error' : 'warning';
+      const severityColor = w.is_exceeded ? '#f85149' : '#f0883e';
+      const severityIcon = w.is_exceeded ? '✕' : '⚠';
+      const severityText = w.is_exceeded ? '超限' : '接近上限';
+
+      html += '<div style="margin-bottom:12px;padding:12px;background:#0d1117;border-radius:6px;border:1px solid ' + severityColor + ';border-left:4px solid ' + severityColor + '">';
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+      html += '<span style="font-size:18px;color:' + severityColor + '">' + severityIcon + '</span>';
+      html += '<span style="color:' + severityColor + ';font-weight:600;font-size:13px">[' + w.network_name + ' @ ' + w.layer_name + ']</span>';
+      html += '<span style="color:#8b949e;font-size:11px">' + severityText + '</span>';
+      html += '</div>';
+
+      html += '<div style="padding:8px 12px;background:#161b22;border-radius:4px;font-size:12px;line-height:1.8">';
+      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
+      html += '<span style="color:#8b949e">配置电流:</span>';
+      html += '<span style="color:#f0f6fc;font-weight:600">' + w.calculated_current.toFixed(2) + ' A</span>';
+      html += '</div>';
+      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
+      html += '<span style="color:#8b949e">最大允许:</span>';
+      html += '<span style="color:' + severityColor + ';font-weight:600">' + w.max_allowed_current.toFixed(2) + ' A</span>';
+      html += '</div>';
+      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
+      html += '<span style="color:#8b949e">利用率:</span>';
+      html += '<span style="color:' + severityColor + ';font-weight:600">' + (w.utilization * 100).toFixed(0) + '%</span>';
+      html += '</div>';
+      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
+      html += '<span style="color:#8b949e">走线宽度:</span>';
+      html += '<span style="color:#f0f6fc">' + w.trace_width_mm.toFixed(3) + ' mm</span>';
+      html += '</div>';
+      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
+      html += '<span style="color:#8b949e">铜厚度:</span>';
+      html += '<span style="color:#f0f6fc">' + w.copper_oz.toFixed(2) + ' oz</span>';
+      html += '</div>';
+      html += '<div style="display:flex;justify-content:space-between">';
+      html += '<span style="color:#8b949e">温升设置:</span>';
+      html += '<span style="color:#f0f6fc">' + w.temp_rise + ' °C</span>';
+      html += '</div>';
+      html += '</div>';
+      html += '</div>';
+    }
+
+    // 建议
+    html += '<div style="margin-top:16px;padding:12px;background:#161b22;border-radius:6px;border:1px solid #30363d">';
+    html += '<div style="color:#58a6ff;font-weight:600;margin-bottom:8px">💡 建议解决方案:</div>';
+    html += '<ul style="color:#c9d1d9;font-size:12px;line-height:1.8;margin:0;padding-left:20px">';
+    html += '<li>增加走线宽度（当前宽度可能不足以承载配置电流）</li>';
+    html += '<li>增加铜厚度（使用更厚的铜箔）</li>';
+    html += '<li>降低温升要求（如果允许更高的温升）</li>';
+    html += '<li>分流：将负载分配到多个并联走线</li>';
+    html += '</ul>';
+    html += '</div>';
+
+    body.innerHTML = html;
+  }
+  overlay.style.display = '';
+}
+
+try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) + '\n' + (e.stack || '')); }
 </script>
 
 <div id="diag-overlay" class="diag-overlay" style="display:none">
   <div class="diag-modal">
     <div class="diag-header">
       <h3>诊断日志</h3>
+      <button id="diag-header-copy-btn" onclick="copyDiag()">复制</button>
       <button onclick="document.getElementById('diag-overlay').style.display='none'">关闭</button>
     </div>
     <div class="diag-body" id="diag-content">无诊断信息</div>
+  </div>
+</div>
+
+<div id="warn-overlay" class="diag-overlay" style="display:none">
+  <div class="diag-modal" style="width:600px">
+    <div class="diag-header">
+      <h3 style="display:flex;align-items:center;gap:8px">
+        <span style="color:#f0883e">⚠</span>
+        <span>电流容量检查报告</span>
+      </h3>
+      <button onclick="document.getElementById('warn-overlay').style.display='none'">关闭</button>
+    </div>
+    <div class="diag-body" id="warn-content" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px;line-height:1.5;white-space:normal;padding:16px">无警告信息</div>
   </div>
 </div>
 
@@ -1458,18 +2595,75 @@ main();
     const overlay = document.getElementById('diag-overlay');
     const body = document.getElementById('diag-content');
     const diags = resultData && resultData.diagnostics ? resultData.diagnostics : [];
-    if (diags.length === 0) {
+
+    // 添加电流容量检查警告
+    const currentWarnings = resultData && resultData.currentWarnings ? resultData.currentWarnings : [];
+    const warningLines = [];
+    if (currentWarnings.length > 0) {
+      warningLines.push('========== 电流容量检查 ==========');
+      for (const w of currentWarnings) {
+        // 如果 message 包含换行符，拆分成多行显示
+        if (w.message && w.message.includes('\n')) {
+          warningLines.push(...w.message.split('\n'));
+        } else {
+          warningLines.push(w.message || `${w.network_name}@${w.layer_name}: ${w.calculated_current.toFixed(2)}A / ${w.max_allowed_current.toFixed(2)}A (${(w.utilization*100).toFixed(0)}%)`);
+        }
+      }
+      warningLines.push('');
+    }
+
+    const allLines = [...dataFlowLog, '', ...diags, '', ...warningLines, '', ...meshDiagLines];
+    if (allLines.length === 0) {
       body.textContent = '无诊断日志数据';
     } else {
-      body.innerHTML = diags.map(line => {
+      body.innerHTML = allLines.map(line => {
         if (line.startsWith('===')) return '<span class="diag-section">' + escHtml(line) + '</span>';
-        if (line.includes('⚠') || line.includes('!!') || line.includes('失败')) return '<span class="diag-bad">' + escHtml(line) + '</span>';
+        if (line.includes('FAIL') || line.includes('ERROR') || line.includes('失败') || line.includes('电流超限')) return '<span class="diag-bad">' + escHtml(line) + '</span>';
+        if (line.includes('无求解数据') || line.includes('断开mesh') || line.includes('clearing') || line.includes('电流接近上限')) return '<span class="diag-warn">' + escHtml(line) + '</span>';
+        if (line.startsWith('[')) return '<span style="color:#79c0ff">' + escHtml(line) + '</span>';
         return escHtml(line);
       }).join('\n');
     }
     overlay.style.display = '';
   }
   function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function copyDiag() {
+    var diags = resultData && resultData.diagnostics ? resultData.diagnostics : [];
+    var currentWarnings = resultData && resultData.currentWarnings ? resultData.currentWarnings : [];
+    var warningLines = [];
+    if (currentWarnings.length > 0) {
+      warningLines.push('========== 电流容量检查 ==========');
+      for (var w of currentWarnings) {
+        // 如果 message 包含换行符，拆分成多行显示
+        if (w.message && w.message.indexOf('\n') >= 0) {
+          warningLines.push.apply(warningLines, w.message.split('\n'));
+        } else {
+          warningLines.push(w.message || (w.network_name + '@' + w.layer_name + ': ' + w.calculated_current.toFixed(2) + 'A / ' + w.max_allowed_current.toFixed(2) + 'A (' + (w.utilization*100).toFixed(0) + '%)'));
+        }
+      }
+      warningLines.push('');
+    }
+    var allLines = [].concat(dataFlowLog, [''], diags, [''], warningLines, [''], meshDiagLines);
+    var text = allLines.join('\n');
+    var body = document.getElementById('diag-content');
+    var origHtml = body.innerHTML;
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.readOnly = true;
+    ta.style.cssText = 'width:100%;height:60vh;resize:none;font-family:Consolas,Monaco,monospace;font-size:11.5px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px';
+    body.textContent = '';
+    body.appendChild(ta);
+    ta.select();
+    var btn = document.getElementById('diag-header-copy-btn');
+    btn.textContent = '请按 Ctrl+C 复制';
+    btn.disabled = true;
+    ta.addEventListener('blur', function() {
+      body.innerHTML = origHtml;
+      btn.textContent = '复制';
+      btn.disabled = false;
+    });
+  }
+
   document.getElementById('btn-diag').addEventListener('click', showDiag);
 })();
 </script>

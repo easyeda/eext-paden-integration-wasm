@@ -4,6 +4,8 @@
 
 JLCEDA & EasyEDA Pro 拡張機能 — PCB データを抽出し、PDN 電源配電ネットワーク FEM 分析を実行
 
+> **バージョン**: 1.0.7 | **カテゴリー**: PCB | **キーワード**: PDN, Power Analysis, Simulation, 仿真, PI
+
 ## 機能
 
 - EasyEDA から PCB トレース、ビア、パッド、銅箔 pour データを抽出
@@ -42,7 +44,7 @@ EasyEDA PCB
 
 ## 使用手順
 
-### 1. JLCEDA Pro（3.0+）に本拡張機能をインストール
+### 1. JLCEDA Pro（3.2+）に本拡張機能をインストール
 インストール後、設定を行います
 
 ![「設定」をクリック](./images/img-1.png)
@@ -149,3 +151,10 @@ start-paden-windows.bat
 ## ライセンス
 
 本拡張機能は [Apache License 2.0](https://choosealicense.com/licenses/apache-2.0/) オープンソースライセンスを使用しています。
+
+---
+
+## リンク
+
+- **ホームページ**: https://github.com/easyeda/eext-paden-integration
+- **問題報告**: https://github.com/easyeda/eext-paden-integration/issues

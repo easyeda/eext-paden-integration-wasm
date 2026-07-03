@@ -8,17 +8,6 @@ export interface Point {
   y: number;
 }
 
-/** 多边形：外环 + 零或多个孔洞 */
-export interface Polygon {
-  exterior: Point[];
-  holes: Point[][];
-}
-
-/** 多多边形 */
-export interface MultiPolygon {
-  polygons: Polygon[];
-}
-
 // ============================================================
 // EasyEDA 原始数据类型
 // ============================================================
@@ -41,6 +30,8 @@ export interface EasyEDA_Via {
   y: number;
   diameter: number;
   hole_diameter: number;
+  /** 盲孔/埋孔类型名称 (如 'Blind: Top-Layer2', 'Buried: Layer2-Layer5') */
+  via_type?: string;
 }
 
 /** EasyEDA 焊盘 */
@@ -77,231 +68,11 @@ export interface EasyEDA_PcbData {
 }
 
 // ============================================================
-// 层叠结构类型（对应 padne/problem.py）
-// ============================================================
-
-/** 层叠项类型 */
-export enum StackupItemType {
-  COPPER = 'COPPER',
-  DIELECTRIC = 'DIELECTRIC',
-}
-
-/** 层叠中的单层 */
-export interface StackupItem {
-  name: string;
-  thickness: number; // mm
-  type: StackupItemType;
-  conductivity?: number; // S/mm
-}
-
-/** PCB 层叠结构 */
-export interface Stackup {
-  items: StackupItem[];
-}
-
-/** 铜层：包含几何形状、名称和电导 */
-export interface Layer {
-  shape: MultiPolygon;
-  name: string;
-  conductance: number; // S = 电导率 [S/mm] × 厚度 [mm]
-}
-
-// ============================================================
-// 网络与电路类型（对应 padne/problem.py）
-// ============================================================
-
-/** 焊盘端点：器件位号 + 焊盘编号，如 "R1.1" */
-export interface Endpoint {
-  designator: string;
-  pad: string;
-}
-
-/** 层上的点 */
-export interface LayerPoint {
-  layer: string;
-  point: Point;
-}
-
-/** 网络节点 ID */
-export interface NodeID {
-  id: string;
-}
-
-/** 连接：将网络节点绑定到层上的物理点 */
-export interface Connection {
-  layerName: string;
-  point: Point;
-  nodeId: NodeID;
-}
-
-/** 电阻 */
-export interface Resistor {
-  type: 'resistor';
-  a: NodeID;
-  b: NodeID;
-  resistance: number;
-}
-
-/** 电压源 */
-export interface VoltageSource {
-  type: 'voltage_source';
-  p: NodeID;
-  n: NodeID;
-  voltage: number;
-}
-
-/** 电流源 */
-export interface CurrentSource {
-  type: 'current_source';
-  f: NodeID;
-  t: NodeID;
-  current: number;
-}
-
-/** 稳压器 */
-export interface VoltageRegulator {
-  type: 'voltage_regulator';
-  vP: NodeID;
-  vN: NodeID;
-  sF: NodeID;
-  sT: NodeID;
-  voltage: number;
-  gain: number;
-}
-
-/** 所有集总元件联合类型 */
-export type LumpedElement = Resistor | VoltageSource | CurrentSource | VoltageRegulator;
-
-/** 电气网络 */
-export interface Network {
-  connections: Connection[];
-  elements: LumpedElement[];
-}
-
-/** PDN 分析问题 */
-export interface Problem {
-  layers: Layer[];
-  networks: Network[];
-  projectName?: string;
-}
-
-// ============================================================
-// 指令类型（对应 kicad.py Directive）
-// ============================================================
-
-/** 原理图中的 !padne 指令 */
-export interface Directive {
-  name: string;
-  params: Record<string, string>;
-}
-
-/** 铜电导率规格 */
-export interface CopperSpec {
-  conductivity: number; // S/mm
-}
-
-// ============================================================
-// 过孔规格
-// ============================================================
-
-/** 过孔规格 */
-export interface ViaSpec {
-  point: Point;
-  drillDiameter: number; // mm
-  layerNames: string[];
-  endpoint?: Endpoint;
-  shape: Polygon;
-}
-
-// ============================================================
 // 序列化格式类型（发送到 Python 后端）
 // ============================================================
 
 /** 序列化点 [x, y] */
 export type SerializedPoint = [number, number];
-
-/** 序列化多边形：[外环, 孔洞1, 孔洞2, ...] */
-export type SerializedPolygon = SerializedPoint[][];
-
-/** 序列化多多边形 */
-export type SerializedMultiPolygon = SerializedPolygon[];
-
-/** 序列化层 */
-export interface SerializedPreMeshedPolygon {
-  vertices: [number, number][];
-  triangles: [number, number, number][];
-}
-
-export interface SerializedLayer {
-  name: string;
-  conductance: number;
-  geometry: SerializedMultiPolygon;
-  meshes?: SerializedPreMeshedPolygon[];
-}
-
-/** 序列化连接 */
-export interface SerializedConnection {
-  layer_name: string;
-  point: SerializedPoint;
-  node_id: string;
-}
-
-/** 序列化电阻 */
-export interface SerializedResistor {
-  type: 'resistor';
-  a: string;
-  b: string;
-  resistance: number;
-}
-
-/** 序列化电压源 */
-export interface SerializedVoltageSource {
-  type: 'voltage_source';
-  p: string;
-  n: string;
-  voltage: number;
-}
-
-/** 序列化电流源 */
-export interface SerializedCurrentSource {
-  type: 'current_source';
-  f: string;
-  t: string;
-  current: number;
-}
-
-/** 序列化稳压器 */
-export interface SerializedVoltageRegulator {
-  type: 'voltage_regulator';
-  v_p: string;
-  v_n: string;
-  s_f: string;
-  s_t: string;
-  voltage: number;
-  gain: number;
-}
-
-/** 序列化集总元件联合类型 */
-export type SerializedLumpedElement =
-  | SerializedResistor
-  | SerializedVoltageSource
-  | SerializedCurrentSource
-  | SerializedVoltageRegulator;
-
-/** 序列化网络 */
-export interface SerializedNetwork {
-  connections: SerializedConnection[];
-  elements: SerializedLumpedElement[];
-}
-
-/** 发送到 Python 后端的完整序列化问题 */
-export interface SerializedProblem {
-  format_version: 1 | 2;
-  project_name: string | null;
-  layers: SerializedLayer[];
-  networks: SerializedNetwork[];
-  generate_images?: boolean;
-}
 
 // ============================================================
 // 求解结果类型（从 Python 后端返回）
@@ -318,6 +89,7 @@ export interface SerializedMesh {
   triangles: MeshTriangle[];
   potentials: number[];
   power_densities: number[];
+  current_densities?: [number, number][];
 }
 
 /** 序列化断开连接的网格 */
@@ -344,6 +116,7 @@ export interface SerializedSolution {
   layer_solutions: SerializedLayerSolution[];
   solver_info: SerializedSolverInfo;
   diagnostics?: string[];
+  current_warnings?: CurrentCheckWarning[];
 }
 
 // ============================================================
@@ -356,6 +129,7 @@ export interface MeshData {
   triangles: [number, number, number][];
   potentials: number[];
   powerDensities: number[];
+  currentDensities?: [number, number][];
 }
 
 /** 层求解结果数据 */
@@ -376,25 +150,7 @@ export interface SolutionData {
   layerSolutions: LayerSolutionData[];
   solverInfo: SolverInfoData;
   diagnostics?: string[];
-}
-
-// ============================================================
-// 摘要类型
-// ============================================================
-
-/** 问题摘要 */
-export interface ProblemSummary {
-  projectName: string | null;
-  layerCount: number;
-  layerNames: string[];
-  networkCount: number;
-  totalConnections: number;
-  elementCounts: Record<string, number>;
-  geometryStats: {
-    totalPolygons: number;
-    totalVertices: number;
-    boundingBox: { minX: number; minY: number; maxX: number; maxY: number } | null;
-  };
+  currentWarnings?: CurrentCheckWarning[];
 }
 
 // ============================================================
@@ -405,6 +161,7 @@ export interface ProblemSummary {
 export interface PdnConfig {
   rails: PdnRailConfig[];
   layerCuThickness: Record<number, number>;
+  tempRise?: number;  // 允许温升 (°C)，用于电流容量检查，默认 10°C
 }
 
 /** 单个电源轨道配置 */
@@ -413,12 +170,14 @@ export interface PdnRailConfig {
   voltage: number;
   sources: PdnSourceConfig[];
   loads: PdnLoadConfig[];
+  gnd_net?: string;
 }
 
 /** 电压源配置 */
 export interface PdnSourceConfig {
   ref_des: string;
   pads: Array<{ x: number; y: number; layer: string }>;
+  gnd_pads?: Array<{ x: number; y: number; layer: string }>;
 }
 
 /** 电流负载配置 */
@@ -426,6 +185,7 @@ export interface PdnLoadConfig {
   ref_des: string;
   current: number;
   pads: Array<{ x: number; y: number; layer: string }>;
+  gnd_pads?: Array<{ x: number; y: number; layer: string }>;
 }
 
 // ============================================================
@@ -468,4 +228,65 @@ export interface ContextPad {
 export interface PcbContextData {
   contextTracks: ContextTrack[];
   contextPads: ContextPad[];
+}
+
+// ============================================================
+// 网络切换类型
+// ============================================================
+
+/** 网络焊盘位置（mm） */
+export interface NetworkPadPos {
+  x: number;
+  y: number;
+  layer: string;
+}
+
+/** 单个网络的信息，用于结果页面切换网络 */
+export interface NetworkInfo {
+  name: string;
+  voltage: number;
+  sourcePads: NetworkPadPos[];
+  sourceGndPads: NetworkPadPos[];
+  loadPads: NetworkPadPos[];
+  loadGndPads: NetworkPadPos[];
+}
+
+// ============================================================
+// 电流容量检查类型
+// ============================================================
+
+/** 电流容量检查警告 */
+export interface CurrentCheckWarning {
+  network_name: string;         // 网络名称
+  layer_name: string;           // 层名
+  calculated_current: number;   // 计算电流
+  max_allowed_current: number;  // 最大允许电流
+  utilization: number;          // 利用率 (0-1), >1 表示超限
+  is_exceeded: boolean;         // 是否超过限制
+  trace_width_mm: number;       // 走线宽度
+  copper_oz: number;           // 铜厚
+  temp_rise: number;           // 温升 (°C)
+  message: string;              // 警告消息
+}
+
+// ============================================================
+// 多网络分析结果类型（N+1 次求解）
+// ============================================================
+
+/** 单次分析结果的完整数据包 */
+export interface AnalysisResultEntry {
+  label: string;
+  result: SolutionData;
+  networkInfo: NetworkInfo[];
+  connectionPoints: Record<string, Array<{ x: number; y: number; is_source: boolean }>>;
+  layerBoundaries: Record<string, Array<{ exterior: number[][]; holes: number[][][] }>>;
+  pcbContext: PcbContextData;
+  warningMessage?: string;
+  currentWarnings?: CurrentCheckWarning[];
+  extractorDiagnostics?: string[];
+}
+
+/** 多次分析的结果集（1次合并 + N次单独） */
+export interface AnalysisResultSet {
+  results: AnalysisResultEntry[];
 }

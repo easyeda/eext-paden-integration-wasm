@@ -4,6 +4,8 @@
 
 嘉立創EDA & EasyEDA 專業版擴展 — 從 PCB 提取數據並進行 PDN 電源分配網路 FEM 分析
 
+> **版本**: 1.0.7 | **分類**: PCB | **關鍵詞**: PDN, Power Analysis, Simulation, 仿真, PI
+
 ## 功能
 
 - 從 EasyEDA 提取 PCB 走線、過孔、焊盤、鋪銅數據
@@ -42,7 +44,7 @@ EasyEDA PCB
 
 ## 使用流程
 
-### 1.在嘉立創EDA專業版（3.0+）中安裝本擴展
+### 1.在嘉立創EDA專業版（3.2+）中安裝本擴展
 安裝完成後進行配置
 
 ![點擊「配置」](./images/img-1.png)
@@ -149,3 +151,10 @@ start-paden-windows.bat
 ## 開源許可
 
 本擴展使用 [Apache License 2.0](https://choosealicense.com/licenses/apache-2.0/) 開源許可協議。
+
+---
+
+## 連結
+
+- **主頁**: https://github.com/easyeda/eext-paden-integration
+- **問題回報**: https://github.com/easyeda/eext-paden-integration/issues

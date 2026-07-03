@@ -4,6 +4,8 @@
 
 JLCEDA & EasyEDA Pro Extension — Extract PCB data and perform PDN Power Distribution Network FEM analysis
 
+> **Version**: 1.0.7 | **Category**: PCB | **Keywords**: PDN, Power Analysis, Simulation, 仿真, PI
+
 ## Features
 
 - Extract PCB traces, vias, pads, and copper pours from EasyEDA
@@ -42,7 +44,7 @@ EasyEDA PCB
 
 ## Usage Guide
 
-### 1. Install this extension in JLCEDA Pro (3.0+)
+### 1. Install this extension in JLCEDA Pro (3.2+)
 After installation, configure the extension
 
 ![Click "Configure"](./images/img-1.png)
@@ -149,3 +151,10 @@ start-paden-windows.bat
 ## License
 
 This extension uses the [Apache License 2.0](https://choosealicense.com/licenses/apache-2.0/) open source license.
+
+---
+
+## Links
+
+- **Homepage**: https://github.com/easyeda/eext-paden-integration
+- **Issue Tracker**: https://github.com/easyeda/eext-paden-integration/issues

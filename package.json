@@ -12,7 +12,9 @@
 		"compile": "rimraf ./dist/ && ts-node ./config/esbuild.prod.ts",
 		"lint": "eslint",
 		"fix": "eslint --fix",
-		"build": "npm run compile && ts-node ./build/packaged.ts"
+		"build": "npm run compile && ts-node ./build/packaged.ts",
+		"embed-python": "node scripts/embed-python-files.js",
+		"prebuild": "npm run embed-python"
 	},
 	"devDependencies": {
 		"@antfu/eslint-config": "^5.4.1",

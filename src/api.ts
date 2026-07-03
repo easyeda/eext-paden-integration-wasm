@@ -1,12 +1,9 @@
-import type { SerializedProblem, SerializedSolution } from './types';
-
 /**
  * api.ts - HTTP 通信模块
  * 负责与 padne Python 后端服务通信
  */
 
 export interface ApiConfig {
-  analyzeEndpoint: string;
   testEndpoint: string;
 }
 
@@ -32,22 +29,22 @@ export class PdnApiClient {
     }
   }
 
-  /** 发送分析请求 */
-  async analyze(data: SerializedProblem): Promise<any> {
-    const url = `http://${this.host}:${this.port}${this.config.analyzeEndpoint}`;
+  /** 发送 Gerber 分析请求（multipart: zip + JSON config） */
+  async analyzeGerber(gerberBlob: Blob, configJson: string): Promise<any> {
+    const formData = new FormData();
+    formData.append('gerber', gerberBlob, 'gerber.zip');
+    formData.append('config', configJson);
 
-    const response = await eda.sys_ClientUrl.request(url, 'POST', JSON.stringify(data), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const url = `http://${this.host}:${this.port}/analyze-gerber`;
+    const response = await eda.sys_ClientUrl.request(url, 'POST', formData);
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('[PdnApiClient] HTTP 错误:', response.status, errorText);
+      console.error('[PdnApiClient] Gerber HTTP 错误:', response.status, errorText);
       throw new Error(`HTTP 错误: ${response.status} - ${errorText}`);
     }
 
-    const result = await response.json();
-    return result;
+    return await response.json();
   }
 
   /** 获取服务 URL */

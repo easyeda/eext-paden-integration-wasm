@@ -52,153 +52,110 @@ export class PcbExtractor {
     return results;
   }
 
-  /** 提取全部 PCB 数据 */
-  async extractAll(onProgress?: (percent: number) => void): Promise<EasyEDA_PcbData> {
+  /** 提取网络信息（焊盘、过孔、层名），不提��几何（走线/铺铜由 Gerber 提供） */
+  async extractNetworkInfo(onProgress?: (percent: number) => void): Promise<EasyEDA_PcbData> {
     const tracks: EasyEDA_Track[] = [];
     const vias: EasyEDA_Via[] = [];
     const pads: EasyEDA_Pad[] = [];
     const copperPours: EasyEDA_CopperPour[] = [];
     const padKeySet = new Set<string>();
 
-    onProgress?.(2);
+    onProgress?.(5);
     const layerNames = await this.extractLayerNames();
 
-    // ---- Phase 1：尝试批量提取（3 次 API 调用代替 3×N 次） ----
-    onProgress?.(5);
-
-    const [bulkLines, bulkVias, bulkPads, bulkArcs] = await Promise.all([
-      (async () => { try { return await eda.pcb_PrimitiveLine.getAll(); } catch { return null; } })(),
+    // 提取过孔、焊盘和走线
+    onProgress?.(15);
+    const [bulkVias, bulkPads, bulkTracks] = await Promise.all([
       (async () => { try { return await eda.pcb_PrimitiveVia.getAll(); } catch { return null; } })(),
       (async () => { try { return await eda.pcb_PrimitivePad.getAll(); } catch { return null; } })(),
-      (async () => { try { return await eda.pcb_PrimitiveArc.getAll(); } catch { return null; } })(),
+      (async () => {
+        const apis = [
+          { name: 'pcb_PrimitiveLine', fn: () => eda.pcb_PrimitiveLine?.getAll() },  // ✓ 已验证有效
+          { name: 'pcb_PrimitiveTrace', fn: () => eda.pcb_PrimitiveTrace?.getAll() },
+          { name: 'pcb_PrimitiveSegment', fn: () => eda.pcb_PrimitiveSegment?.getAll() },
+          { name: 'pcb_PrimitiveTrack', fn: () => eda.pcb_PrimitiveTrack?.getAll() },
+          { name: 'pcb_Track', fn: () => eda.pcb_Track?.getAll() },
+          { name: 'pcb_Tracks', fn: () => eda.pcb_Tracks?.getAll() },
+          { name: 'pcb_Trace', fn: () => eda.pcb_Trace?.getAll() },
+          { name: 'pcb_Traces', fn: () => eda.pcb_Traces?.getAll() },
+          { name: 'pcb_Segment', fn: () => eda.pcb_Segment?.getAll() },
+          { name: 'pcb_Segments', fn: () => eda.pcb_Segments?.getAll() },
+          { name: 'pcb_Line', fn: () => eda.pcb_Line?.getAll() },
+          { name: 'pcb_Lines', fn: () => eda.pcb_Lines?.getAll() },
+        ];
+
+        for (const api of apis) {
+          try {
+            this.diag(`尝试走线API: ${api.name}...`);
+            const result = await api.fn();
+            if (result && Array.isArray(result) && result.length > 0) {
+              this.diag(`✓ ${api.name} 返回 ${result.length} 条走线`);
+              return result;
+            } else if (result && Array.isArray(result)) {
+              this.diag(`  ${api.name} 存在但返回空数组`);
+            } else if (result === null) {
+              this.diag(`  ${api.name} 返回 null`);
+            } else if (result === undefined) {
+              this.diag(`  ${api.name} API 不存在`);
+            }
+          } catch (e) {
+            this.diag(`  ${api.name} 调用异常: ${e}`);
+          }
+        }
+
+        this.diag(`所有走线API均失败或无数据`);
+        return null;
+      })(),
     ]);
 
-    const bulkOk = bulkLines != null && bulkVias != null
-      && (bulkLines.length > 0 || bulkVias.length > 0);
-
-    if (bulkOk) {
-      for (const line of bulkLines) {
-        const net = this.getNetFromPrimitive(line);
-        if (!net) continue;
-        const track = this.extractTrack(line, net);
-        if (track) tracks.push(track);
-      }
+    if (bulkVias != null) {
       for (const via of bulkVias) {
         const net = this.getNetFromPrimitive(via);
         if (!net) continue;
         const v = this.extractVia(via, net);
         if (v) vias.push(v);
       }
-      if (bulkPads != null) {
-        for (const pad of bulkPads) {
-          const p = this.extractPad(pad);
-          if (p && p.net) {
-            const key = `${p.net}|${p.x.toFixed(2)}|${p.y.toFixed(2)}`;
-            if (!padKeySet.has(key)) { pads.push(p); padKeySet.add(key); }
-          }
+    }
+
+    // 提取走线数据（用于电流容量检查）
+    if (bulkTracks != null) {
+      this.diag(`bulkTracks 返回: ${bulkTracks.length} 条`);
+      for (const track of bulkTracks) {
+        const net = this.getNetFromPrimitive(track);
+        if (!net) {
+          this.diag(`跳过无网络走线`);
+          continue;
         }
+        const t = this.extractTrack(track, net);
+        if (t) tracks.push(t);
       }
-      if (bulkArcs != null) {
-        let arcTrackCount = 0;
-        for (const arc of bulkArcs) {
-          const net = this.getNetFromPrimitive(arc);
-          if (!net) continue;
-          const segs = this.extractArcToTracks(arc, net);
-          tracks.push(...segs);
-          arcTrackCount += segs.length;
-        }
-        this.diag(`圆弧→走线 (bulk): ${bulkArcs.length} 个圆弧 → ${arcTrackCount} 条走线`);
+      this.diag(`提取走线: ${tracks.length} 条`);
+      // 显示前几条走线信息用于调试
+      for (let i = 0; i < Math.min(3, tracks.length); i++) {
+        const t = tracks[i];
+        this.diag(`  走线[${i}]: net=${t.net}, width=${t.width}, layer=${t.layer}`);
       }
-      onProgress?.(30);
     } else {
-      const allNetNames: string[] = (await eda.pcb_Net.getAllNetsName()).sort();
-      const netNames = allNetNames.filter(n => n && n.trim() !== '');
-      const totalNets = netNames.length;
-      let processedNets = 0;
-
-      const netResults = await this.parallelMap(
-        netNames,
-        async (netName) => {
-          const netTracks: EasyEDA_Track[] = [];
-          const netVias: EasyEDA_Via[] = [];
-          const netPads: EasyEDA_Pad[] = [];
-
-          const [linesResult, viaResult, padResult, arcResult] = await Promise.all([
-            (async () => {
-              try {
-                const lines = await eda.pcb_PrimitiveLine.getAll(netName);
-                lines.sort((a: any, b: any) => {
-                  const ax = a.getState_StartX?.() ?? 0, bx = b.getState_StartX?.() ?? 0;
-                  return ax - bx || (a.getState_StartY?.() ?? 0) - (b.getState_StartY?.() ?? 0);
-                });
-                return lines;
-              } catch { return []; }
-            })(),
-            (async () => {
-              try {
-                const viaList = await eda.pcb_PrimitiveVia.getAll(netName);
-                viaList.sort((a: any, b: any) => {
-                  const ax = a.getState_X?.() ?? 0, bx = b.getState_X?.() ?? 0;
-                  return ax - bx || (a.getState_Y?.() ?? 0) - (b.getState_Y?.() ?? 0);
-                });
-                return viaList;
-              } catch { return []; }
-            })(),
-            (async () => {
-              try { return await eda.pcb_PrimitivePad.getAll(undefined, netName); }
-              catch { return []; }
-            })(),
-            (async () => {
-              try { return await eda.pcb_PrimitiveArc.getAll(netName); }
-              catch { return []; }
-            })(),
-          ]);
-
-          for (const line of linesResult) {
-            const track = this.extractTrack(line, netName);
-            if (track) netTracks.push(track);
-          }
-          for (const via of viaResult) {
-            const v = this.extractVia(via, netName);
-            if (v) netVias.push(v);
-          }
-          for (const pad of padResult) {
-            const p = this.extractPad(pad, undefined, undefined, netName);
-            if (p) netPads.push(p);
-          }
-          for (const arc of arcResult) {
-            netTracks.push(...this.extractArcToTracks(arc, netName));
-          }
-
-          return { tracks: netTracks, vias: netVias, pads: netPads };
-        },
-        8,
-        (done) => {
-          processedNets = done;
-          onProgress?.(5 + Math.round((processedNets / totalNets) * 40));
-        },
-      );
-
-      for (const r of netResults) {
-        if (!r) continue;
-        tracks.push(...r.tracks);
-        vias.push(...r.vias);
-        for (const p of r.pads) {
+      this.diag(`bulkTracks 为 null，API 调用可能失败`);
+    }
+    if (bulkPads != null) {
+      for (const pad of bulkPads) {
+        const p = this.extractPad(pad);
+        if (p && p.net) {
           const key = `${p.net}|${p.x.toFixed(2)}|${p.y.toFixed(2)}`;
           if (!padKeySet.has(key)) { pads.push(p); padKeySet.add(key); }
         }
       }
     }
+    onProgress?.(40);
 
-    // ---- Phase 2：器件焊盘 ----
-    onProgress?.(45);
+    // Phase 2: 器件焊盘（同 extractAll）
     try {
       const components = await eda.pcb_PrimitiveComponent.getAll();
-      components.sort((a: any, b: any) => {
-        const da = typeof a.getState_Designator === 'function' ? a.getState_Designator() : '';
-        const db = typeof b.getState_Designator === 'function' ? b.getState_Designator() : '';
-        return (da ?? '').localeCompare(db ?? '');
-      });
+      const posToNetMap = new Map<string, string>();
+      for (const p of pads) {
+        posToNetMap.set(`${p.x.toFixed(2)}_${p.y.toFixed(2)}`, p.net);
+      }
 
       const compMeta = components.map(comp => ({
         refDes: typeof comp.getState_Designator === 'function'
@@ -216,7 +173,15 @@ export class PcbExtractor {
             if (!pins) return [];
             const compPads: EasyEDA_Pad[] = [];
             for (const pin of pins) {
-              const pad = this.extractPad(pin, refDes, deviceName);
+              let fallbackNet2: string | undefined;
+              try {
+                const pinX = pin.getState_X?.();
+                const pinY = pin.getState_Y?.();
+                if (pinX != null && pinY != null) {
+                  fallbackNet2 = posToNetMap.get(`${Number(pinX).toFixed(2)}_${Number(pinY).toFixed(2)}`);
+                }
+              } catch {}
+              const pad = this.extractPad(pin, refDes, deviceName, fallbackNet2);
               if (pad) compPads.push(pad);
             }
             return compPads;
@@ -224,7 +189,7 @@ export class PcbExtractor {
         },
         8,
         (done) => {
-          onProgress?.(45 + Math.round((done / compMeta.length) * 20));
+          onProgress?.(40 + Math.round((done / compMeta.length) * 30));
         },
       );
 
@@ -232,30 +197,38 @@ export class PcbExtractor {
         if (!compPads) continue;
         for (const pad of compPads) {
           const key = `${pad.net}|${pad.x.toFixed(2)}|${pad.y.toFixed(2)}`;
-          if (!padKeySet.has(key)) { pads.push(pad); padKeySet.add(key); }
+          if (!padKeySet.has(key)) {
+            pads.push(pad);
+            padKeySet.add(key);
+          } else if (pad.ref_des) {
+            const existingIdx = pads.findIndex(p =>
+              `${p.net}|${p.x.toFixed(2)}|${p.y.toFixed(2)}` === key && !p.ref_des
+            );
+            if (existingIdx >= 0) {
+              pads[existingIdx].ref_des = pad.ref_des;
+              pads[existingIdx].device_name = pad.device_name;
+              if (pads[existingIdx].pad_number === '?' && pad.pad_number !== '?') {
+                pads[existingIdx].pad_number = pad.pad_number;
+              }
+            }
+          }
         }
       }
     } catch {}
 
-    onProgress?.(70);
+    onProgress?.(80);
 
-    // ---- Phase 3：铺铜区域 ----
-    await this.extractCopperPours(copperPours);
-
-    onProgress?.(90);
-
-    const usedLayers = new Set<number>();
-    for (const t of tracks) usedLayers.add(t.layer);
-    for (const p of copperPours) usedLayers.add(p.layer);
-    for (const p of pads) { if (p.layer) usedLayers.add(p.layer); }
-
+    // Gerber 流水线需要所有铜层：内层通过过孔连接，不一定有直接焊盘。
+    // 不过滤，全部保留。
     const filteredLayerNames: Record<number, string> = {};
     for (const [id, name] of Object.entries(layerNames)) {
-      if (usedLayers.has(Number(id))) filteredLayerNames[Number(id)] = name;
+      filteredLayerNames[Number(id)] = name;
     }
     const filteredOuterLayerIds = this.detectOuterLayers(filteredLayerNames);
 
     onProgress?.(100);
+
+    this.diag(`extractNetworkInfo: pads=${pads.length}, vias=${vias.length}, layers=${Object.keys(filteredLayerNames).length}`);
 
     return {
       tracks,
@@ -277,11 +250,12 @@ export class PcbExtractor {
       const allLayers = await eda.pcb_Layer.getAllLayers();
       for (const layer of allLayers) {
         const id = layer.id as number;
-        if (this.isCopperLayerId(id)) {
+        const isCu = this.isCopperLayerId(id);
+        if (isCu) {
           layerNames[id] = layer.name;
         }
       }
-    } catch {}
+    } catch (e) {}
     return layerNames;
   }
 
@@ -333,60 +307,6 @@ export class PcbExtractor {
     } catch { return null; }
   }
 
-  /** 将圆弧走线图元离散为多条短直线段 */
-  private extractArcToTracks(primitive: any, netName: string): EasyEDA_Track[] {
-    try {
-      const sx = primitive.getState_StartX();
-      const sy = primitive.getState_StartY();
-      const ex = primitive.getState_EndX();
-      const ey = primitive.getState_EndY();
-      const arcAngle = primitive.getState_ArcAngle();
-      const lineWidth = primitive.getState_LineWidth();
-      const layer = primitive.getState_Layer();
-      if (sx == null || sy == null || ex == null || ey == null) return [];
-
-      const width = lineWidth || 0.254;
-      const absAngle = Math.abs(arcAngle ?? 0);
-      if (absAngle < 0.01 || absAngle > 359.99) {
-        return [{ net: netName, x1: sx, y1: sy, x2: ex, y2: ey, width, layer: layer || 1 }];
-      }
-
-      const dx = ex - sx, dy = ey - sy;
-      const chord = Math.sqrt(dx * dx + dy * dy);
-      if (chord < 1e-10) return [];
-
-      const halfAngleRad = absAngle * Math.PI / 360;
-      const sinHalf = Math.sin(halfAngleRad);
-      if (sinHalf < 1e-10) return [];
-
-      const r = chord / (2 * sinHalf);
-      const h = r * Math.cos(halfAngleRad);
-      const mx = (sx + ex) / 2, my = (sy + ey) / 2;
-      const px = -dy / chord, py = dx / chord;
-
-      const sign = arcAngle >= 0 ? 1 : -1;
-      const cx = mx + sign * h * px;
-      const cy = my + sign * h * py;
-
-      const startAngle = Math.atan2(sy - cy, sx - cx);
-      const sweepRad = absAngle * Math.PI / 180;
-      const sweep = arcAngle >= 0 ? sweepRad : -sweepRad;
-
-      const nSeg = Math.min(32, Math.max(2, Math.ceil(absAngle / 5)));
-      const result: EasyEDA_Track[] = [];
-      let prevX = sx, prevY = sy;
-      for (let k = 1; k <= nSeg; k++) {
-        const angle = startAngle + sweep * (k / nSeg);
-        const nextX = cx + r * Math.cos(angle);
-        const nextY = cy + r * Math.sin(angle);
-        result.push({ net: netName, x1: prevX, y1: prevY, x2: nextX, y2: nextY, width, layer: layer || 1 });
-        prevX = nextX;
-        prevY = nextY;
-      }
-      return result;
-    } catch { return []; }
-  }
-
   private extractVia(primitive: any, netName: string): EasyEDA_Via | null {
     try {
       const x = primitive.getState_X();
@@ -394,7 +314,21 @@ export class PcbExtractor {
       const diameter = primitive.getState_Diameter();
       const holeDiameter = primitive.getState_HoleDiameter();
       if (x === null || y === null) return null;
-      return { net: netName, x, y, diameter: diameter || 0.6, hole_diameter: holeDiameter || 0.3 };
+
+      // Extract blind/buried via type information
+      let viaType: string | undefined;
+      try {
+        viaType = primitive.getState_DesignRuleBlindViaName?.();
+      } catch {}
+
+      return {
+        net: netName,
+        x,
+        y,
+        diameter: diameter || 0.6,
+        hole_diameter: holeDiameter || 0.3,
+        via_type: viaType  // Will be used to determine which layers the via connects to
+      };
     } catch { return null; }
   }
 
@@ -431,7 +365,7 @@ export class PcbExtractor {
         pad_number: padNumber || '?',
         width: padW || 0.6, height: padH || 0.6,
         hole_diameter: holeD,
-        layer: layer || undefined,
+        layer: layer !== undefined ? layer : undefined,
         ref_des: refDes || undefined,
         device_name: deviceName || undefined,
       };
@@ -666,8 +600,12 @@ export class PcbExtractor {
       } else if (token === 'CIRCLE') {
         const cx = arr[i + 1], cy = arr[i + 2], r = arr[i + 3];
         if (typeof cx === 'number' && typeof cy === 'number' && typeof r === 'number') {
-          for (let k = 0; k < 8; k++) {
-            const angle = (k / 8) * 2 * Math.PI;
+          // 曲率自适应采样：根据半径决定采样点数
+          // 小圆(r<1mm)用24点，中圆(1-5mm)用32点，大圆(>5mm)用48点
+          // 这样既保持圆形精度，又避免超大圆的过多采样
+          const nSamples = r < 40 ? 24 : (r < 200 ? 32 : 48);
+          for (let k = 0; k < nSamples; k++) {
+            const angle = (k / nSamples) * 2 * Math.PI;
             vertices.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
           }
         }
@@ -743,7 +681,8 @@ export class PcbExtractor {
     const sweepRad = absAngle * Math.PI / 180;
     const sweep = effectiveAngle >= 0 ? sweepRad : -sweepRad;
 
-    const nSeg = Math.min(32, Math.max(4, Math.ceil(absAngle / 5)));
+    // 曲率自适应采样：圆弧至少8段，确保小角度圆弧也有足够精度
+    const nSeg = Math.min(48, Math.max(8, Math.ceil(absAngle / 4)));
     const pts: Array<{ x: number; y: number }> = [];
     for (let k = 1; k <= nSeg; k++) {
       const angle = startAngle + sweep * (k / nSeg);

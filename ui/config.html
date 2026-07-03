@@ -81,10 +81,14 @@
       <span style="font-weight:600;font-size:13px">轨道属性</span>
       <label>电压 (V):</label>
       <input type="number" id="rail-voltage" value="3.3" step="0.1" min="0" onchange="updateVoltage()">
+      <label>接地网络:</label>
+      <select id="gnd-net-select" onchange="updateGndNet()" style="padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:12px;min-width:100px">
+        <option value="">自动检测</option>
+      </select>
     </div>
     <div class="table-wrap">
       <table id="rail-table">
-        <thead><tr><th>角色</th><th>位号</th><th>参数</th><th>焊盘数</th></tr></thead>
+        <thead><tr><th>角色</th><th>位号</th><th>参数</th><th>电源引脚</th><th>GND引脚</th></tr></thead>
         <tbody id="rail-tbody"></tbody>
       </table>
       <div class="empty-hint" id="empty-hint">请先在左侧选择一个电源网络</div>
@@ -101,6 +105,10 @@
   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
     <label>铜厚 (mm):</label>
     <input type="number" id="cu-thickness" value="0.035" min="0.005" max="0.21" step="0.005" style="width:60px">
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+    <label title="允许温升 - 用于电流容量检查">温升 (°C):</label>
+    <input type="number" id="temp-rise" value="10" min="5" max="50" step="5" style="width:60px" title="允许温升 - 用于电流容量检查">
   </div>
   <div class="bottom-right">
     <button class="btn-main btn-run" id="btn-run" onclick="runAnalysis()" disabled>开始分析</button>
@@ -171,9 +179,13 @@
   function initRailConfig() {
     for (const net of allNetNames) {
       if (!railConfig[net]) {
-        railConfig[net] = { voltage: guessVoltage(net), rows: [] };
+        railConfig[net] = { voltage: guessVoltage(net), rows: [], gndNet: '' };
       }
     }
+  }
+
+  function getGndNets() {
+    return allNetNames.filter(n => isGndNet(n));
   }
 
   function guessVoltage(name) {
@@ -186,6 +198,42 @@
     if (mInt) return parseFloat(mInt[1]);
     if (n.includes('GND') || n.includes('GND')) return 0;
     return 3.3;
+  }
+
+  function isGndNet(netName) {
+    if (!netName) return false;
+    return netName.toUpperCase().includes('GND');
+  }
+
+  function findGndPadsForRefDes(refDes, gndNet) {
+    const gndPads = [];
+    const seen = new Set();
+    for (const [netName, pads] of Object.entries(padsByNet)) {
+      if (gndNet) {
+        if (netName !== gndNet) continue;
+      } else {
+        if (!isGndNet(netName)) continue;
+      }
+      for (const p of pads) {
+        if ((p.ref_des || `Pad_${p.pad_number}`) === refDes) {
+          if (!seen.has(p.pad_number)) {
+            seen.add(p.pad_number);
+            gndPads.push(p);
+          }
+        }
+      }
+    }
+    return gndPads;
+  }
+
+  function findGndNetForRefDes(refDes) {
+    for (const [netName, pads] of Object.entries(padsByNet)) {
+      if (!isGndNet(netName)) continue;
+      if (pads.some(p => (p.ref_des || `Pad_${p.pad_number}`) === refDes)) {
+        return netName;
+      }
+    }
+    return null;
   }
 
   // ── 网络列表 ──
@@ -217,8 +265,39 @@
     selectedNetIdx = idx;
     selectedRowIdx = -1;
     renderNetList();
+    updateGndNetDropdown();
     renderRailTable();
     updateActionButtons();
+  }
+
+  function updateGndNetDropdown() {
+    const select = document.getElementById('gnd-net-select');
+    const gndNets = getGndNets();
+    const currentNet = selectedNetIdx >= 0 ? railConfig[allNetNames[selectedNetIdx]].gndNet : '';
+    select.innerHTML = '<option value="">自动检测</option>' +
+      gndNets.map(n => `<option value="${n}"${n === currentNet ? ' selected' : ''}>${n}</option>`).join('');
+  }
+
+  function updateGndNet() {
+    if (selectedNetIdx < 0) return;
+    const net = allNetNames[selectedNetIdx];
+    const gndNet = document.getElementById('gnd-net-select').value;
+    railConfig[net].gndNet = gndNet;
+    refreshRowsGndPads(net);
+    renderRailTable();
+  }
+
+  function refreshRowsGndPads(net) {
+    const cfg = railConfig[net];
+    const gndNet = cfg.gndNet || null;
+    for (const row of cfg.rows) {
+      const gndPads = findGndPadsForRefDes(row.ref_des, gndNet);
+      row.gnd_pads = gndPads.map(p => ({
+        x: p.x, y: p.y,
+        layer: p.layer != null ? (layerNames[p.layer] || `Layer_${p.layer}`) : ''
+      }));
+      row.gndPins = gndPads.length > 0 ? gndPads.map(p => p.pad_number).join(', ') : '-';
+    }
   }
 
   // ── 轨道表格 ──
@@ -241,7 +320,8 @@
         <td class="${roleClass}">${row.role === 'SOURCE' ? '电压源' : '负载'}</td>
         <td>${row.ref_des}</td>
         <td>${valueCell}</td>
-        <td>${row.pads.length}</td>
+        <td>${row.pins || row.pads.length}</td>
+        <td>${row.gndPins || '-'}</td>
       </tr>`;
     }).join('');
     updateRunButton();
@@ -312,9 +392,17 @@
 
   function renderPickerOptions(items) {
     const select = document.getElementById('picker-select');
+    const net = selectedNetIdx >= 0 ? allNetNames[selectedNetIdx] : null;
+    const cfg = net ? railConfig[net] : null;
+    const gndNet = cfg?.gndNet || null;
     select.innerHTML = items.map(([ref, pads]) => {
       const dev = pads[0].device_name ? ` (${pads[0].device_name})` : '';
-      return `<option value="${ref}">${ref}${dev} (${pads.length}p)</option>`;
+      const pins = pads.map(p => p.pad_number).join(', ');
+      const gndPads = findGndPadsForRefDes(ref, gndNet);
+      const gndInfo = gndPads.length > 0
+        ? ` | GND引脚: ${gndPads.map(p => p.pad_number).join(', ')}`
+        : '';
+      return `<option value="${ref}">${ref}${dev} — 引脚: ${pins}${gndInfo}</option>`;
     }).join('');
   }
 
@@ -346,11 +434,21 @@
       layer: p.layer != null ? (layerNames[p.layer] || `Layer_${p.layer}`) : ''
     }));
 
+    // 使用选定的接地网络筛选 GND 焊盘
+    const gndNet = cfg.gndNet || null;
+    const gndPads = findGndPadsForRefDes(refDes, gndNet);
+    const gndPadConfigs = gndPads.map(p => ({
+      x: p.x, y: p.y,
+      layer: p.layer != null ? (layerNames[p.layer] || `Layer_${p.layer}`) : ''
+    }));
+    const gndPins = gndPads.length > 0 ? gndPads.map(p => p.pad_number).join(', ') : '-';
+    const pins = pads.map(p => p.pad_number).join(', ');
+
     if (pickerMode === 'source') {
-      cfg.rows.push({ role: 'SOURCE', ref_des: refDes, pads: padConfigs, current: 0 });
+      cfg.rows.push({ role: 'SOURCE', ref_des: refDes, pads: padConfigs, gnd_pads: gndPadConfigs, pins, gndPins, current: 0 });
     } else {
       const current = parseFloat(document.getElementById('picker-current').value) || 1.0;
-      cfg.rows.push({ role: 'LOAD', ref_des: refDes, pads: padConfigs, current });
+      cfg.rows.push({ role: 'LOAD', ref_des: refDes, pads: padConfigs, gnd_pads: gndPadConfigs, pins, gndPins, current });
     }
 
     closePicker();
@@ -377,14 +475,23 @@
     for (const net of allNetNames) {
       const cfg = railConfig[net];
       if (!cfg.rows.length) continue;
-      const sources = cfg.rows.filter(r => r.role === 'SOURCE').map(r => ({
-        ref_des: r.ref_des, pads: r.pads
-      }));
-      const loads = cfg.rows.filter(r => r.role === 'LOAD').map(r => ({
-        ref_des: r.ref_des, current: r.current, pads: r.pads
-      }));
+
+      // 优先使用手动选择的接地网络，否则自动检测
+      let gndNet = cfg.gndNet || null;
+      const sources = cfg.rows.filter(r => r.role === 'SOURCE').map(r => {
+        if (!gndNet && (r.gnd_pads || []).length > 0) {
+          gndNet = findGndNetForRefDes(r.ref_des);
+        }
+        return { ref_des: r.ref_des, pads: r.pads, gnd_pads: r.gnd_pads || [] };
+      });
+      const loads = cfg.rows.filter(r => r.role === 'LOAD').map(r => {
+        if (!gndNet && (r.gnd_pads || []).length > 0) {
+          gndNet = findGndNetForRefDes(r.ref_des);
+        }
+        return { ref_des: r.ref_des, current: r.current, pads: r.pads, gnd_pads: r.gnd_pads || [] };
+      });
       if (sources.length > 0 || loads.length > 0) {
-        rails.push({ net, voltage: cfg.voltage, sources, loads });
+        rails.push({ net, voltage: cfg.voltage, sources, loads, gnd_net: gndNet || undefined });
         if (sources.length > 0) hasSource = true;
         if (loads.length > 0) hasLoad = true;
       }
@@ -429,12 +536,13 @@
     }
 
     const cuThickness = parseFloat(document.getElementById('cu-thickness').value) || 0.035;
+    const tempRise = parseFloat(document.getElementById('temp-rise').value) || 10;
     const layerIds = Object.keys(layerNames).map(Number);
     const layerCuThickness = {};
     for (const lid of layerIds) layerCuThickness[lid] = cuThickness;
 
     eda.sys_MessageBus.publish('pdn-config-result', {
-      config: { rails, layerCuThickness }
+      config: { rails, layerCuThickness, tempRise }
     });
   }
 
