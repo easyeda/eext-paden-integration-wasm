@@ -63,8 +63,7 @@ func Await(promise js.Value) (js.Value, error) {
 		var err error
 		if len(args) > 0 {
 			err = fmt.Errorf("%s", args[0].String())
-		}
-		else {
+		} else {
 			err = fmt.Errorf("promise rejected")
 		}
 		ch <- struct {

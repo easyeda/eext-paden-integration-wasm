@@ -43,8 +43,8 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 
 			// TODO: implement actual analysis pipeline.
 			result := map[string]interface{}{
-				"success": true,
-				"message": "placeholder result",
+				"success":         true,
+				"message":         "placeholder result",
 				"layer_solutions": []interface{}{},
 				"solver_info": map[string]interface{}{
 					"ground_node_current": 0.0,
