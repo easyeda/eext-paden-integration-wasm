@@ -51,24 +51,34 @@ function main() {
 		throw new Error(`wasm_exec.js not found under ${goRoot}`);
 	}
 
-	// Clipper2 WASM binary.
-	const clipperWasmCandidates = [
-		path.join(repoRoot, 'node_modules', 'clipper2-wasm', 'dist', 'es', 'clipper2z.wasm'),
-		path.join(repoRoot, 'node_modules', 'clipper2-wasm', 'dist', 'umd', 'clipper2z.wasm'),
-	];
+	// Clipper2 WASM ES module and its binary (used by the geometry bridge).
+	const clipperJsSrc = path.join(repoRoot, 'node_modules', 'clipper2-wasm', 'dist', 'es', 'clipper2z.js');
+	const clipperWasmSrc = path.join(repoRoot, 'node_modules', 'clipper2-wasm', 'dist', 'es', 'clipper2z.wasm');
 
-	let clipperWasmFound = false;
-	for (const candidate of clipperWasmCandidates) {
-		if (fs.existsSync(candidate)) {
-			copyFile(candidate, path.join(distDir, 'clipper2z.wasm'));
-			clipperWasmFound = true;
-			break;
-		}
+	if (fs.existsSync(clipperJsSrc) && fs.existsSync(clipperWasmSrc)) {
+		copyFile(clipperJsSrc, path.join(distDir, 'clipper2z.js'));
+		copyFile(clipperWasmSrc, path.join(distDir, 'clipper2z.wasm'));
+	}
+	else {
+		console.warn('[copy-wasm-assets] clipper2-wasm ES build not found; skip');
 	}
 
-	if (!clipperWasmFound) {
-		console.warn('[copy-wasm-assets] clipper2z.wasm not found in node_modules; skip');
-	}
+	// tracespace Gerber parser/plotter (ES bundles).
+	copyFile(
+		path.join(repoRoot, 'node_modules', '@tracespace', 'parser', 'dist', 'tracespace-parser.js'),
+		path.join(distDir, 'tracespace-parser.js'),
+	);
+	copyFile(
+		path.join(repoRoot, 'node_modules', '@tracespace', 'plotter', 'dist', 'tracespace-plotter.js'),
+		path.join(distDir, 'tracespace-plotter.js'),
+	);
+
+	// earcut triangulation (UMD global). Copy the minified build and a tiny ESM shim.
+	const earcutSrc = path.join(repoRoot, 'node_modules', 'earcut', 'dist', 'earcut.min.js');
+	copyFile(earcutSrc, path.join(distDir, 'earcut.min.js'));
+	const earcutShim = 'import \'./earcut.min.js\';\nexport default window.earcut;\n';
+	fs.writeFileSync(path.join(distDir, 'earcut.js'), earcutShim);
+	console.log('[copy-wasm-assets] earcut.js -> dist/');
 }
 
 main();

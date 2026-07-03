@@ -12,7 +12,8 @@
 		"compile": "rimraf ./dist/index.js && ts-node ./config/esbuild.prod.ts",
 		"lint": "eslint",
 		"fix": "eslint --fix",
-		"build": "npm run compile && npm run build:wasm && ts-node ./build/packaged.ts",
+		"build": "npm run compile && npm run build:wasm-host-bridge && npm run build:wasm && ts-node ./build/packaged.ts",
+		"build:wasm-host-bridge": "node scripts/build-wasm-host-bridge.js",
 		"build:wasm": "node scripts/build-wasm.js",
 		"build:wasm:dev": "node scripts/build-wasm.js --dev",
 		"postbuild:wasm": "node scripts/copy-wasm-assets.js"
@@ -24,7 +25,7 @@
 	"devDependencies": {
 		"@antfu/eslint-config": "^5.4.1",
 		"@jlceda/pro-api-types": "^0.2.33",
-		"@tracespace/parser": "5.0.0-next.0",
+		"@tracespace/parser": "5.0.0-alpha.0",
 		"@tracespace/plotter": "5.0.0-alpha.0",
 		"@types/earcut": "^3.0.0",
 		"@types/fs-extra": "^11.0.4",

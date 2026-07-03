@@ -21,16 +21,8 @@
   <!-- Go WASM runtime -->
   <script src="/dist/wasm_exec.js"></script>
 
-  <!-- Geometry / Gerber / mesh libraries -->
-  <script type="module">
-    import Clipper2ZFactory from '/node_modules/clipper2-wasm/dist/es/clipper2z.js';
-    import { parse, plot } from '/node_modules/@tracespace/parser/dist/index.js';
-    import earcut from '/node_modules/earcut/dist/earcut.min.js';
-
-    window._clipper2ZFactory = Clipper2ZFactory;
-    window._tracespace = { parse, plot };
-    window._earcut = earcut;
-  </script>
+  <!-- Geometry / Gerber / mesh bridge (bundles clipper2-wasm, tracespace, earcut) -->
+  <script type="module" src="/dist/wasm-geometry-bridge.js"></script>
 
   <script type="module">
     const statusEl = document.getElementById('status');
@@ -40,21 +32,13 @@
       console.log('[WASM Host]', text);
     }
 
-    async function initClipper2() {
-      const Clipper2ZFactory = window._clipper2ZFactory;
-      if (!Clipper2ZFactory) {
-        throw new Error('clipper2-wasm factory not loaded');
+    async function initGeometryBridge() {
+      // The module sets window.padenGeometry and starts clipper2-wasm init.
+      while (!window.padenGeometry) {
+        await new Promise(r => setTimeout(r, 10));
       }
-      const clipper = await Clipper2ZFactory({
-        locateFile: (path) => {
-          if (path.endsWith('.wasm')) {
-            return '/dist/clipper2z.wasm';
-          }
-          return path;
-        },
-      });
-      window.clipper2 = clipper;
-      setStatus('Clipper2 WASM ready');
+      await window.padenGeometry.init();
+      setStatus('Geometry bridge ready');
     }
 
     async function initGoWasm() {
@@ -67,23 +51,61 @@
       setStatus('Go WASM ready');
     }
 
+    function getMessageBus() {
+      const bus = window.parent?.eda?.sys_MessageBus;
+      if (!bus) {
+        throw new Error('MessageBus not available in parent window');
+      }
+      return bus;
+    }
+
     function publishReady() {
-      if (window.parent !== window) {
-        window.parent.postMessage({ type: 'pdn-wasm-ready' }, '*');
+      try {
+        getMessageBus().publish('pdn-wasm-ready', {});
+      }
+      catch (e) {
+        console.error('[WASM Host] failed to publish ready:', e);
       }
       setStatus('WASM host ready');
     }
 
+    function publishError(error) {
+      try {
+        getMessageBus().publish('pdn-wasm-error', { error: String(error) });
+      }
+      catch (e) {
+        console.error('[WASM Host] failed to publish error:', e);
+      }
+      setStatus('WASM init failed: ' + error);
+    }
+
+    function setupAnalyzeHandler() {
+      const bus = getMessageBus();
+      bus.subscribe('pdn-wasm-analyze', async (msg) => {
+        const replyTopic = msg?.replyTopic;
+        if (!replyTopic) return;
+
+        try {
+          const gerberBytes = msg.gerberBytes;
+          const configJson = msg.configJson;
+          const result = await window.padne.analyzeGerber(gerberBytes, configJson);
+          bus.publish(replyTopic, { result });
+        }
+        catch (e) {
+          bus.publish(replyTopic, { error: String(e) });
+        }
+      });
+    }
+
     async function main() {
       try {
-        await Promise.all([initClipper2(), initGoWasm()]);
+        await Promise.all([initGeometryBridge(), initGoWasm()]);
+        setupAnalyzeHandler();
         publishReady();
-      } catch (e) {
-        setStatus('WASM init failed: ' + e.message);
+      }
+      catch (e) {
+        publishError(e.message);
         console.error(e);
-        if (window.parent !== window) {
-          window.parent.postMessage({ type: 'pdn-wasm-error', error: e.message }, '*');
-        }
       }
     }
 
