@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PADEN WASM Host</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <div id="status">Initializing WASM...</div>
+
+  <!-- Go WASM runtime -->
+  <script src="/dist/wasm_exec.js"></script>
+
+  <!-- Geometry / Gerber / mesh libraries -->
+  <script type="module">
+    import Clipper2ZFactory from '/node_modules/clipper2-wasm/dist/es/clipper2z.js';
+    import { parse, plot } from '/node_modules/@tracespace/parser/dist/index.js';
+    import earcut from '/node_modules/earcut/dist/earcut.min.js';
+
+    window._clipper2ZFactory = Clipper2ZFactory;
+    window._tracespace = { parse, plot };
+    window._earcut = earcut;
+  </script>
+
+  <script type="module">
+    const statusEl = document.getElementById('status');
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+      console.log('[WASM Host]', text);
+    }
+
+    async function initClipper2() {
+      const Clipper2ZFactory = window._clipper2ZFactory;
+      if (!Clipper2ZFactory) {
+        throw new Error('clipper2-wasm factory not loaded');
+      }
+      const clipper = await Clipper2ZFactory({
+        locateFile: (path) => {
+          if (path.endsWith('.wasm')) {
+            return '/dist/clipper2z.wasm';
+          }
+          return path;
+        },
+      });
+      window.clipper2 = clipper;
+      setStatus('Clipper2 WASM ready');
+    }
+
+    async function initGoWasm() {
+      const go = new Go();
+      const result = await WebAssembly.instantiateStreaming(
+        fetch('/dist/paden.wasm'),
+        go.importObject,
+      );
+      go.run(result.instance);
+      setStatus('Go WASM ready');
+    }
+
+    function publishReady() {
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'pdn-wasm-ready' }, '*');
+      }
+      setStatus('WASM host ready');
+    }
+
+    async function main() {
+      try {
+        await Promise.all([initClipper2(), initGoWasm()]);
+        publishReady();
+      } catch (e) {
+        setStatus('WASM init failed: ' + e.message);
+        console.error(e);
+        if (window.parent !== window) {
+          window.parent.postMessage({ type: 'pdn-wasm-error', error: e.message }, '*');
+        }
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>
