@@ -9,11 +9,10 @@
 		"node": ">=20.17.0"
 	},
 	"scripts": {
-		"compile": "rimraf ./dist/index.js && ts-node ./config/esbuild.prod.ts",
+		"compile": "rimraf ./dist && ts-node ./config/esbuild.prod.ts",
 		"lint": "eslint",
 		"fix": "eslint --fix",
-		"build": "npm run compile && npm run build:wasm-host-bridge && npm run build:wasm && ts-node ./build/packaged.ts",
-		"build:wasm-host-bridge": "node scripts/build-wasm-host-bridge.js",
+		"build": "npm run compile && npm run build:wasm && ts-node ./build/packaged.ts",
 		"build:wasm": "node scripts/build-wasm.js",
 		"build:wasm:dev": "node scripts/build-wasm.js --dev",
 		"postbuild:wasm": "node scripts/copy-wasm-assets.js"

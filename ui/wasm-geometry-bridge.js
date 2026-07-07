@@ -13,10 +13,11 @@
  *   [ [ [{x,y}, ...], hole, hole, ... ], ... ] ]
  */
 
-import Clipper2ZFactory from '/dist/clipper2z.js';
-import earcut from '/dist/earcut.js';
-import { parse } from '/dist/tracespace-parser.js';
-import { plot } from '/dist/tracespace-plotter.js';
+// Dependencies are loaded by the host as modules and exposed as globals.
+const Clipper2ZFactory = window.Clipper2ZFactory;
+const earcut = window.earcut;
+const parse = window.tracespaceParser?.parse;
+const plot = window.tracespacePlotter?.plot;
 
 const CLIPPER_PRECISION = 6;
 

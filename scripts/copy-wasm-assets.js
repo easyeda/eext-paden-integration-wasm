@@ -63,22 +63,27 @@ function main() {
 		console.warn('[copy-wasm-assets] clipper2-wasm ES build not found; skip');
 	}
 
-	// tracespace Gerber parser/plotter (ES bundles).
+	// tracespace Gerber parser/plotter (UMD global builds for classic script loading).
 	copyFile(
-		path.join(repoRoot, 'node_modules', '@tracespace', 'parser', 'dist', 'tracespace-parser.js'),
-		path.join(distDir, 'tracespace-parser.js'),
+		path.join(repoRoot, 'node_modules', '@tracespace', 'parser', 'dist', 'tracespace-parser.umd.cjs'),
+		path.join(distDir, 'tracespace-parser.umd.cjs'),
 	);
 	copyFile(
-		path.join(repoRoot, 'node_modules', '@tracespace', 'plotter', 'dist', 'tracespace-plotter.js'),
-		path.join(distDir, 'tracespace-plotter.js'),
+		path.join(repoRoot, 'node_modules', '@tracespace', 'plotter', 'dist', 'tracespace-plotter.umd.cjs'),
+		path.join(distDir, 'tracespace-plotter.umd.cjs'),
 	);
 
-	// earcut triangulation (UMD global). Copy the minified build and a tiny ESM shim.
-	const earcutSrc = path.join(repoRoot, 'node_modules', 'earcut', 'dist', 'earcut.min.js');
-	copyFile(earcutSrc, path.join(distDir, 'earcut.min.js'));
-	const earcutShim = 'import \'./earcut.min.js\';\nexport default window.earcut;\n';
-	fs.writeFileSync(path.join(distDir, 'earcut.js'), earcutShim);
-	console.log('[copy-wasm-assets] earcut.js -> dist/');
+	// earcut triangulation (UMD global).
+	copyFile(
+		path.join(repoRoot, 'node_modules', 'earcut', 'dist', 'earcut.min.js'),
+		path.join(distDir, 'earcut.min.js'),
+	);
+
+	// Geometry bridge (classic script, reads globals exposed by the host).
+	copyFile(
+		path.join(repoRoot, 'ui', 'wasm-geometry-bridge.js'),
+		path.join(distDir, 'wasm-geometry-bridge.js'),
+	);
 }
 
 main();

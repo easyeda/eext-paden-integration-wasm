@@ -18,98 +18,139 @@
 <body>
   <div id="status">Initializing WASM...</div>
 
-  <!-- Go WASM runtime -->
-  <script src="/dist/wasm_exec.js"></script>
+  <script>
+    (async function main() {
+      const statusEl = document.getElementById('status');
 
-  <!-- Geometry / Gerber / mesh bridge (bundles clipper2-wasm, tracespace, earcut) -->
-  <script type="module" src="/dist/wasm-geometry-bridge.js"></script>
-
-  <script type="module">
-    const statusEl = document.getElementById('status');
-
-    function setStatus(text) {
-      statusEl.textContent = text;
-      console.log('[WASM Host]', text);
-    }
-
-    async function initGeometryBridge() {
-      // The module sets window.padenGeometry and starts clipper2-wasm init.
-      while (!window.padenGeometry) {
-        await new Promise(r => setTimeout(r, 10));
+      function setStatus(text) {
+        statusEl.textContent = text;
+        console.log('[WASM Host]', text);
       }
-      await window.padenGeometry.init();
-      setStatus('Geometry bridge ready');
-    }
 
-    async function initGoWasm() {
-      const go = new Go();
-      const result = await WebAssembly.instantiateStreaming(
-        fetch('/dist/paden.wasm'),
-        go.importObject,
-      );
-      go.run(result.instance);
-      setStatus('Go WASM ready');
-    }
-
-    function getMessageBus() {
-      const bus = window.parent?.eda?.sys_MessageBus;
-      if (!bus) {
-        throw new Error('MessageBus not available in parent window');
-      }
-      return bus;
-    }
-
-    function publishReady() {
-      try {
-        getMessageBus().publish('pdn-wasm-ready', {});
-      }
-      catch (e) {
-        console.error('[WASM Host] failed to publish ready:', e);
-      }
-      setStatus('WASM host ready');
-    }
-
-    function publishError(error) {
-      try {
-        getMessageBus().publish('pdn-wasm-error', { error: String(error) });
-      }
-      catch (e) {
-        console.error('[WASM Host] failed to publish error:', e);
-      }
-      setStatus('WASM init failed: ' + error);
-    }
-
-    function setupAnalyzeHandler() {
-      const bus = getMessageBus();
-      bus.subscribe('pdn-wasm-analyze', async (msg) => {
-        const replyTopic = msg?.replyTopic;
-        if (!replyTopic) return;
-
+      function publishError(bus, error) {
         try {
-          const gerberBytes = msg.gerberBytes;
-          const configJson = msg.configJson;
-          const result = await window.padne.analyzeGerber(gerberBytes, configJson);
-          bus.publish(replyTopic, { result });
+          bus.publish('pdn-wasm-error', { error: String(error) });
         }
         catch (e) {
-          bus.publish(replyTopic, { error: String(e) });
+          console.error('[WASM Host] failed to publish error:', e);
         }
-      });
-    }
+        setStatus('WASM init failed: ' + error);
+      }
 
-    async function main() {
+      // EasyEDA exposes eda as a global inside the extension iframe.
+      const eda = window.eda;
+      if (!eda || !eda.sys_FileSystem || !eda.sys_FileSystem.getExtensionFile) {
+        setStatus('EasyEDA FileSystem API not available');
+        throw new Error('eda.sys_FileSystem.getExtensionFile not available');
+      }
+
+      const bus = eda.sys_MessageBus;
+      if (!bus) {
+        setStatus('EasyEDA MessageBus not available');
+        throw new Error('eda.sys_MessageBus not available');
+      }
+
       try {
-        await Promise.all([initGeometryBridge(), initGoWasm()]);
-        setupAnalyzeHandler();
-        publishReady();
+        setStatus('Loading extension assets...');
+
+        // Helper: read an extension file as a File object and create an object URL.
+        async function getFile(uri) {
+          const file = await eda.sys_FileSystem.getExtensionFile(uri);
+          if (!file) {
+            throw new Error(`Extension file not found: ${uri}`);
+          }
+          return file;
+        }
+
+        async function objectUrlFor(uri) {
+          const file = await getFile(uri);
+          return URL.createObjectURL(file);
+        }
+
+        // Helper: load a classic script from an object URL.
+        function loadScript(url) {
+          return new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = url;
+            s.onload = resolve;
+            s.onerror = () => reject(new Error(`Failed to load script ${url}`));
+            document.head.appendChild(s);
+          });
+        }
+
+        // 1. earcut (global window.earcut)
+        const earcutUrl = await objectUrlFor('/dist/earcut.min.js');
+        await loadScript(earcutUrl);
+
+        // 2. tracespace parser/plotter (globals window.TracespaceParser / window.TracespacePlotter)
+        const parserUrl = await objectUrlFor('/dist/tracespace-parser.umd.cjs');
+        const plotterUrl = await objectUrlFor('/dist/tracespace-plotter.umd.cjs');
+        await loadScript(parserUrl);
+        await loadScript(plotterUrl);
+        window.tracespaceParser = window.TracespaceParser;
+        window.tracespacePlotter = window.TracespacePlotter;
+
+        // 3. Clipper2-WASM ES module.
+        //    Load the module script via object URL, then create a factory that points
+        //    the loader at an object URL for the .wasm binary (avoids root-relative
+        //    fetch failures inside the sandboxed blob iframe).
+        const clipperWasmFile = await getFile('/dist/clipper2z.wasm');
+        const clipperWasmUrl = URL.createObjectURL(clipperWasmFile);
+        const clipperJsUrl = await objectUrlFor('/dist/clipper2z.js');
+        const clipperModule = await import(clipperJsUrl);
+        const Clipper2Z = clipperModule.default;
+        window.Clipper2ZFactory = () => Clipper2Z({ locateFile: () => clipperWasmUrl });
+
+        // 4. Geometry bridge (reads globals above and exposes window.padenGeometry).
+        const bridgeUrl = await objectUrlFor('/dist/wasm-geometry-bridge.js');
+        await loadScript(bridgeUrl);
+
+        // 5. Go WASM runtime (global window.Go).
+        const wasmExecUrl = await objectUrlFor('/dist/wasm_exec.js');
+        await loadScript(wasmExecUrl);
+
+        setStatus('Initializing geometry bridge...');
+        while (!window.padenGeometry) {
+          await new Promise(r => setTimeout(r, 10));
+        }
+        await window.padenGeometry.init();
+        setStatus('Geometry bridge ready');
+
+        setStatus('Initializing Go WASM...');
+        const padenWasmFile = await getFile('/dist/paden.wasm');
+        const padenWasmUrl = URL.createObjectURL(padenWasmFile);
+        const go = new Go();
+        const result = await WebAssembly.instantiateStreaming(
+          fetch(padenWasmUrl),
+          go.importObject,
+        );
+        go.run(result.instance);
+        setStatus('Go WASM ready');
+
+        // Handle analyze requests from the extension.
+        bus.subscribe('pdn-wasm-analyze', async (msg) => {
+          const replyTopic = msg?.replyTopic;
+          if (!replyTopic) return;
+
+          try {
+            const gerberBytes = msg.gerberBytes;
+            const configJson = msg.configJson;
+            const analyzeResult = await window.padne.analyzeGerber(gerberBytes, configJson);
+            bus.publish(replyTopic, { result: analyzeResult });
+          }
+          catch (e) {
+            bus.publish(replyTopic, { error: String(e) });
+          }
+        });
+
+        bus.publish('pdn-wasm-ready', {});
+        setStatus('WASM host ready');
       }
       catch (e) {
-        publishError(e.message);
+        publishError(bus, e.message);
         console.error(e);
       }
-    }
-
-    main();
+    })();
   </script>
 </body>
 </html>
