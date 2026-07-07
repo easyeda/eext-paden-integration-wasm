@@ -118,12 +118,51 @@
           if (!replyTopic) return;
 
           try {
-            const gerberBytes = msg.gerberBytes;
+            const rawBytes = msg.gerberBytes;
             const configJson = msg.configJson;
+
+            console.log('[WASM Host] analyze request received:', {
+              rawType: typeof rawBytes,
+              isUint8Array: rawBytes instanceof Uint8Array,
+              isArrayBuffer: rawBytes instanceof ArrayBuffer,
+              isArray: Array.isArray(rawBytes),
+              byteLength: rawBytes?.byteLength ?? rawBytes?.length ?? 'N/A',
+              configLength: typeof configJson === 'string' ? configJson.length : 'N/A',
+            });
+
+            let gerberBytes = rawBytes;
+            if (gerberBytes instanceof Uint8Array || gerberBytes instanceof Uint8ClampedArray) {
+              // already valid for CopyBytesToGo
+            }
+            else if (gerberBytes instanceof ArrayBuffer) {
+              gerberBytes = new Uint8Array(gerberBytes);
+            }
+            else if (Array.isArray(gerberBytes)) {
+              gerberBytes = new Uint8Array(gerberBytes);
+            }
+            else if (gerberBytes && typeof gerberBytes === 'object') {
+              // MessageBus may serialize an ArrayBuffer as a plain object with numeric keys.
+              const keys = Object.keys(gerberBytes)
+                .map(Number)
+                .filter(k => Number.isFinite(k))
+                .sort((a, b) => a - b);
+              const values = keys.map(k => gerberBytes[k]);
+              gerberBytes = new Uint8Array(values);
+            }
+            else {
+              throw new Error(`Unsupported gerberBytes type: ${typeof rawBytes}`);
+            }
+
+            console.log('[WASM Host] passing to Go:', {
+              type: gerberBytes.constructor.name,
+              length: gerberBytes.length,
+            });
+
             const analyzeResult = await window.padne.analyzeGerber(gerberBytes, configJson);
             bus.publish(replyTopic, { result: analyzeResult });
           }
           catch (e) {
+            console.error('[WASM Host] analyze failed:', e);
             bus.publish(replyTopic, { error: String(e) });
           }
         });

@@ -38,8 +38,17 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 				return
 			}
 
-			gerberBytes := make([]byte, args[0].Get("byteLength").Int())
-			js.CopyBytesToGo(gerberBytes, args[0])
+			gerberJs := args[0]
+			// syscall/js CopyBytesToGo requires a Uint8Array view, not a raw ArrayBuffer.
+			if gerberJs.InstanceOf(js.Global().Get("ArrayBuffer")) {
+				gerberJs = js.Global().Get("Uint8Array").New(gerberJs)
+			}
+			if !gerberJs.InstanceOf(js.Global().Get("Uint8Array")) && !gerberJs.InstanceOf(js.Global().Get("Uint8ClampedArray")) {
+				reject.Invoke(js.Global().Get("Error").New("gerberBytes must be Uint8Array or ArrayBuffer"))
+				return
+			}
+			gerberBytes := make([]byte, gerberJs.Get("byteLength").Int())
+			js.CopyBytesToGo(gerberBytes, gerberJs)
 			configJson := args[1].String()
 
 			fmt.Printf("[PADEN WASM] analyzeGerber called: %d bytes, config length %d\n", len(gerberBytes), len(configJson))
