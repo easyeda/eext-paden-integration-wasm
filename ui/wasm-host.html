@@ -78,19 +78,7 @@
           });
         }
 
-        // 1. earcut (global window.earcut)
-        const earcutUrl = await objectUrlFor('/dist/earcut.min.js');
-        await loadScript(earcutUrl);
-
-        // 2. tracespace parser/plotter (globals window.TracespaceParser / window.TracespacePlotter)
-        const parserUrl = await objectUrlFor('/dist/tracespace-parser.umd.cjs');
-        const plotterUrl = await objectUrlFor('/dist/tracespace-plotter.umd.cjs');
-        await loadScript(parserUrl);
-        await loadScript(plotterUrl);
-        window.tracespaceParser = window.TracespaceParser;
-        window.tracespacePlotter = window.TracespacePlotter;
-
-        // 3. Clipper2-WASM ES module.
+        // 1. Clipper2-WASM ES module.
         //    Load the module script via object URL, then create a factory that points
         //    the loader at an object URL for the .wasm binary (avoids root-relative
         //    fetch failures inside the sandboxed blob iframe).
@@ -101,13 +89,9 @@
         const Clipper2Z = clipperModule.default;
         window.Clipper2ZFactory = () => Clipper2Z({ locateFile: () => clipperWasmUrl });
 
-        // 4. Geometry bridge (reads globals above and exposes window.padenGeometry).
+        // 2. Geometry bridge (bundles tracespace + earcut, reads Clipper2ZFactory).
         const bridgeUrl = await objectUrlFor('/dist/wasm-geometry-bridge.js');
         await loadScript(bridgeUrl);
-
-        // 5. Go WASM runtime (global window.Go).
-        const wasmExecUrl = await objectUrlFor('/dist/wasm_exec.js');
-        await loadScript(wasmExecUrl);
 
         setStatus('Initializing geometry bridge...');
         while (!window.padenGeometry) {
@@ -116,14 +100,15 @@
         await window.padenGeometry.init();
         setStatus('Geometry bridge ready');
 
+        // 3. Go WASM runtime (global window.Go).
+        const wasmExecUrl = await objectUrlFor('/dist/wasm_exec.js');
+        await loadScript(wasmExecUrl);
+
         setStatus('Initializing Go WASM...');
         const padenWasmFile = await getFile('/dist/paden.wasm');
-        const padenWasmUrl = URL.createObjectURL(padenWasmFile);
+        const padenWasmBuffer = await padenWasmFile.arrayBuffer();
         const go = new Go();
-        const result = await WebAssembly.instantiateStreaming(
-          fetch(padenWasmUrl),
-          go.importObject,
-        );
+        const result = await WebAssembly.instantiate(padenWasmBuffer, go.importObject);
         go.run(result.instance);
         setStatus('Go WASM ready');
 

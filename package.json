@@ -12,7 +12,8 @@
 		"compile": "rimraf ./dist && ts-node ./config/esbuild.prod.ts",
 		"lint": "eslint",
 		"fix": "eslint --fix",
-		"build": "npm run compile && npm run build:wasm && ts-node ./build/packaged.ts",
+		"build": "npm run compile && npm run build:geometry-bridge && npm run build:wasm && ts-node ./build/packaged.ts",
+		"build:geometry-bridge": "node scripts/build-geometry-bridge.js",
 		"build:wasm": "node scripts/build-wasm.js",
 		"build:wasm:dev": "node scripts/build-wasm.js --dev",
 		"postbuild:wasm": "node scripts/copy-wasm-assets.js"

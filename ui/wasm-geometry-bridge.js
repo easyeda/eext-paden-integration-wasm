@@ -14,19 +14,34 @@
  */
 
 // Dependencies are loaded by the host as modules and exposed as globals.
-const Clipper2ZFactory = window.Clipper2ZFactory;
-const earcut = window.earcut;
-const parse = window.tracespaceParser?.parse;
-const plot = window.tracespacePlotter?.plot;
-
 const CLIPPER_PRECISION = 6;
 
 let clipperModule = null;
 
+function getClipperFactory() {
+	return window.Clipper2ZFactory;
+}
+
+function getEarcut() {
+	return window.earcut;
+}
+
+function getParse() {
+	return window.tracespaceParser?.parse;
+}
+
+function getPlot() {
+	return window.tracespacePlotter?.plot;
+}
+
 async function initClipper() {
 	if (clipperModule)
 		return clipperModule;
-	clipperModule = await Clipper2ZFactory();
+	const factory = getClipperFactory();
+	if (!factory) {
+		throw new Error('Clipper2ZFactory not available on window');
+	}
+	clipperModule = await factory();
 	return clipperModule;
 }
 
@@ -188,8 +203,13 @@ function flattenLayeredErasures(polygons) {
 }
 
 function gerberToPolygons(gerberText) {
-	const tree = parse(gerberText);
-	const image = plot(tree);
+	const parseFn = getParse();
+	const plotFn = getPlot();
+	if (!parseFn || !plotFn) {
+		throw new Error('tracespace parser/plotter not available on window');
+	}
+	const tree = parseFn(gerberText);
+	const image = plotFn(tree);
 	let all = [];
 	for (const child of image.children || []) {
 		all.push(...imageGraphicToPolygons(child));
@@ -240,6 +260,10 @@ function clipperOffset(polygons, delta) {
 }
 
 function earcutTriangulate(polygon) {
+	const earcutFn = getEarcut();
+	if (!earcutFn) {
+		throw new Error('earcut not available on window');
+	}
 	const vertices = [];
 	const holes = [];
 	for (let i = 0; i < polygon.length; i++) {
@@ -249,7 +273,7 @@ function earcutTriangulate(polygon) {
 			vertices.push(p.x, p.y);
 		}
 	}
-	const triangles = earcut(vertices, holes, 2);
+	const triangles = earcutFn(vertices, holes, 2);
 	return {
 		vertices: new Float64Array(vertices),
 		triangles: new Uint32Array(triangles),

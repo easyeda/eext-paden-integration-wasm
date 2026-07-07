@@ -51,7 +51,8 @@ function main() {
 		throw new Error(`wasm_exec.js not found under ${goRoot}`);
 	}
 
-	// Clipper2 WASM ES module and its binary (used by the geometry bridge).
+	// Clipper2 WASM ES module and its binary (loaded by the host and exposed
+	// to the geometry bridge as window.Clipper2ZFactory).
 	const clipperJsSrc = path.join(repoRoot, 'node_modules', 'clipper2-wasm', 'dist', 'es', 'clipper2z.js');
 	const clipperWasmSrc = path.join(repoRoot, 'node_modules', 'clipper2-wasm', 'dist', 'es', 'clipper2z.wasm');
 
@@ -62,28 +63,6 @@ function main() {
 	else {
 		console.warn('[copy-wasm-assets] clipper2-wasm ES build not found; skip');
 	}
-
-	// tracespace Gerber parser/plotter (UMD global builds for classic script loading).
-	copyFile(
-		path.join(repoRoot, 'node_modules', '@tracespace', 'parser', 'dist', 'tracespace-parser.umd.cjs'),
-		path.join(distDir, 'tracespace-parser.umd.cjs'),
-	);
-	copyFile(
-		path.join(repoRoot, 'node_modules', '@tracespace', 'plotter', 'dist', 'tracespace-plotter.umd.cjs'),
-		path.join(distDir, 'tracespace-plotter.umd.cjs'),
-	);
-
-	// earcut triangulation (UMD global).
-	copyFile(
-		path.join(repoRoot, 'node_modules', 'earcut', 'dist', 'earcut.min.js'),
-		path.join(distDir, 'earcut.min.js'),
-	);
-
-	// Geometry bridge (classic script, reads globals exposed by the host).
-	copyFile(
-		path.join(repoRoot, 'ui', 'wasm-geometry-bridge.js'),
-		path.join(distDir, 'wasm-geometry-bridge.js'),
-	);
 }
 
 main();
