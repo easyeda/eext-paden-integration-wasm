@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"syscall/js"
 
@@ -60,7 +61,8 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 					"message":     err.Error(),
 					"diagnostics": d.Lines,
 				}
-				resolve.Invoke(js.Global().Get("JSON").Call("stringify", errResult))
+				errJSON, _ := json.Marshal(errResult)
+				resolve.Invoke(js.ValueOf(string(errJSON)))
 				return
 			}
 
@@ -71,7 +73,8 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 					"message":     fmt.Sprintf("serialization failed: %v", err),
 					"diagnostics": d.Lines,
 				}
-				resolve.Invoke(js.Global().Get("JSON").Call("stringify", errResult))
+				errJSON, _ := json.Marshal(errResult)
+				resolve.Invoke(js.ValueOf(string(errJSON)))
 				return
 			}
 

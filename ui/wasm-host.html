@@ -112,6 +112,39 @@
         go.run(result.instance);
         setStatus('Go WASM ready');
 
+        // Convert a MessageBus-transferred binary payload to Uint8Array.
+        function gerberToUint8Array(rawBytes) {
+          if (rawBytes instanceof Uint8Array || rawBytes instanceof Uint8ClampedArray) {
+            return rawBytes;
+          }
+          // Try direct construction first: handles ArrayBuffer, DataView and
+          // TypedArrays from other realms where instanceof checks fail.
+          try {
+            const view = new Uint8Array(rawBytes);
+            if (view.length > 0 || rawBytes.byteLength === 0) {
+              return view;
+            }
+          }
+          catch {
+            // fall through
+          }
+          // TypedArray/DataView from another realm with a buffer property.
+          if (rawBytes && rawBytes.buffer instanceof ArrayBuffer) {
+            return new Uint8Array(rawBytes.buffer, rawBytes.byteOffset || 0, rawBytes.byteLength);
+          }
+          // Fallback: plain object with numeric keys (MessageBus JSON fallback).
+          if (rawBytes && typeof rawBytes === 'object') {
+            const keys = Object.keys(rawBytes)
+              .map(Number)
+              .filter(k => Number.isFinite(k))
+              .sort((a, b) => a - b);
+            if (keys.length > 0) {
+              return new Uint8Array(keys.map(k => rawBytes[k]));
+            }
+          }
+          throw new Error(`Unsupported gerberBytes type: ${typeof rawBytes}, constructor: ${rawBytes?.constructor?.name}`);
+        }
+
         // Handle analyze requests from the extension.
         bus.subscribe('pdn-wasm-analyze', async (msg) => {
           const replyTopic = msg?.replyTopic;
@@ -123,6 +156,7 @@
 
             console.log('[WASM Host] analyze request received:', {
               rawType: typeof rawBytes,
+              constructor: rawBytes?.constructor?.name,
               isUint8Array: rawBytes instanceof Uint8Array,
               isArrayBuffer: rawBytes instanceof ArrayBuffer,
               isArray: Array.isArray(rawBytes),
@@ -130,28 +164,7 @@
               configLength: typeof configJson === 'string' ? configJson.length : 'N/A',
             });
 
-            let gerberBytes = rawBytes;
-            if (gerberBytes instanceof Uint8Array || gerberBytes instanceof Uint8ClampedArray) {
-              // already valid for CopyBytesToGo
-            }
-            else if (gerberBytes instanceof ArrayBuffer) {
-              gerberBytes = new Uint8Array(gerberBytes);
-            }
-            else if (Array.isArray(gerberBytes)) {
-              gerberBytes = new Uint8Array(gerberBytes);
-            }
-            else if (gerberBytes && typeof gerberBytes === 'object') {
-              // MessageBus may serialize an ArrayBuffer as a plain object with numeric keys.
-              const keys = Object.keys(gerberBytes)
-                .map(Number)
-                .filter(k => Number.isFinite(k))
-                .sort((a, b) => a - b);
-              const values = keys.map(k => gerberBytes[k]);
-              gerberBytes = new Uint8Array(values);
-            }
-            else {
-              throw new Error(`Unsupported gerberBytes type: ${typeof rawBytes}`);
-            }
+            const gerberBytes = gerberToUint8Array(rawBytes);
 
             console.log('[WASM Host] passing to Go:', {
               type: gerberBytes.constructor.name,
