@@ -3,7 +3,7 @@ package mesh
 import (
 	"fmt"
 
-	"github.com/easyeda/paden-wasm/internal/geometry"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 )
 
 // Triangulation holds vertices and triangle indices from earcut.

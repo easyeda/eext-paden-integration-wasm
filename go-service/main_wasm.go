@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"syscall/js"
 
-	"github.com/easyeda/paden-wasm/internal/pipeline"
-	"github.com/easyeda/paden-wasm/internal/wasmapi"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/pipeline"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/wasmapi"
 )
 
 func main() {

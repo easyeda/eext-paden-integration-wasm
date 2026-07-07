@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/easyeda/paden-wasm/internal/geometry"
-	"github.com/easyeda/paden-wasm/internal/mesh"
-	"github.com/easyeda/paden-wasm/internal/problem"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/mesh"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/problem"
 )
 
 // SolverInfo holds diagnostic information.

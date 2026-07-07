@@ -4,7 +4,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/easyeda/paden-wasm/internal/geometry"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 )
 
 // Config controls mesh generation.

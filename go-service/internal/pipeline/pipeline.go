@@ -6,9 +6,9 @@ import (
 	"math"
 	"strings"
 
-	"github.com/easyeda/paden-wasm/internal/geometry"
-	"github.com/easyeda/paden-wasm/internal/problem"
-	"github.com/easyeda/paden-wasm/internal/solver"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/problem"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/solver"
 )
 
 // DiagCollector collects diagnostic messages.

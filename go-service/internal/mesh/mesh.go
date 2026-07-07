@@ -4,7 +4,7 @@ package mesh
 import (
 	"math"
 
-	"github.com/easyeda/paden-wasm/internal/geometry"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 )
 
 // Point is a 2D point alias for geometry.Point.

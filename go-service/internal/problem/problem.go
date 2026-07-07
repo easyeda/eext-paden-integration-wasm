@@ -4,7 +4,7 @@ package problem
 import (
 	"fmt"
 
-	"github.com/easyeda/paden-wasm/internal/geometry"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 )
 
 // Layer represents a single copper layer of the input circuit board.
