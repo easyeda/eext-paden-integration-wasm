@@ -1,4 +1,4 @@
-[简体中文](./README.md) | [English](./README.en.md) | [繁體中文](#) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
+[簡體中文](./README.md) | [English](./README.en.md) | [繁體中文](#) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
 
 # PADEN 仿真
 
@@ -9,10 +9,11 @@
 ## 功能
 
 - 從 EasyEDA 提取 PCB 走線、過孔、焊盤、鋪銅數據
-- 使用者配置電源軌道（電壓源、電流負載）
-- 客戶端預網格化（TypeScript earcut 三角剖分）
-- 呼叫本地 Python 後端進行 FEM 求解
+- 使用者配置電源軌道（電壓源、電流負載、層銅厚）
+- 內建 Go/WebAssembly 分析引擎 — 無需額外後端執行環境或服務
+- 使用 tracespace 解析 Gerber，使用 Clipper2-WASM 進行多邊形布林/偏移運算，使用 earcut 進行三角剖分
 - WebGL 視覺化電壓分佈和功率密度熱力圖
+- 支援多電源軌道分析（1 次聯合求解 + N 次獨立求解）
 
 ## 架構
 
@@ -20,26 +21,31 @@
 EasyEDA PCB
     │
     ▼
-┌─────────────┐     ┌──────────────┐     ┌───────────────┐
-│  extract.ts │────▶│  convert.ts  │────▶│   mesh.ts     │  客戶端預網格化
-│  數據提取    │     │  數據轉換     │     │  三角剖分      │
-└─────────────┘     └──────────────┘     └───────┬───────┘
-                                                   │
-                                           format_version=2
+┌─────────────┐     ┌──────────────┐     ┌─────────────────────────┐
+│  extract.ts │────▶│  convert.ts  │────▶│  ui/wasm-host.html      │
+│  數據提取    │     │  數據轉換     │     │  Go/WASM 宿主 IFrame    │
+└─────────────┘     └──────────────┘     └─────────────────────────┘
                                                    │
                                                    ▼
-                                         ┌─────────────────┐
-                                         │  Python 後端     │
-                                         │  main.py         │
-                                         │  ├ solver.py     │  FEM 求解
-                                         │  ├ problem.py    │  問題定義
-                                         │  └ mesh_pure.py  │  網格數據結構
-                                         └────────┬────────┘
-                                                  │
-                                                  ▼
-                                         ┌─────────────────┐
-                                         │  results.html   │  WebGL 視覺化
-                                         └─────────────────┘
+                                         ┌─────────────────────────┐
+                                         │  go-service/internal/   │
+                                         │  pipeline               │
+                                         │  ├ Gerber 解析          │
+                                         │  ├ 幾何處理 (clipper2)  │
+                                         │  ├ 三角剖分             │
+                                         │  └ FEM 求解             │
+                                         └───────────┬─────────────┘
+                                                     │
+                                                     ▼
+┌─────────────┐     ┌──────────────┐     ┌─────────────────────────┐
+│  display.ts │◀────│ wasmClient.ts│◀────│  JSON result            │
+│  結果展示    │     │  WASM 通訊    │     └─────────────────────────┘
+└──────┬──────┘     └──────────────┘
+       │
+       ▼
+┌─────────────┐
+│ results.html│  WebGL 視覺化
+└─────────────┘
 ```
 
 ## 使用流程
@@ -61,7 +67,6 @@ EasyEDA PCB
 
 ![提取PCB數據](./images/img-4.png)
 
-
 ## 快速開始
 
 ### 1. 安裝前端依賴
@@ -76,33 +81,32 @@ npm install
 npm run compile
 ```
 
-打包發佈：
+### 3. 建置 WASM 分析引擎
+
+```shell
+npm run build:wasm-host-bridge
+npm run build:wasm
+```
+
+完整發佈建置（TypeScript + WASM bridge + Go WASM + 資源複製 + `.eext` 打包）：
 
 ```shell
 npm run build
 ```
 
-### 3. 啟動 Python 後端
+開發用 WASM 建置（保留符號，檔案較大）：
 
 ```shell
-cd paden-service
-start-paden-windows.bat
+npm run build:wasm:dev
 ```
-
-`start-paden-windows.bat` 會自動：
-- 從 GitHub 拉取最新的 `solver.py` 和 `problem.py`
-- 安裝 Python 依賴（numpy, scipy, shapely, fastapi, uvicorn, matplotlib）
-- 語法檢查
-- 啟動服務在 `localhost:5000`
 
 ### 4. 在 EasyEDA 中安裝
 
 1. 開啟嘉立創EDA專業版，進入 PCB 編輯器
-2. 安裝擴展包，第一次執行時會彈出一個後端服務啟動提示，需要按步驟啟動服務
-
-![啟動服務](./images/img-5.png)
-
+2. 安裝擴展包
 3. 在選單中選擇 **PDN 分析 → 執行 PDN 分析...**
+
+> 無需外部後端服務；所有分析都在 EasyEDA 的 WASM 執行環境中運行。
 
 ## 專案結構
 
@@ -110,25 +114,27 @@ start-paden-windows.bat
 ├── src/                    # TypeScript 前端
 │   ├── index.ts            # 主入口，分析流程編排
 │   ├── extract.ts          # PCB 數據提取（走線、過孔、焊盤、鋪銅）
-│   ├── convert.ts          # 數據轉換 + 預網格化 + 序列化
-│   ├── mesh.ts             # 客戶端三角剖分（earcut 半邊數據結構）
-│   ├── api.ts              # HTTP 通訊（與 Python 後端）
+│   ├── convert.ts          # 數據轉換與配置建構
+│   ├── wasmClient.ts       # 載入 Go/WASM 宿主 IFrame 並透過 MessageBus 通訊
 │   ├── display.ts          # 結果展示（IFrame + Storage + MessageBus）
 │   └── types.ts            # 類型定義
-├── ui/
+├── ui/                     # 對話框 HTML 檔案
 │   ├── config.html         # 電源軌道配置介面
 │   ├── results.html        # WebGL 視覺化結果介面
-│   └── results.tpl.html    # results.html 構建模板
-├── paden-service/          # Python 後端
-│   ├── main.py             # FastAPI 伺服器（反序列化、求解編排、視覺化）
-│   ├── solver.py           # FEM 求解器（來自 GitHub）
-│   ├── problem.py          # 問題定義（來自 GitHub）
-│   ├── mesh_pure.py        # 網格數據結構（半邊、微分形式）
-│   ├── standby/            # solver.py + problem.py 備份
-│   └── start-paden-windows.bat           # 一鍵構建啟動腳本
-├── config/                 # 構建配置
-│   ├── esbuild.common.ts
-│   └── esbuild.prod.ts
+│   ├── analyzing.html      # 分析進度介面
+│   └── wasm-host.html      # 隱藏的 Go/WASM 宿主 IFrame
+├── go-service/             # Go/WebAssembly 後端
+│   ├── main_wasm.go        # WASM 入口，暴露 analyzeGerber JS API
+│   ├── internal/pipeline/  # 完整分析流程
+│   ├── internal/problem/   # 問題定義（層、網路、過孔）
+│   ├── internal/solver/    # FEM 求解器與稀疏矩陣
+│   ├── internal/mesh/      # 網格與三角剖分介面
+│   ├── internal/geometry/  # Gerber 解析、Clipper2、earcut 橋接
+│   └── internal/wasmapi/   # 結果序列化
+├── config/                 # esbuild 配置
+├── scripts/                # build:wasm / build:wasm-host-bridge / copy-wasm-assets
+├── build/                  # `.eext` 打包腳本
+├── dist/                   # 建置輸出（index.js、paden.wasm、wasm_exec.js 等）
 └── extension.json          # 擴展配置
 ```
 
@@ -136,17 +142,20 @@ start-paden-windows.bat
 
 1. **提取數據** — 從當前 PCB 提取走線、過孔、焊盤、鋪銅區域
 2. **配置分析** — 選擇電源網路，設定電壓源和電流負載
-3. **客戶端預網格化** — TypeScript 端使用 earcut 演算法對銅皮區域做三角剖分
-4. **FEM 求解** — Python 後端接收預網格數據，構建拉普拉斯矩陣並求解電壓分佈
-5. **視覺化** — WebGL 渲染電壓分佈熱力圖，支持層切換、網格邊顯示、過孔標記
+3. **Gerber 解析** — Go/WASM 引擎透過 tracespace 從 Gerber ZIP 解析銅層幾何
+4. **幾何處理** — 使用 Clipper2-WASM 進行布林運算與偏移，使用 earcut 進行三角剖分
+5. **FEM 求解** — 構建拉普拉斯矩陣並求解電壓分佈
+6. **視覺化** — WebGL 電壓熱力圖，支援層切換、網格邊顯示、過孔標記
 
 ## 技術棧
 
-**前端**：TypeScript, esbuild, WebGL, earcut
+**前端**：TypeScript, esbuild, WebGL
 
-**後端**：Python, FastAPI, numpy, scipy, shapely, matplotlib
+**後端**：Go 1.26+, WebAssembly, `syscall/js`
 
-**依賴**：`@jlceda/pro-api-types`, `earcut`
+**幾何/網格**：`@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+
+**依賴**：`@jlceda/pro-api-types`, `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
 
 ## 開源許可
 

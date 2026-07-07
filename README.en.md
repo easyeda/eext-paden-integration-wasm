@@ -9,10 +9,11 @@ JLCEDA & EasyEDA Pro Extension — Extract PCB data and perform PDN Power Distri
 ## Features
 
 - Extract PCB traces, vias, pads, and copper pours from EasyEDA
-- User-configurable power rails (voltage sources, current loads)
-- Client-side pre-meshing (TypeScript earcut triangulation)
-- Local Python backend for FEM solving
+- User-configurable power rails (voltage sources, current loads, layer copper thickness)
+- Built-in Go/WebAssembly analysis engine — no separate backend runtime or service required
+- Gerber parsing with tracespace, polygon booleans/offsets with Clipper2-WASM, triangulation with earcut
 - WebGL voltage distribution and power density heatmap visualization
+- Multi-rail analysis support (1 combined solve + N individual solves)
 
 ## Architecture
 
@@ -20,26 +21,31 @@ JLCEDA & EasyEDA Pro Extension — Extract PCB data and perform PDN Power Distri
 EasyEDA PCB
     │
     ▼
-┌─────────────┐     ┌──────────────┐     ┌───────────────┐
-│  extract.ts │────▶│  convert.ts  │────▶│   mesh.ts     │  Client pre-meshing
-│  Extraction │     │  Conversion  │     │  Triangulation │
-└─────────────┘     └──────────────┘     └───────┬───────┘
-                                                   │
-                                           format_version=2
+┌─────────────┐     ┌──────────────┐     ┌─────────────────────────┐
+│  extract.ts │────▶│  convert.ts  │────▶│  ui/wasm-host.html      │
+│  Extraction │     │  Conversion  │     │  Go/WASM host IFrame    │
+└─────────────┘     └──────────────┘     └─────────────────────────┘
                                                    │
                                                    ▼
-                                         ┌─────────────────┐
-                                         │  Python Backend  │
-                                         │  main.py         │
-                                         │  ├ solver.py     │  FEM solver
-                                         │  ├ problem.py    │  Problem definition
-                                         │  └ mesh_pure.py  │  Mesh data structures
-                                         └────────┬────────┘
-                                                  │
-                                                  ▼
-                                         ┌─────────────────┐
-                                         │  results.html   │  WebGL visualization
-                                         └─────────────────┘
+                                         ┌─────────────────────────┐
+                                         │  go-service/internal/   │
+                                         │  pipeline               │
+                                         │  ├ Gerber parsing       │
+                                         │  ├ Geometry (clipper2)  │
+                                         │  ├ Triangulation        │
+                                         │  └ FEM solver           │
+                                         └───────────┬─────────────┘
+                                                     │
+                                                     ▼
+┌─────────────┐     ┌──────────────┐     ┌─────────────────────────┐
+│  display.ts │◀────│ wasmClient.ts│◀────│  JSON result            │
+│  Display    │     │  WASM comms  │     └─────────────────────────┘
+└──────┬──────┘     └──────────────┘
+       │
+       ▼
+┌─────────────┐
+│ results.html│  WebGL visualization
+└─────────────┘
 ```
 
 ## Usage Guide
@@ -61,7 +67,6 @@ After installation, configure the extension
 
 ![Extract PCB data](./images/img-4.png)
 
-
 ## Quick Start
 
 ### 1. Install frontend dependencies
@@ -76,33 +81,32 @@ npm install
 npm run compile
 ```
 
-Build for release:
+### 3. Build the WASM analysis engine
+
+```shell
+npm run build:wasm-host-bridge
+npm run build:wasm
+```
+
+Full release build (TypeScript + WASM bridge + Go WASM + asset copy + `.eext` packaging):
 
 ```shell
 npm run build
 ```
 
-### 3. Start Python backend
+Development WASM build (keeps symbols, larger file):
 
 ```shell
-cd paden-service
-start-paden-windows.bat
+npm run build:wasm:dev
 ```
-
-`start-paden-windows.bat` will automatically:
-- Pull latest `solver.py` and `problem.py` from GitHub
-- Install Python dependencies (numpy, scipy, shapely, fastapi, uvicorn, matplotlib)
-- Run syntax checks
-- Start server on `localhost:5000`
 
 ### 4. Install in EasyEDA
 
 1. Open JLCEDA Pro, enter PCB editor
-2. Install the extension package. On first run, a backend service startup prompt will appear — follow the steps to start the service
-
-![Start service](./images/img-5.png)
-
+2. Install the extension package
 3. Select **PDN Analysis → Run PDN Analysis...** from the menu
+
+> No external backend service is required; all analysis runs inside the EasyEDA WASM runtime.
 
 ## Project Structure
 
@@ -110,25 +114,27 @@ start-paden-windows.bat
 ├── src/                    # TypeScript frontend
 │   ├── index.ts            # Main entry, analysis orchestration
 │   ├── extract.ts          # PCB data extraction (traces, vias, pads, copper)
-│   ├── convert.ts          # Data conversion + pre-meshing + serialization
-│   ├── mesh.ts             # Client-side triangulation (earcut half-edge)
-│   ├── api.ts              # HTTP communication (with Python backend)
+│   ├── convert.ts          # Config builder and solution deserialization
+│   ├── wasmClient.ts       # Loads Go/WASM host IFrame and communicates via MessageBus
 │   ├── display.ts          # Result display (IFrame + Storage + MessageBus)
 │   └── types.ts            # Type definitions
-├── ui/
+├── ui/                     # Dialog HTML files
 │   ├── config.html         # Power rail configuration UI
 │   ├── results.html        # WebGL visualization results
-│   └── results.tpl.html    # Build template for results.html
-├── paden-service/          # Python backend
-│   ├── main.py             # FastAPI server (deserialization, solving, visualization)
-│   ├── solver.py           # FEM solver (from GitHub)
-│   ├── problem.py          # Problem definition (from GitHub)
-│   ├── mesh_pure.py        # Mesh data structures (half-edge, differential forms)
-│   ├── standby/            # solver.py + problem.py backup
-│   └── start-paden-windows.bat           # One-click build & start script
-├── config/                 # Build configuration
-│   ├── esbuild.common.ts
-│   └── esbuild.prod.ts
+│   ├── analyzing.html      # Analysis progress UI
+│   └── wasm-host.html      # Hidden Go/WASM host IFrame
+├── go-service/             # Go/WebAssembly backend
+│   ├── main_wasm.go        # WASM entry exposing analyzeGerber JS API
+│   ├── internal/pipeline/  # Full analysis pipeline
+│   ├── internal/problem/   # Problem definition (layers, networks, vias)
+│   ├── internal/solver/    # FEM solver and sparse matrices
+│   ├── internal/mesh/      # Mesh and triangulation interfaces
+│   ├── internal/geometry/  # Gerber parsing, Clipper2, earcut bridge
+│   └── internal/wasmapi/   # Result serialization
+├── config/                 # esbuild configuration
+├── scripts/                # build:wasm / build:wasm-host-bridge / copy-wasm-assets
+├── build/                  # `.eext` packaging script
+├── dist/                   # Build output (index.js, paden.wasm, wasm_exec.js, etc.)
 └── extension.json          # Extension manifest
 ```
 
@@ -136,17 +142,20 @@ start-paden-windows.bat
 
 1. **Extract data** — Extract traces, vias, pads, and copper areas from the current PCB
 2. **Configure analysis** — Select power nets, set voltage sources and current loads
-3. **Client pre-meshing** — TypeScript earcut triangulation on copper regions
-4. **FEM solving** — Python backend receives pre-meshed data, builds Laplacian matrix, solves voltage distribution
-5. **Visualization** — WebGL voltage heatmap with layer switching, mesh edges, via markers
+3. **Gerber parsing** — The Go/WASM engine parses copper layer geometry from the Gerber ZIP via tracespace
+4. **Geometry processing** — Boolean operations and offsets with Clipper2-WASM, triangulation with earcut
+5. **FEM solving** — Build Laplacian matrix and solve voltage distribution
+6. **Visualization** — WebGL voltage heatmap with layer switching, mesh edges, via markers
 
 ## Tech Stack
 
-**Frontend**: TypeScript, esbuild, WebGL, earcut
+**Frontend**: TypeScript, esbuild, WebGL
 
-**Backend**: Python, FastAPI, numpy, scipy, shapely, matplotlib
+**Backend**: Go 1.26+, WebAssembly, `syscall/js`
 
-**Dependencies**: `@jlceda/pro-api-types`, `earcut`
+**Geometry/Mesh**: `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+
+**Dependencies**: `@jlceda/pro-api-types`, `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
 
 ## License
 
