@@ -27,7 +27,9 @@ export async function runPdnAnalysis(): Promise<void> {
 		]);
 
 		if (!easyedaData || (easyedaData.vias.length === 0 && easyedaData.pads.length === 0)) {
-			eda.sys_Dialog.showInformationMessage('未找到 PCB 数据，请确保打开了 PCB 文件', '警告');
+			const msg = '未找到 PCB 数据，请确保打开了 PCB 文件';
+			console.warn('[PDN]', msg);
+			eda.sys_Dialog.showInformationMessage(msg, '警告');
 			eda.sys_LoadingAndProgressBar.showProgressBar(100, 'pdn-extract');
 			return;
 		}
@@ -73,13 +75,12 @@ export async function runPdnAnalysis(): Promise<void> {
 				if (!solution || !solution.layer_solutions || solution.layer_solutions.length === 0) {
 					const backendMsg = solution?.message ? `：${solution.message}` : '';
 					const diagLines: string[] = solution?.diagnostics;
-					if (diagLines && diagLines.length > 0) {
-						eda.sys_Dialog.showInformationMessage(
-							`[${runLabel}] 求解失败${backendMsg}\n\n诊断日志:\n${diagLines.join('\n')}`,
-							'错误',
-						);
-					}
-					throw new Error(`[${runLabel}] 求解失败：未生成有效结果${backendMsg}`);
+					const dialogMsg = diagLines && diagLines.length > 0
+						? `[${runLabel}] 求解失败${backendMsg}\n\n诊断日志:\n${diagLines.join('\n')}`
+						: `[${runLabel}] 求解失败：未生成有效结果${backendMsg}`;
+					console.error('[PDN]', dialogMsg, { solution });
+					eda.sys_Dialog.showInformationMessage(dialogMsg, '错误');
+					throw new Error(dialogMsg);
 				}
 				const solverInfo = solution.solver_info;
 				const gni = solverInfo?.ground_node_current;
@@ -190,6 +191,7 @@ export async function runPdnAnalysis(): Promise<void> {
 	catch (error) {
 		if (error === '__CANCEL__' || (error instanceof Error && error.message === '__CANCEL__'))
 			return;
+		console.error('[PDN] 分析失败:', error);
 		eda.sys_Dialog.showInformationMessage(`分析失败: ${error}`, '错误');
 		for (const id of ['pdn-extract', 'pdn-convert', 'pdn-analyze']) {
 			try {
