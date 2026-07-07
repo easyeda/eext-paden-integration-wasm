@@ -68,7 +68,7 @@ export async function runPdnAnalysis(): Promise<void> {
 			const runAnalysis = async (runConfig: PdnConfig, runLabel: string) => {
 				const gerberConfig = converter.buildGerberConfig(easyedaData, runConfig);
 				const solution: any = await wasmClient.analyzeGerber(gerberBlob!, JSON.stringify(gerberConfig));
-				console.warn(`[PDN] Backend response: success=${solution?.success}, layer_solutions=${solution?.layer_solutions?.length}, has connection_points=${!!(solution as any)?.connection_points}`);
+				console.warn(`[PDN] Backend response: success=${solution?.success}, message=${solution?.message ?? '(none)'}, layer_solutions=${solution?.layer_solutions?.length}, has connection_points=${!!(solution as any)?.connection_points}`);
 
 				if (!solution || !solution.layer_solutions || solution.layer_solutions.length === 0) {
 					const backendMsg = solution?.message ? `：${solution.message}` : '';

@@ -172,6 +172,10 @@
             });
 
             const analyzeResult = await window.padne.analyzeGerber(gerberBytes, configJson);
+            const preview = typeof analyzeResult === 'string'
+              ? analyzeResult.slice(0, 200)
+              : analyzeResult;
+            console.log('[WASM Host] analyze result:', preview);
             bus.publish(replyTopic, { result: analyzeResult });
           }
           catch (e) {
