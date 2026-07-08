@@ -74,11 +74,13 @@
         async function patchedClipperJsUrl() {
           const source = await textFor('/dist/clipper2z.js');
           const selfUrl = await objectUrlFor('/dist/clipper2z.js');
-          // clipper2z.js uses import.meta.url, which is illegal inside
-          // importScripts()-loaded classic scripts. Replace it with the
-          // object URL of the script itself so locateFile / scriptDirectory
-          // still resolve correctly.
-          const patched = source.replace(/import\.meta\.url/g, `"${selfUrl}"`);
+          // clipper2z.js is an ES module: it uses import.meta.url and ends with
+          // "export default Clipper2Z;". Classic scripts loaded via importScripts()
+          // do not support either. Patch it so the async function declaration
+          // becomes a global function that the worker can use directly.
+          const patched = source
+            .replace(/import\.meta\.url/g, `"${selfUrl}"`)
+            .replace(/export\s+default\s+Clipper2Z\s*;?\s*$/, '');
           const blob = new Blob([patched], { type: 'application/javascript' });
           return URL.createObjectURL(blob);
         }
