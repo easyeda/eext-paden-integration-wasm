@@ -53,7 +53,6 @@
       try {
         setStatus('Loading extension assets...');
 
-        // Helper: read an extension file as a File object and create an object URL.
         async function getFile(uri) {
           const file = await eda.sys_FileSystem.getExtensionFile(uri);
           if (!file) {
@@ -67,83 +66,74 @@
           return URL.createObjectURL(file);
         }
 
-        // Helper: load a classic script from an object URL.
-        function loadScript(url) {
-          return new Promise((resolve, reject) => {
-            const s = document.createElement('script');
-            s.src = url;
-            s.onload = resolve;
-            s.onerror = () => reject(new Error(`Failed to load script ${url}`));
-            document.head.appendChild(s);
-          });
+        async function textFor(uri) {
+          const file = await getFile(uri);
+          return file.text();
         }
 
-        // 1. Clipper2-WASM ES module.
-        //    Load the module script via object URL, then create a factory that points
-        //    the loader at an object URL for the .wasm binary (avoids root-relative
-        //    fetch failures inside the sandboxed blob iframe).
-        const clipperWasmFile = await getFile('/dist/clipper2z.wasm');
-        const clipperWasmUrl = URL.createObjectURL(clipperWasmFile);
-        const clipperJsUrl = await objectUrlFor('/dist/clipper2z.js');
-        const clipperModule = await import(clipperJsUrl);
-        const Clipper2Z = clipperModule.default;
-        window.Clipper2ZFactory = () => Clipper2Z({ locateFile: () => clipperWasmUrl });
+        // Fetch all assets needed by the worker.
+        const [
+          clipperJsUrl,
+          clipperWasmUrl,
+          bridgeJsUrl,
+          wasmExecUrl,
+          padenWasmUrl,
+          workerSource,
+        ] = await Promise.all([
+          objectUrlFor('/dist/clipper2z.js'),
+          objectUrlFor('/dist/clipper2z.wasm'),
+          objectUrlFor('/dist/wasm-geometry-bridge.js'),
+          objectUrlFor('/dist/wasm_exec.js'),
+          objectUrlFor('/dist/paden.wasm'),
+          textFor('/ui/wasm-worker.js'),
+        ]);
 
-        // 2. Geometry bridge (bundles tracespace + earcut, reads Clipper2ZFactory).
-        const bridgeUrl = await objectUrlFor('/dist/wasm-geometry-bridge.js');
-        await loadScript(bridgeUrl);
+        // Inject asset URLs into the worker source and create a Blob URL.
+        const workerScript = workerSource
+          .replace(/__CLIPPER_JS_URL__/g, clipperJsUrl)
+          .replace(/__CLIPPER_WASM_URL__/g, clipperWasmUrl)
+          .replace(/__BRIDGE_JS_URL__/g, bridgeJsUrl)
+          .replace(/__WASM_EXEC_URL__/g, wasmExecUrl)
+          .replace(/__PADEN_WASM_URL__/g, padenWasmUrl);
+        const workerBlob = new Blob([workerScript], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(workerBlob);
 
-        setStatus('Initializing geometry bridge...');
-        while (!window.padenGeometry) {
-          await new Promise(r => setTimeout(r, 10));
-        }
-        await window.padenGeometry.init();
-        setStatus('Geometry bridge ready');
+        setStatus('Starting WASM worker...');
+        const worker = new Worker(workerUrl);
 
-        // 3. Go WASM runtime (global window.Go).
-        const wasmExecUrl = await objectUrlFor('/dist/wasm_exec.js');
-        await loadScript(wasmExecUrl);
+        let ready = false;
 
-        setStatus('Initializing Go WASM...');
-        const padenWasmFile = await getFile('/dist/paden.wasm');
-        const padenWasmBuffer = await padenWasmFile.arrayBuffer();
-        const go = new Go();
-        const result = await WebAssembly.instantiate(padenWasmBuffer, go.importObject);
-        go.run(result.instance);
-        setStatus('Go WASM ready');
+        worker.onmessage = (event) => {
+          const msg = event.data;
+          if (!msg || !msg.type) return;
 
-        // Convert a MessageBus-transferred binary payload to Uint8Array.
-        function gerberToUint8Array(rawBytes) {
-          if (rawBytes instanceof Uint8Array || rawBytes instanceof Uint8ClampedArray) {
-            return rawBytes;
+          switch (msg.type) {
+            case 'ready':
+              ready = true;
+              setStatus('WASM host ready');
+              bus.publish('pdn-wasm-ready', {});
+              break;
+            case 'error':
+              publishError(bus, msg.error);
+              break;
+            case 'analyze-result':
+              if (msg.replyTopic) {
+                bus.publish(msg.replyTopic, {
+                  result: msg.result,
+                  error: msg.error,
+                });
+              }
+              break;
+            case 'progress':
+              bus.publish('pdn-wasm-progress', msg.progress);
+              break;
           }
-          // Try direct construction first: handles ArrayBuffer, DataView and
-          // TypedArrays from other realms where instanceof checks fail.
-          try {
-            const view = new Uint8Array(rawBytes);
-            if (view.length > 0 || rawBytes.byteLength === 0) {
-              return view;
-            }
-          }
-          catch {
-            // fall through
-          }
-          // TypedArray/DataView from another realm with a buffer property.
-          if (rawBytes && rawBytes.buffer instanceof ArrayBuffer) {
-            return new Uint8Array(rawBytes.buffer, rawBytes.byteOffset || 0, rawBytes.byteLength);
-          }
-          // Fallback: plain object with numeric keys (MessageBus JSON fallback).
-          if (rawBytes && typeof rawBytes === 'object') {
-            const keys = Object.keys(rawBytes)
-              .map(Number)
-              .filter(k => Number.isFinite(k))
-              .sort((a, b) => a - b);
-            if (keys.length > 0) {
-              return new Uint8Array(keys.map(k => rawBytes[k]));
-            }
-          }
-          throw new Error(`Unsupported gerberBytes type: ${typeof rawBytes}, constructor: ${rawBytes?.constructor?.name}`);
-        }
+        };
+
+        worker.onerror = (err) => {
+          console.error('[WASM Host] worker error:', err);
+          publishError(bus, err.message || 'worker error');
+        };
 
         // Handle analyze requests from the extension.
         bus.subscribe('pdn-wasm-analyze', async (msg) => {
@@ -157,35 +147,34 @@
             console.log('[WASM Host] analyze request received:', {
               rawType: typeof rawBytes,
               constructor: rawBytes?.constructor?.name,
-              isUint8Array: rawBytes instanceof Uint8Array,
-              isArrayBuffer: rawBytes instanceof ArrayBuffer,
-              isArray: Array.isArray(rawBytes),
               byteLength: rawBytes?.byteLength ?? rawBytes?.length ?? 'N/A',
               configLength: typeof configJson === 'string' ? configJson.length : 'N/A',
             });
 
-            const gerberBytes = gerberToUint8Array(rawBytes);
+            // Transfer the underlying ArrayBuffer to the worker for zero-copy.
+            let gerberBuffer;
+            if (rawBytes instanceof ArrayBuffer) {
+              gerberBuffer = rawBytes;
+            }
+            else if (rawBytes?.buffer instanceof ArrayBuffer) {
+              gerberBuffer = rawBytes.buffer;
+            }
+            else {
+              throw new Error(`Unsupported gerberBytes type: ${typeof rawBytes}`);
+            }
 
-            console.log('[WASM Host] passing to Go:', {
-              type: gerberBytes.constructor.name,
-              length: gerberBytes.length,
-            });
-
-            const analyzeResult = await window.padne.analyzeGerber(gerberBytes, configJson);
-            const preview = typeof analyzeResult === 'string'
-              ? analyzeResult.slice(0, 200)
-              : analyzeResult;
-            console.log('[WASM Host] analyze result:', preview);
-            bus.publish(replyTopic, { result: analyzeResult });
+            worker.postMessage({
+              type: 'analyze',
+              gerberBytes: gerberBuffer,
+              configJson,
+              replyTopic,
+            }, [gerberBuffer]);
           }
           catch (e) {
             console.error('[WASM Host] analyze failed:', e);
             bus.publish(replyTopic, { error: String(e) });
           }
         });
-
-        bus.publish('pdn-wasm-ready', {});
-        setStatus('WASM host ready');
       }
       catch (e) {
         publishError(bus, e.message);
