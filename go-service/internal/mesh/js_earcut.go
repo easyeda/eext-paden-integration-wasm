@@ -1,3 +1,5 @@
+//go:build js && wasm
+
 package mesh
 
 import (
@@ -5,12 +7,6 @@ import (
 
 	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 )
-
-// Triangulation holds vertices and triangle indices from earcut.
-type Triangulation struct {
-	Vertices  []geometry.Point
-	Triangles [][3]int
-}
 
 // Earcut triangulates a polygon with holes using the JS earcut library.
 func Earcut(poly geometry.Polygon) (*Triangulation, error) {

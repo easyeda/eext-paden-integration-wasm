@@ -10,6 +10,12 @@ import (
 // Point is a 2D point alias for geometry.Point.
 type Point = geometry.Point
 
+// Triangulation holds vertices and triangle indices from earcut.
+type Triangulation struct {
+	Vertices  []geometry.Point
+	Triangles [][3]int
+}
+
 // Vector is a 2D vector.
 type Vector struct {
 	DX, DY float64

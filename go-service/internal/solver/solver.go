@@ -73,6 +73,17 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	// Build vertex indexer
 	vindex := buildVertexIndexer(meshes)
 
+	// Guard against meshes that are too large for WASM memory.
+	totalMeshVerts := 0
+	for _, m := range meshes {
+		totalMeshVerts += len(m.Vertices)
+	}
+	const maxMeshVerts = 500000
+	fmt.Printf("[PADEN solver] total mesh vertices: %d (limit %d)\n", totalMeshVerts, maxMeshVerts)
+	if totalMeshVerts > maxMeshVerts {
+		return nil, fmt.Errorf("mesh too large: %d vertices (limit %d); reduce board complexity or increase element size", totalMeshVerts, maxMeshVerts)
+	}
+
 	// Filter dead networks
 	filteredNetworks := filterDeadNetworks(prob, layerGeoms, connected)
 	if len(filteredNetworks) == 0 {
@@ -84,6 +95,7 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 
 	// System size
 	N := len(vindex.globalToLocal) + nodeIndexer.internalCount + len(nodeIndexer.extraVars) + 1
+	fmt.Printf("[PADEN solver] system size: %d\n", N)
 
 	// Stamp Laplacian
 	triplets := stampLaplacian(meshes, meshToLayer, prob, vindex)
@@ -115,9 +127,10 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	}
 	A = A.AddDiagonal(reg)
 
-	// Solve
+	// Solve. The MNA matrix is symmetric indefinite (Laplacian + voltage-source
+	// constraints), so use restarted GMRES instead of CG.
 	precond := NewJacobiPreconditioner(A)
-	v, err := SolveCG(A, rhs, N*2, 1e-9, precond)
+	v, err := SolveGMRES(A, rhs, 100, N*2, 1e-9, precond)
 	if err != nil {
 		return nil, fmt.Errorf("solver failed: %w", err)
 	}
@@ -296,7 +309,7 @@ func boxesOverlap(a, b geometry.Box) bool {
 
 func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool) ([]*mesh.Mesh, []int) {
 	cfg := mesh.DefaultConfig()
-	// Adjust max size based on total copper area
+	// Adjust max size based on total copper area to keep vertex count under control.
 	totalArea := 0.0
 	for _, geoms := range layerGeoms {
 		for _, g := range geoms {
@@ -307,10 +320,12 @@ func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, conn
 		scale := math.Min(math.Sqrt(30000/math.Max(totalArea, 100)), 4.0)
 		cfg.MaximumSize = math.Min(cfg.MaximumSize*scale, 2.0)
 	} else {
-		scale := math.Max(0.5, math.Sqrt(30000/totalArea))
-		cfg.MaximumSize = math.Max(cfg.MaximumSize*scale, 0.3)
+		// Large boards: coarsen mesh so memory does not explode.
+		scale := math.Min(math.Sqrt(totalArea/30000), 4.0)
+		cfg.MaximumSize = math.Max(math.Min(cfg.MaximumSize*scale, 5.0), 1.5)
 		cfg.MinimumAngle = 25.0
 	}
+	fmt.Printf("[PADEN solver] total copper area=%.1f mm^2, max mesh size=%.3f mm\n", totalArea, cfg.MaximumSize)
 	mesher := mesh.NewMesher(cfg)
 
 	var meshes []*mesh.Mesh
@@ -406,27 +421,32 @@ func filterDeadNetworks(prob *problem.Problem, layerGeoms [][]geometry.Polygon, 
 }
 
 func stampLaplacian(meshes []*mesh.Mesh, meshToLayer []int, prob *problem.Problem, vindex *vertexIndexer) []Triplet {
-	var triplets []Triplet
+	// Rough estimate: ~3 off-diagonal + 1 diagonal triplet per vertex.
+	totalVerts := 0
+	for _, m := range meshes {
+		totalVerts += len(m.Vertices)
+	}
+	triplets := make([]Triplet, 0, totalVerts*4)
+
 	for mi, m := range meshes {
 		conductance := prob.Layers[meshToLayer[mi]].Conductance
 		N := len(m.Vertices)
 		diag := make([]float64, N)
-		for vi, vertex := range m.Vertices {
-			for _, edge := range vertex.Orbit() {
-				ratio := edge.Cotan()
-				if ratio == 0 {
-					continue
-				}
-				twin := edge.Twin
-				if twin == nil {
-					continue
-				}
-				kj := twin.Origin.Idx
-				gi := vindex.localToGlobal[[2]int{mi, vi}]
-				gj := vindex.localToGlobal[[2]int{mi, kj}]
-				triplets = append(triplets, Triplet{Row: gi, Col: gj, Val: conductance * ratio})
-				diag[vi] -= conductance * ratio
+		// Iterate half-edges directly to avoid per-vertex Orbit allocations.
+		for _, edge := range m.Edges {
+			if edge.Twin == nil {
+				continue
 			}
+			ratio := edge.Cotan()
+			if ratio == 0 {
+				continue
+			}
+			vi := edge.Origin.Idx
+			kj := edge.Twin.Origin.Idx
+			gi := vindex.localToGlobal[[2]int{mi, vi}]
+			gj := vindex.localToGlobal[[2]int{mi, kj}]
+			triplets = append(triplets, Triplet{Row: gi, Col: gj, Val: conductance * ratio})
+			diag[vi] -= conductance * ratio
 		}
 		for vi, d := range diag {
 			gi := vindex.localToGlobal[[2]int{mi, vi}]

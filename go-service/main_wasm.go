@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 	"syscall/js"
 
 	"github.com/easyeda/eext-paden-integration/go-service/internal/pipeline"
@@ -34,6 +35,13 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 		reject := p[1]
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[PADEN WASM] panic: %v\n%s\n", r, debug.Stack())
+					reject.Invoke(js.Global().Get("Error").New(fmt.Sprintf("panic: %v", r)))
+				}
+			}()
+
 			if len(args) < 2 {
 				reject.Invoke(js.Global().Get("Error").New("expected 2 arguments: gerberZip ArrayBuffer, configJson string"))
 				return

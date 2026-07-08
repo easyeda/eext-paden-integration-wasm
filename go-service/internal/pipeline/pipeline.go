@@ -314,15 +314,21 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, d *Diag
 	gerberCx := (allBounds.MinX + allBounds.MaxX) / 2
 	gerberCy := (allBounds.MinY + allBounds.MaxY) / 2
 
-	ox := gerberCx - easyedaCx
-	oy := gerberCy - easyedaCy
+	// tracespace/plotter emits standard Gerber coordinates where Y increases
+	// upward; EasyEDA canvas coordinates have Y increasing downward.  Flip Y
+	// so pads/vias line up with the Gerber copper geometry.
+	sx := 1.0
+	sy := -1.0
+	ox := gerberCx - sx*easyedaCx
+	oy := gerberCy - sy*easyedaCy
 
 	d.Info(fmt.Sprintf("EasyEDA bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		bounds.MinX, bounds.MaxX, bounds.MinY, bounds.MaxY))
 	d.Info(fmt.Sprintf("Gerber bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		allBounds.MinX, allBounds.MaxX, allBounds.MinY, allBounds.MaxY))
+	d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.2f,%.2f)", sx, sy, ox, oy))
 
-	return &[4]float64{1.0, 1.0, ox, oy}
+	return &[4]float64{sx, sy, ox, oy}
 }
 
 func buildStackup(thickness map[string]float64, layers []*problem.Layer) []float64 {

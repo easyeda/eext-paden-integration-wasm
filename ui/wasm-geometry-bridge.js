@@ -203,18 +203,53 @@ function flattenLayeredErasures(polygons) {
 }
 
 function gerberToPolygons(gerberText) {
+	console.warn('[geometry bridge] ===== bridge v20260708-nbsp-fix =====');
 	const parseFn = getParse();
 	const plotFn = getPlot();
+
+	// EasyEDA's Gerber generator inserts non-breaking spaces (U+00A0) in comments.
+	// tracespace's lexer only recognizes regular spaces/tabs as whitespace, so NBSP
+	// is treated as an unexpected token and aborts parsing. Normalize it first.
+	gerberText = (gerberText ?? '').replace(/\xA0/g, ' ');
+
+	const headLines = gerberText.split('\n').slice(0, 40).join('\n');
+	console.warn('[geometry bridge] gerberToPolygons input length:', gerberText?.length, 'parseFn:', typeof parseFn, 'plotFn:', typeof plotFn);
+	console.warn(`[geometry bridge] gerberText head:\n${headLines}`);
 	if (!parseFn || !plotFn) {
 		throw new Error('tracespace parser/plotter not available on window');
 	}
-	const tree = parseFn(gerberText);
-	const image = plotFn(tree);
+	let tree;
+	try {
+		tree = parseFn(gerberText);
+	}
+	catch (e) {
+		console.error('[geometry bridge] tracespace parse error:', e);
+		throw e;
+	}
+	console.warn('[geometry bridge] parsed tree:', { type: tree?.type, filetype: tree?.filetype, childrenCount: tree?.children?.length });
+	if (tree?.children) {
+		for (let i = 0; i < Math.min(tree.children.length, 20); i++) {
+			const c = tree.children[i];
+			console.warn('[geometry bridge] tree child', i, { type: c?.type, graphic: c?.graphic, code: c?.code, name: c?.name, comment: c?.comment });
+		}
+	}
+	let image;
+	try {
+		image = plotFn(tree);
+	}
+	catch (e) {
+		console.error('[geometry bridge] tracespace plot error:', e);
+		throw e;
+	}
+	console.warn('[geometry bridge] plotted image:', { type: image?.type, units: image?.units, size: image?.size, childrenCount: image?.children?.length });
 	let all = [];
 	for (const child of image.children || []) {
-		all.push(...imageGraphicToPolygons(child));
+		const childPolys = imageGraphicToPolygons(child);
+		console.warn('[geometry bridge] image child:', { type: child?.type, shapeType: child?.shape?.type, region: child?.region, width: child?.width, polygons: childPolys.length });
+		all.push(...childPolys);
 	}
 	all = flattenLayeredErasures(all);
+	console.warn('[geometry bridge] gerberToPolygons result:', { totalPolygons: all.length });
 	return all;
 }
 
