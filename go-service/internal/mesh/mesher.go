@@ -109,7 +109,7 @@ func (m *Mesher) generatePoints(poly geometry.Polygon, seedPoints []Point) []Poi
 	}
 
 	// Limit total grid points to keep WASM memory reasonable.
-	maxVerts := 30000
+	maxVerts := 10000
 	spacing := maxSize
 	if (w*h)/(spacing*spacing) > float64(maxVerts)*0.6 {
 		spacing = math.Sqrt((w * h) / (float64(maxVerts) * 0.6))

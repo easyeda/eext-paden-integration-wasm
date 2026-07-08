@@ -78,7 +78,7 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	for _, m := range meshes {
 		totalMeshVerts += len(m.Vertices)
 	}
-	const maxMeshVerts = 500000
+	const maxMeshVerts = 25000
 	fmt.Printf("[PADEN solver] total mesh vertices: %d (limit %d)\n", totalMeshVerts, maxMeshVerts)
 	if totalMeshVerts > maxMeshVerts {
 		return nil, fmt.Errorf("mesh too large: %d vertices (limit %d); reduce board complexity or increase element size", totalMeshVerts, maxMeshVerts)
@@ -318,8 +318,10 @@ func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, conn
 		}
 	}
 	if totalArea < 30000 {
+		// Medium boards: coarsen enough to keep the solve interactive in WASM
+		// without sacrificing too much accuracy.
 		scale := math.Min(math.Sqrt(30000/math.Max(totalArea, 100)), 4.0)
-		cfg.MaximumSize = math.Min(cfg.MaximumSize*scale, 2.0)
+		cfg.MaximumSize = math.Min(cfg.MaximumSize*scale, 4.0)
 	} else {
 		// Large boards: coarsen mesh so memory does not explode.
 		scale := math.Min(math.Sqrt(totalArea/30000), 4.0)

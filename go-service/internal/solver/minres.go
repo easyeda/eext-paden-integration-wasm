@@ -3,6 +3,7 @@ package solver
 import (
 	"fmt"
 	"math"
+	"time"
 )
 
 // SolveMINRES solves A*x = b using the MINRES method for symmetric (possibly
@@ -42,8 +43,10 @@ func SolveMINRES(a *CSRMatrix, b []float64, maxIter int, tol float64) ([]float64
 	beta := 0.0 // beta_k (Lanczos)
 
 	for iter := 0; iter < maxIter; iter++ {
-		if iter%100 == 0 {
+		if iter%25 == 0 {
 			fmt.Printf("[PADEN solver] MINRES iter %d, residual=%.6e\n", iter, phi)
+			// Yield to the JavaScript event loop so the EasyEDA UI stays responsive.
+			time.Sleep(1 * time.Millisecond)
 		}
 
 		// z = A * v
