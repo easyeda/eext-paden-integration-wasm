@@ -71,6 +71,18 @@
           return file.text();
         }
 
+        async function patchedClipperJsUrl() {
+          const source = await textFor('/dist/clipper2z.js');
+          const selfUrl = await objectUrlFor('/dist/clipper2z.js');
+          // clipper2z.js uses import.meta.url, which is illegal inside
+          // importScripts()-loaded classic scripts. Replace it with the
+          // object URL of the script itself so locateFile / scriptDirectory
+          // still resolve correctly.
+          const patched = source.replace(/import\.meta\.url/g, `"${selfUrl}"`);
+          const blob = new Blob([patched], { type: 'application/javascript' });
+          return URL.createObjectURL(blob);
+        }
+
         // Fetch all assets needed by the worker.
         const [
           clipperJsUrl,
@@ -80,7 +92,7 @@
           padenWasmUrl,
           workerSource,
         ] = await Promise.all([
-          objectUrlFor('/dist/clipper2z.js'),
+          patchedClipperJsUrl(),
           objectUrlFor('/dist/clipper2z.wasm'),
           objectUrlFor('/dist/wasm-geometry-bridge.js'),
           objectUrlFor('/dist/wasm_exec.js'),
