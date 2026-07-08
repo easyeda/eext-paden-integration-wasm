@@ -113,24 +113,25 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	triplets = append(triplets, Triplet{Row: iGnd, Col: groundVar, Val: 1.0})
 	rhs[groundVar] = 0.0
 
-	// Build matrix and regularize
+	// Build matrix and regularize. Regularize every diagonal entry that is
+	// (near) zero, including internal nodes and voltage-source extra variables.
 	A := NewCSRFromTriplets(N, triplets)
 	diag := A.Diagonal()
 	reg := make([]float64, N)
-	nVertices := len(vindex.globalToLocal)
-	regVal := 1e-9
-	for i := 0; i < nVertices; i++ {
-		if math.Abs(diag[i]) < 1e-15 {
-			regVal = 1e-6
+	for i := 0; i < N; i++ {
+		if math.Abs(diag[i]) < 1e-12 {
+			reg[i] = 1e-6
+		} else {
+			reg[i] = 1e-9
 		}
-		reg[i] = regVal
 	}
 	A = A.AddDiagonal(reg)
 
 	// Solve. The MNA matrix is symmetric indefinite (Laplacian + voltage-source
-	// constraints), so use restarted GMRES instead of CG.
-	precond := NewJacobiPreconditioner(A)
-	v, err := SolveGMRES(A, rhs, 100, N*2, 1e-9, precond)
+	// constraints). MINRES uses short Lanczos recurrences and O(n) memory, so it
+	// is far cheaper in WASM than restarted GMRES for systems of this size.
+	fmt.Printf("[PADEN solver] starting MINRES for N=%d\n", N)
+	v, err := SolveMINRES(A, rhs, N, 1e-9)
 	if err != nil {
 		return nil, fmt.Errorf("solver failed: %w", err)
 	}
