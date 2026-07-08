@@ -149,6 +149,34 @@
           publishError(bus, err.message || 'worker error');
         };
 
+        // Convert the various binary shapes that MessageBus may hand us into a
+        // Uint8Array. We then transfer its ArrayBuffer to the worker.
+        function gerberToUint8Array(rawBytes) {
+          if (rawBytes instanceof Uint8Array || rawBytes instanceof Uint8ClampedArray)
+            return rawBytes;
+          if (rawBytes instanceof ArrayBuffer)
+            return new Uint8Array(rawBytes);
+          try {
+            const view = new Uint8Array(rawBytes);
+            if (view.length > 0 || rawBytes.byteLength === 0)
+              return view;
+          }
+          catch {
+            // fall through
+          }
+          if (rawBytes && rawBytes.buffer instanceof ArrayBuffer)
+            return new Uint8Array(rawBytes.buffer, rawBytes.byteOffset || 0, rawBytes.byteLength);
+          if (rawBytes && typeof rawBytes === 'object') {
+            const keys = Object.keys(rawBytes)
+              .map(Number)
+              .filter(k => Number.isFinite(k))
+              .sort((a, b) => a - b);
+            if (keys.length > 0)
+              return new Uint8Array(keys.map(k => rawBytes[k]));
+          }
+          throw new Error(`Unsupported gerberBytes type: ${typeof rawBytes}`);
+        }
+
         // Handle analyze requests from the extension.
         bus.subscribe('pdn-wasm-analyze', async (msg) => {
           const replyTopic = msg?.replyTopic;
@@ -165,17 +193,8 @@
               configLength: typeof configJson === 'string' ? configJson.length : 'N/A',
             });
 
-            // Transfer the underlying ArrayBuffer to the worker for zero-copy.
-            let gerberBuffer;
-            if (rawBytes instanceof ArrayBuffer) {
-              gerberBuffer = rawBytes;
-            }
-            else if (rawBytes?.buffer instanceof ArrayBuffer) {
-              gerberBuffer = rawBytes.buffer;
-            }
-            else {
-              throw new Error(`Unsupported gerberBytes type: ${typeof rawBytes}`);
-            }
+            const gerberBytes = gerberToUint8Array(rawBytes);
+            const gerberBuffer = gerberBytes.buffer;
 
             worker.postMessage({
               type: 'analyze',
