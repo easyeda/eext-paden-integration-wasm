@@ -7,6 +7,8 @@
  *   __BRIDGE_JS_URL__, __WASM_EXEC_URL__, __PADEN_WASM_URL__
  */
 
+/* eslint-disable no-console */
+
 /* global importScripts Go */
 
 // In a worker the global object is `globalThis`; bridge scripts reference `window`.
@@ -31,6 +33,41 @@ importScripts(WASM_EXEC_URL);
 let goRuntime = null;
 let wasmInstance = null;
 let initError = null;
+
+// Forward all console output to the host so the AI bridge can read it.
+const __originalConsole = {
+	log: console.log,
+	info: console.info,
+	warn: console.warn,
+	error: console.error,
+};
+function forwardLog(level, args) {
+	__originalConsole[level](...args);
+	try {
+		globalThis.postMessage({
+			type: 'log',
+			level,
+			message: args.map((a) => {
+				try {
+					if (typeof a === 'object' && a !== null)
+						return JSON.stringify(a);
+					return String(a);
+				}
+				catch {
+					return String(a);
+				}
+			}).join(' '),
+			timestamp: Date.now(),
+		});
+	}
+	catch {
+		// ignore
+	}
+}
+console.log = (...args) => forwardLog('log', args);
+console.info = (...args) => forwardLog('info', args);
+console.warn = (...args) => forwardLog('warn', args);
+console.error = (...args) => forwardLog('error', args);
 
 async function initWASM() {
 	try {
@@ -85,6 +122,7 @@ function gerberToUint8Array(rawBytes) {
 
 async function handleAnalyze(msg) {
 	const { gerberBytes: rawBytes, configJson, replyTopic } = msg;
+	let progressTimer = null;
 	try {
 		if (initError)
 			throw initError;
@@ -94,11 +132,24 @@ async function handleAnalyze(msg) {
 		}
 
 		const gerberBytes = gerberToUint8Array(rawBytes);
+		console.log('[WASM Worker] analyze start', replyTopic, 'bytes=', gerberBytes.length);
+
+		// Heartbeat progress so the host UI knows the worker is still alive
+		// during long solves.
+		progressTimer = setInterval(() => {
+			globalThis.postMessage({ type: 'progress', progress: { alive: true } });
+		}, 1500);
+
 		const result = await globalThis.padne.analyzeGerber(gerberBytes, configJson);
+		console.log('[WASM Worker] analyze done', replyTopic);
 		globalThis.postMessage({ type: 'analyze-result', replyTopic, result });
 	}
 	catch (e) {
 		globalThis.postMessage({ type: 'analyze-result', replyTopic, error: String(e) });
+	}
+	finally {
+		if (progressTimer)
+			clearInterval(progressTimer);
 	}
 }
 

@@ -57,10 +57,19 @@ type Face struct {
 }
 
 // Vertices returns the vertices of the face.
+// The loop is bounded to avoid runaway growth if Next links are corrupted.
 func (f *Face) Vertices() []*Vertex {
 	var out []*Vertex
+	if f.Edge == nil {
+		return out
+	}
+	seen := make(map[*HalfEdge]bool)
 	e := f.Edge
 	for {
+		if e == nil || seen[e] {
+			break
+		}
+		seen[e] = true
 		out = append(out, e.Origin)
 		e = e.Next
 		if e == f.Edge {
@@ -98,11 +107,12 @@ func (f *Face) Area() float64 {
 
 // Mesh is a half-edge mesh.
 type Mesh struct {
-	Vertices []*Vertex
-	Edges    []*HalfEdge
-	Faces    []*Face
-	Boundary []*Face
-	edgeMap  map[[2]int]*HalfEdge
+	Vertices  []*Vertex
+	Edges     []*HalfEdge
+	Faces     []*Face
+	Boundary  []*Face
+	Triangles [][3]int // direct triangle index list (defensive, for ToCompact)
+	edgeMap   map[[2]int]*HalfEdge
 }
 
 // NewMesh creates an empty mesh.
@@ -150,6 +160,8 @@ func (m *Mesh) AddFace(v1, v2, v3 *Vertex) *Face {
 	e1 := m.ConnectVertices(v1, v2)
 	e2 := m.ConnectVertices(v2, v3)
 	e3 := m.ConnectVertices(v3, v1)
+
+	m.Triangles = append(m.Triangles, [3]int{v1.Idx, v2.Idx, v3.Idx})
 
 	f := &Face{Idx: len(m.Faces)}
 	m.Faces = append(m.Faces, f)
@@ -297,15 +309,10 @@ type CompactMesh struct {
 func (m *Mesh) ToCompact() *CompactMesh {
 	cm := &CompactMesh{
 		VertexXY: make([][2]float64, len(m.Vertices)),
+		Triangles: append([][3]int{}, m.Triangles...),
 	}
 	for i, v := range m.Vertices {
 		cm.VertexXY[i] = [2]float64{v.P.X, v.P.Y}
-	}
-	for _, f := range m.Faces {
-		verts := f.Vertices()
-		if len(verts) == 3 {
-			cm.Triangles = append(cm.Triangles, [3]int{verts[0].Idx, verts[1].Idx, verts[2].Idx})
-		}
 	}
 	return cm
 }

@@ -4,6 +4,8 @@ package solver
 import (
 	"fmt"
 	"math"
+	"strings"
+	"time"
 
 	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 	"github.com/easyeda/eext-paden-integration/go-service/internal/mesh"
@@ -43,16 +45,11 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 		return nil, fmt.Errorf("no networks")
 	}
 
-	// Save original geometries
-	original := make([]geometry.MultiPolygon, len(prob.Layers))
-	for i, layer := range prob.Layers {
-		original[i] = append(geometry.MultiPolygon{}, layer.Shape...)
-	}
-
-	// Build layer geom indices
+	// Build layer geom indices (do not deep-copy layer shapes to save memory;
+	// the pipeline no longer mutates shapes after this point).
 	layerGeoms := make([][]geometry.Polygon, len(prob.Layers))
 	for i, layer := range prob.Layers {
-		layerGeoms[i] = append([]geometry.Polygon{}, layer.Shape...)
+		layerGeoms[i] = layer.Shape
 	}
 
 	// Find connected layer-geom pairs
@@ -61,92 +58,196 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 		return nil, fmt.Errorf("no connected copper regions")
 	}
 
-	// Generate meshes
-	meshes, meshToLayer := generateMeshes(prob, layerGeoms, connected)
+	// Generate meshes with iterative coarsening until the vertex budget is met.
+	totalArea := totalCopperArea(layerGeoms)
+	cfg := initialMeshConfig(totalArea)
+	const maxMeshVerts = 15000
+	var meshes []*mesh.Mesh
+	var meshToLayer []int
+	totalMeshVerts := 0
+	for attempt := 0; attempt < 5; attempt++ {
+		meshes, meshToLayer = generateMeshes(prob, layerGeoms, connected, cfg)
+		totalMeshVerts = 0
+		for _, m := range meshes {
+			totalMeshVerts += len(m.Vertices)
+		}
+		fmt.Printf("[PADEN solver] total mesh vertices: %d (limit %d) attempt=%d\n", totalMeshVerts, maxMeshVerts, attempt)
+		if totalMeshVerts <= maxMeshVerts || totalMeshVerts == 0 {
+			break
+		}
+		ratio := math.Sqrt(float64(totalMeshVerts) / float64(maxMeshVerts))
+		cfg.MaximumSize *= math.Min(ratio*1.2, 2.0)
+		cfg.MaximumSize = math.Min(cfg.MaximumSize, 12.0)
+		cfg.MinimumAngle = math.Max(cfg.MinimumAngle-3.0, 10.0)
+		fmt.Printf("[PADEN solver] mesh too large, coarsening: maxSize=%.3f minAngle=%.1f\n", cfg.MaximumSize, cfg.MinimumAngle)
+	}
 	if len(meshes) == 0 {
 		return nil, fmt.Errorf("mesh generation failed")
 	}
+	if totalMeshVerts > maxMeshVerts {
+		return nil, fmt.Errorf("mesh too large: %d vertices (limit %d); reduce board complexity or increase element size", totalMeshVerts, maxMeshVerts)
+	}
 
-	// Disconnected meshes
-	disconnected := generateDisconnectedMeshes(prob, layerGeoms, connected)
+	// Disconnected meshes: render-only, keep a tight memory budget.
+	disconnected := generateDisconnectedMeshes(prob, layerGeoms, connected, 20000)
 
 	// Build vertex indexer
 	vindex := buildVertexIndexer(meshes)
 
-	// Guard against meshes that are too large for WASM memory.
-	totalMeshVerts := 0
-	for _, m := range meshes {
-		totalMeshVerts += len(m.Vertices)
-	}
-	const maxMeshVerts = 25000
-	fmt.Printf("[PADEN solver] total mesh vertices: %d (limit %d)\n", totalMeshVerts, maxMeshVerts)
-	if totalMeshVerts > maxMeshVerts {
-		return nil, fmt.Errorf("mesh too large: %d vertices (limit %d); reduce board complexity or increase element size", totalMeshVerts, maxMeshVerts)
-	}
+	// Log raw network info for debugging zero-voltage issues.
+	logNetworkInfo("before filtering", prob.Networks)
 
 	// Filter dead networks
 	filteredNetworks := filterDeadNetworks(prob, layerGeoms, connected)
 	if len(filteredNetworks) == 0 {
 		return nil, fmt.Errorf("all networks have dead terminals")
 	}
+	logNetworkInfo("after filtering", filteredNetworks)
 
 	// Build node indexer
 	nodeIndexer := buildNodeIndexer(prob, meshes, meshToLayer, vindex, filteredNetworks)
 
-	// System size
-	N := len(vindex.globalToLocal) + nodeIndexer.internalCount + len(nodeIndexer.extraVars) + 1
-	fmt.Printf("[PADEN solver] system size: %d\n", N)
-
-	// Stamp Laplacian
-	triplets := stampLaplacian(meshes, meshToLayer, prob, vindex)
-
-	// Stamp networks
-	rhs := make([]float64, N)
+	// Merge nodes that are shorted by ideal 0 V voltage sources.
+	originalN := len(vindex.globalToLocal) + nodeIndexer.internalCount
+	uf := newUnionFind(originalN)
 	for _, net := range filteredNetworks {
-		stampNetwork(net, nodeIndexer, triplets, rhs)
-	}
-
-	// Ground node
-	iGnd := findBestGroundNode(prob, nodeIndexer)
-	groundVar := N - 1
-	triplets = append(triplets, Triplet{Row: groundVar, Col: iGnd, Val: 1.0})
-	triplets = append(triplets, Triplet{Row: iGnd, Col: groundVar, Val: 1.0})
-	rhs[groundVar] = 0.0
-
-	// Build matrix and regularize. Regularize every diagonal entry that is
-	// (near) zero, including internal nodes and voltage-source extra variables.
-	A := NewCSRFromTriplets(N, triplets)
-	diag := A.Diagonal()
-	reg := make([]float64, N)
-	for i := 0; i < N; i++ {
-		if math.Abs(diag[i]) < 1e-12 {
-			reg[i] = 1e-6
-		} else {
-			reg[i] = 1e-9
+		for _, elem := range net.Elements {
+			vs, ok := elem.(*problem.VoltageSource)
+			if !ok || math.Abs(vs.Voltage) > 1e-12 {
+				continue
+			}
+			ip, okP := nodeIndexer.nodeToGlobal[vs.P]
+			in, okN := nodeIndexer.nodeToGlobal[vs.N]
+			if okP && okN && ip != in {
+				uf.union(ip, in)
+			}
 		}
 	}
-	A = A.AddDiagonal(reg)
 
-	// Solve. The MNA matrix is symmetric indefinite (Laplacian + voltage-source
-	// constraints). MINRES uses short Lanczos recurrences and O(n) memory, so it
-	// is far cheaper in WASM than restarted GMRES for systems of this size.
-	fmt.Printf("[PADEN solver] starting MINRES for N=%d\n", N)
-	v, err := SolveMINRES(A, rhs, N, 1e-9)
+	newIndex := make([]int, originalN)
+	for i := range newIndex {
+		newIndex[i] = -1
+	}
+	nextNew := 0
+	for i := 0; i < originalN; i++ {
+		r := uf.find(i)
+		if newIndex[r] < 0 {
+			newIndex[r] = nextNew
+			nextNew++
+		}
+	}
+	M := nextNew
+	for i := 0; i < originalN; i++ {
+		newIndex[i] = newIndex[uf.find(i)]
+	}
+
+	// Remap node IDs to the reduced variable space.
+	for node, orig := range nodeIndexer.nodeToGlobal {
+		nodeIndexer.nodeToGlobal[node] = newIndex[orig]
+	}
+	globalToNew := make([]int, len(vindex.globalToLocal))
+	for i := range globalToNew {
+		globalToNew[i] = newIndex[i]
+	}
+
+	// Stamp FEM Laplacian, via resistors, and current sources in reduced space.
+	triplets := stampLaplacian(meshes, meshToLayer, prob, vindex, globalToNew)
+	rhs := make([]float64, M)
+	for _, net := range filteredNetworks {
+		stampResistors(net, nodeIndexer, triplets)
+		stampCurrentSources(net, nodeIndexer, rhs)
+	}
+	A := NewCSRFromTriplets(M, triplets)
+
+	// Identify Dirichlet (fixed-potential) nodes: the ground reference and the
+	// positive terminals of all non-zero voltage sources.  Voltage-source
+	// negative terminals are forced to the ground potential.
+	known := make(map[int]float64)
+	iGnd := findBestGroundNode(prob, nodeIndexer)
+	if iGnd >= 0 {
+		known[iGnd] = 0
+	}
+	for _, net := range filteredNetworks {
+		for _, elem := range net.Elements {
+			vs, ok := elem.(*problem.VoltageSource)
+			if !ok || math.Abs(vs.Voltage) < 1e-12 {
+				continue
+			}
+			ip, okP := nodeIndexer.nodeToGlobal[vs.P]
+			in, okN := nodeIndexer.nodeToGlobal[vs.N]
+			if !okP || !okN {
+				continue
+			}
+			if _, ok := known[in]; !ok {
+				known[in] = 0
+			}
+			known[ip] = known[in] + vs.Voltage
+		}
+	}
+	fmt.Printf("[PADEN solver] reduced system M=%d, known nodes=%d\n", M, len(known))
+
+	// Every connected component of the conductance graph must have at least one
+	// Dirichlet node, otherwise the Laplacian block for that component is singular.
+	ensureComponentGrounding(A, known)
+
+	// Apply Dirichlet boundary conditions symmetrically: keep the full MxM
+	// matrix but zero out known rows/columns and set known diagonal to 1.
+	Abc, rhsBc := applyDirichletSym(A, rhs, known)
+
+	// Mild regularization to keep any isolated/floating unknowns well behaved.
+	d := Abc.Diagonal()
+	reg := make([]float64, M)
+	for i := 0; i < M; i++ {
+		if math.Abs(d[i]) < 1e-12 {
+			reg[i] = 1e-9
+		} else {
+			reg[i] = 1e-12
+		}
+	}
+	Areg := Abc.AddDiagonal(reg)
+
+	maxIter := M
+	if maxIter > 5000 {
+		maxIter = 5000
+	}
+	tol := 1e-9
+	fmt.Printf("[PADEN solver] starting CG for M=%d, maxIter=%d\n", M, maxIter)
+	x, err := SolveCG(Areg, rhsBc, maxIter, tol, NewJacobiPreconditioner(Areg))
 	if err != nil {
 		return nil, fmt.Errorf("solver failed: %w", err)
 	}
+	v := x
 
-	groundCurrent := v[groundVar]
+	// Ground current = total current flowing into the ground node (KCL residual).
+	groundCurrent := 0.0
+	if iGnd >= 0 {
+		y := make([]float64, M)
+		A.Multiply(v, y)
+		groundCurrent = rhs[iGnd] - y[iGnd]
+	}
 	resNorm := ResidualNorm(A, v, rhs)
+	vMin, vMax := math.Inf(1), math.Inf(-1)
+	for i := 0; i < M; i++ {
+		if v[i] < vMin {
+			vMin = v[i]
+		}
+		if v[i] > vMax {
+			vMax = v[i]
+		}
+	}
+	fmt.Printf("[PADEN solver] solution vrange=[%.6f,%.6f], groundCurrent=%.6e, residualNorm=%.6e\n", vMin, vMax, groundCurrent, resNorm)
+	logNetworkPotentials(prob, nodeIndexer, v)
 
 	// Produce layer solutions
-	layerSols := produceLayerSolutions(prob, vindex, meshes, meshToLayer, v, disconnected)
+	layerSols := produceLayerSolutions(prob, vindex, meshes, meshToLayer, v, disconnected, globalToNew)
 
 	return &Solution{
-		Problem:            prob,
-		LayerSolutions:     layerSols,
-		SolverInfo:         SolverInfo{GroundNodeCurrent: groundCurrent, ResidualNorm: resNorm},
-		OriginalGeometries: original,
+		Problem:        prob,
+		LayerSolutions: layerSols,
+		SolverInfo:     SolverInfo{GroundNodeCurrent: groundCurrent, ResidualNorm: resNorm},
+		// Intentionally nil: deep-copying all layer shapes can consume hundreds of MB
+		// and the fallback path in serialization now uses prob.Layers[i].Shape.
+		OriginalGeometries: nil,
 	}, nil
 }
 
@@ -196,21 +297,42 @@ func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []
 		}
 	}
 
+	// Robust layer lookup by pointer (preferred) or by name (fallback).
+	layerByPtr := make(map[*problem.Layer]int)
+	layerByName := make(map[string]int)
+	layerNames := make([]string, len(prob.Layers))
+	for i, layer := range prob.Layers {
+		layerByPtr[layer] = i
+		layerByName[layer.Name] = i
+		layerNames[i] = fmt.Sprintf("%d:%s", i, layer.Name)
+	}
+	fmt.Printf("[PADEN solver] layer order: %s\n", strings.Join(layerNames, ", "))
+	fmt.Printf("[PADEN solver] meshToLayer: %v\n", meshToLayer)
+	for li, verts := range layerVerts {
+		if len(verts) > 0 {
+			fmt.Printf("[PADEN solver] layer %d vertex range [%d,%d] count=%d\n", li, verts[0].globalIdx, verts[len(verts)-1].globalIdx, len(verts))
+		}
+	}
+
 	// Index connection nodes
 	for _, net := range networks {
 		for _, conn := range net.Connections {
 			li := -1
-			for i, layer := range prob.Layers {
-				if layer == conn.Layer {
-					li = i
-					break
-				}
+			if conn.Layer == nil {
+				continue
+			}
+			if idx, ok := layerByPtr[conn.Layer]; ok {
+				li = idx
+			} else if idx, ok := layerByName[conn.Layer.Name]; ok {
+				li = idx
 			}
 			if li < 0 {
+				fmt.Printf("[PADEN solver] conn layer '%s' not in problem layers\n", conn.Layer.Name)
 				continue
 			}
 			verts := layerVerts[li]
 			if len(verts) == 0 {
+				fmt.Printf("[PADEN solver] conn layer '%s' has no mesh vertices\n", conn.Layer.Name)
 				continue
 			}
 			best := verts[0]
@@ -223,6 +345,8 @@ func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []
 				}
 			}
 			ni.nodeToGlobal[conn.NodeID] = best.globalIdx
+			fmt.Printf("[PADEN solver] conn %s (%.3f,%.3f) -> layerIdx=%d nearest=(%.3f,%.3f) global=%d dist=%.4f\n",
+				conn.Layer.Name, conn.Point.X, conn.Point.Y, li, best.p.X, best.p.Y, best.globalIdx, bestDist)
 		}
 	}
 
@@ -238,33 +362,25 @@ func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []
 		}
 	}
 
-	// Extra variables for voltage sources
-	for _, net := range networks {
-		for _, elem := range net.Elements {
-			for i := 0; i < elem.ExtraVariableCount(); i++ {
-				ni.extraVars[elem] = iAt
-				iAt++
-			}
-		}
-	}
+	// Voltage sources are enforced as Dirichlet (fixed-potential) boundary
+	// conditions rather than MNA extra variables, so no extra variables are
+	// allocated here.
 
 	return ni
 }
 
 func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) map[[2]int]bool {
 	connected := make(map[[2]int]bool)
+	layerIdx := layerIndexMap(prob)
 
 	// Mark polygons hit by connections from networks with sources
 	for _, net := range prob.Networks {
 		for _, conn := range net.Connections {
-			li := -1
-			for i, layer := range prob.Layers {
-				if layer == conn.Layer {
-					li = i
-					break
-				}
+			if conn.Layer == nil {
+				continue
 			}
-			if li < 0 {
+			li, ok := layerIdx[conn.Layer]
+			if !ok {
 				continue
 			}
 			for gi, geom := range layerGeoms[li] {
@@ -294,6 +410,16 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 		}
 	}
 
+	for li := range layerGeoms {
+		connCount := 0
+		for i := range layerGeoms[li] {
+			if connected[[2]int{li, i}] {
+				connCount++
+			}
+		}
+		fmt.Printf("[PADEN solver] layer %d connected geoms=%d / %d\n", li, connCount, len(layerGeoms[li]))
+	}
+
 	return connected
 }
 
@@ -308,15 +434,19 @@ func boxesOverlap(a, b geometry.Box) bool {
 	return a.MinX <= b.MaxX && a.MaxX >= b.MinX && a.MinY <= b.MaxY && a.MaxY >= b.MinY
 }
 
-func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool) ([]*mesh.Mesh, []int) {
-	cfg := mesh.DefaultConfig()
-	// Adjust max size based on total copper area to keep vertex count under control.
+func totalCopperArea(layerGeoms [][]geometry.Polygon) float64 {
 	totalArea := 0.0
 	for _, geoms := range layerGeoms {
 		for _, g := range geoms {
 			totalArea += polygonArea(g)
 		}
 	}
+	return totalArea
+}
+
+func initialMeshConfig(totalArea float64) mesh.Config {
+	cfg := mesh.DefaultConfig()
+	// Adjust max size based on total copper area to keep vertex count under control.
 	if totalArea < 30000 {
 		// Medium boards: coarsen enough to keep the solve interactive in WASM
 		// without sacrificing too much accuracy.
@@ -328,7 +458,11 @@ func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, conn
 		cfg.MaximumSize = math.Max(math.Min(cfg.MaximumSize*scale, 5.0), 1.5)
 		cfg.MinimumAngle = 25.0
 	}
-	fmt.Printf("[PADEN solver] total copper area=%.1f mm^2, max mesh size=%.3f mm\n", totalArea, cfg.MaximumSize)
+	return cfg
+}
+
+func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool, cfg mesh.Config) ([]*mesh.Mesh, []int) {
+	fmt.Printf("[PADEN solver] total copper area=%.1f mm^2, max mesh size=%.3f mm\n", totalCopperArea(layerGeoms), cfg.MaximumSize)
 	mesher := mesh.NewMesher(cfg)
 
 	var meshes []*mesh.Mesh
@@ -340,18 +474,37 @@ func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, conn
 			if !connected[[2]int{li, gi}] {
 				continue
 			}
+			geom.EnsureOrientation()
+			t0 := time.Now()
 			m, err := mesher.PolygonToMesh(geom, seedPoints)
+			dt := time.Since(t0)
 			if err != nil || len(m.Vertices) == 0 {
-				// Fallback to earcut
+				t0 = time.Now()
 				m, err = mesh.EarcutFallback(geom)
+				dt = time.Since(t0)
 				if err != nil || len(m.Vertices) == 0 {
 					continue
 				}
 			}
+			fmt.Printf("[PADEN solver] layer %d geom %d meshed in %v -> %d vertices\n", li, gi, dt, len(m.Vertices))
 			meshes = append(meshes, m)
 			meshToLayer = append(meshToLayer, li)
 		}
 	}
+
+	layerMeshStats := make(map[int][2]int)
+	for i, m := range meshes {
+		li := meshToLayer[i]
+		s := layerMeshStats[li]
+		s[0]++
+		s[1] += len(m.Vertices)
+		layerMeshStats[li] = s
+	}
+	for li := range prob.Layers {
+		s := layerMeshStats[li]
+		fmt.Printf("[PADEN solver] layer %d meshes=%d verts=%d\n", li, s[0], s[1])
+	}
+
 	return meshes, meshToLayer
 }
 
@@ -367,14 +520,21 @@ func collectSeedPoints(prob *problem.Problem, layer *problem.Layer) []mesh.Point
 	return seeds
 }
 
-func generateDisconnectedMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool) [][]*mesh.CompactMesh {
+func generateDisconnectedMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool, maxVerts int) [][]*mesh.CompactMesh {
 	result := make([][]*mesh.CompactMesh, len(prob.Layers))
-	relaxed := mesh.NewMesher(mesh.Config{MaximumSize: 0, MinimumAngle: 5.0})
+	// Use a coarse mesher for disconnected regions; they are only for display.
+	relaxed := mesh.NewMesher(mesh.Config{MaximumSize: 4.0, MinimumAngle: 0})
+	totalVerts := 0
 	for li, geoms := range layerGeoms {
 		for gi, geom := range geoms {
 			if connected[[2]int{li, gi}] {
 				continue
 			}
+			if totalVerts >= maxVerts {
+				fmt.Printf("[PADEN solver] disconnected mesh budget reached (%d), skipping remaining\n", maxVerts)
+				return result
+			}
+			geom.EnsureOrientation()
 			m, err := relaxed.PolygonToMesh(geom, nil)
 			if err != nil || len(m.Vertices) == 0 {
 				m, err = mesh.EarcutFallback(geom)
@@ -382,25 +542,25 @@ func generateDisconnectedMeshes(prob *problem.Problem, layerGeoms [][]geometry.P
 					continue
 				}
 			}
+			totalVerts += len(m.Vertices)
 			result[li] = append(result[li], m.ToCompact())
 		}
 	}
+	fmt.Printf("[PADEN solver] disconnected meshes total vertices=%d\n", totalVerts)
 	return result
 }
 
 func filterDeadNetworks(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool) []*problem.Network {
 	var filtered []*problem.Network
+	layerIdx := layerIndexMap(prob)
 	for _, net := range prob.Networks {
 		alive := false
 		for _, conn := range net.Connections {
-			li := -1
-			for i, layer := range prob.Layers {
-				if layer == conn.Layer {
-					li = i
-					break
-				}
+			if conn.Layer == nil {
+				continue
 			}
-			if li < 0 {
+			li, ok := layerIdx[conn.Layer]
+			if !ok {
 				continue
 			}
 			for gi, geom := range layerGeoms[li] {
@@ -423,105 +583,232 @@ func filterDeadNetworks(prob *problem.Problem, layerGeoms [][]geometry.Polygon, 
 	return filtered
 }
 
-func stampLaplacian(meshes []*mesh.Mesh, meshToLayer []int, prob *problem.Problem, vindex *vertexIndexer) []Triplet {
-	// Rough estimate: ~3 off-diagonal + 1 diagonal triplet per vertex.
+func layerIndexMap(prob *problem.Problem) map[*problem.Layer]int {
+	m := make(map[*problem.Layer]int, len(prob.Layers))
+	for i, layer := range prob.Layers {
+		m[layer] = i
+	}
+	return m
+}
+
+func stampLaplacian(meshes []*mesh.Mesh, meshToLayer []int, prob *problem.Problem, vindex *vertexIndexer, globalToNew []int) []Triplet {
+	totalTris := 0
 	totalVerts := 0
 	for _, m := range meshes {
+		totalTris += len(m.Triangles)
 		totalVerts += len(m.Vertices)
 	}
-	triplets := make([]Triplet, 0, totalVerts*4)
+	// Each triangle contributes up to 3 edge weights; each edge adds 2 off-diagonals + 2 diagonals.
+	triplets := make([]Triplet, 0, totalTris*3+totalVerts*2)
 
 	for mi, m := range meshes {
 		conductance := prob.Layers[meshToLayer[mi]].Conductance
 		N := len(m.Vertices)
 		diag := make([]float64, N)
-		// Iterate half-edges directly to avoid per-vertex Orbit allocations.
-		for _, edge := range m.Edges {
-			if edge.Twin == nil {
+		pts := make([]mesh.Point, N)
+		for i, v := range m.Vertices {
+			pts[i] = v.P
+		}
+
+		// Accumulate cotangent weights directly from the triangle list.  This avoids
+		// relying on the half-edge structure, whose Next/Prev links can be corrupted
+		// when FromTriangleSoup shares edges between adjacent triangles.
+		edgeCotan := make(map[[2]int]float64)
+		for _, tri := range m.Triangles {
+			a, b, c := tri[0], tri[1], tri[2]
+			if a < 0 || b < 0 || c < 0 || a >= N || b >= N || c >= N {
 				continue
 			}
-			ratio := edge.Cotan()
-			if ratio == 0 {
+			if w := cotanWeight(pts[a], pts[b], pts[c]); w > 0 {
+				edgeCotan[orderedEdge(a, b)] += w
+			}
+			if w := cotanWeight(pts[b], pts[c], pts[a]); w > 0 {
+				edgeCotan[orderedEdge(b, c)] += w
+			}
+			if w := cotanWeight(pts[c], pts[a], pts[b]); w > 0 {
+				edgeCotan[orderedEdge(c, a)] += w
+			}
+		}
+
+		nonzero := 0
+		for e, w := range edgeCotan {
+			if w <= 0 {
 				continue
 			}
-			vi := edge.Origin.Idx
-			kj := edge.Twin.Origin.Idx
-			gi := vindex.localToGlobal[[2]int{mi, vi}]
-			gj := vindex.localToGlobal[[2]int{mi, kj}]
-			triplets = append(triplets, Triplet{Row: gi, Col: gj, Val: conductance * ratio})
-			diag[vi] -= conductance * ratio
+			nonzero++
+			i, j := e[0], e[1]
+			gi := globalToNew[vindex.localToGlobal[[2]int{mi, i}]]
+			gj := globalToNew[vindex.localToGlobal[[2]int{mi, j}]]
+			g := conductance * w
+			triplets = append(triplets, Triplet{Row: gi, Col: gj, Val: -g})
+			triplets = append(triplets, Triplet{Row: gj, Col: gi, Val: -g})
+			diag[i] += g
+			diag[j] += g
 		}
 		for vi, d := range diag {
-			gi := vindex.localToGlobal[[2]int{mi, vi}]
+			if d == 0 {
+				continue
+			}
+			gi := globalToNew[vindex.localToGlobal[[2]int{mi, vi}]]
 			triplets = append(triplets, Triplet{Row: gi, Col: gi, Val: d})
 		}
+		fmt.Printf("[PADEN solver] mesh %d layer %d vertices=%d triangles=%d cotanEdges=%d\n",
+			mi, meshToLayer[mi], N, len(m.Triangles), nonzero)
 	}
 	return triplets
 }
 
-func stampNetwork(net *problem.Network, ni *nodeIndexer, triplets []Triplet, rhs []float64) []Triplet {
+func orderedEdge(i, j int) [2]int {
+	if i < j {
+		return [2]int{i, j}
+	}
+	return [2]int{j, i}
+}
+
+func cotanWeight(pi, pj, pk mesh.Point) float64 {
+	// Cotangent of the angle at pk opposite edge (pi,pj), scaled by 1/2 to
+	// match the FEM discrete Laplacian weight used in Mesh.HalfEdge.Cotan.
+	vki := mesh.Vector{DX: pi.X - pk.X, DY: pi.Y - pk.Y}
+	vkj := mesh.Vector{DX: pj.X - pk.X, DY: pj.Y - pk.Y}
+	cross := vki.Cross(vkj)
+	if math.Abs(cross) < 1e-15 {
+		return 0
+	}
+	return math.Abs(vki.Dot(vkj)/cross) * 0.5
+}
+
+func stampResistors(net *problem.Network, ni *nodeIndexer, triplets []Triplet) {
 	for _, elem := range net.Elements {
-		switch e := elem.(type) {
-		case *problem.Resistor:
-			ia := ni.nodeToGlobal[e.A]
-			ib := ni.nodeToGlobal[e.B]
-			g := 1.0 / e.Resistance
-			triplets = append(triplets,
-				Triplet{Row: ia, Col: ia, Val: -g},
-				Triplet{Row: ia, Col: ib, Val: g},
-				Triplet{Row: ib, Col: ib, Val: -g},
-				Triplet{Row: ib, Col: ia, Val: g},
-			)
-		case *problem.CurrentSource:
-			iF := ni.nodeToGlobal[e.F]
-			iT := ni.nodeToGlobal[e.T]
-			rhs[iF] += e.Current
-			rhs[iT] -= e.Current
-		case *problem.VoltageSource:
-			ip := ni.nodeToGlobal[e.P]
-			in := ni.nodeToGlobal[e.N]
-			iv := ni.extraVars[e]
-			if ip == in {
-				triplets = append(triplets, Triplet{Row: iv, Col: iv, Val: 1.0})
-				rhs[iv] = 0
-				continue
+		r, ok := elem.(*problem.Resistor)
+		if !ok {
+			continue
+		}
+		ia, okA := ni.nodeToGlobal[r.A]
+		ib, okB := ni.nodeToGlobal[r.B]
+		if !okA || !okB {
+			continue
+		}
+		g := 1.0 / r.Resistance
+		triplets = append(triplets,
+			Triplet{Row: ia, Col: ia, Val: g},
+			Triplet{Row: ia, Col: ib, Val: -g},
+			Triplet{Row: ib, Col: ib, Val: g},
+			Triplet{Row: ib, Col: ia, Val: -g},
+		)
+	}
+}
+
+func stampCurrentSources(net *problem.Network, ni *nodeIndexer, rhs []float64) {
+	for _, elem := range net.Elements {
+		cs, ok := elem.(*problem.CurrentSource)
+		if !ok {
+			continue
+		}
+		iF, okF := ni.nodeToGlobal[cs.F]
+		iT, okT := ni.nodeToGlobal[cs.T]
+		if !okF || !okT {
+			continue
+		}
+		rhs[iF] += cs.Current
+		rhs[iT] -= cs.Current
+	}
+}
+
+func ensureComponentGrounding(A *CSRMatrix, known map[int]float64) {
+	n := A.N
+	visited := make([]bool, n)
+	for i := 0; i < n; i++ {
+		if visited[i] {
+			continue
+		}
+		component := []int{i}
+		visited[i] = true
+		queue := []int{i}
+		for len(queue) > 0 {
+			u := queue[0]
+			queue = queue[1:]
+			for k := A.Ap[u]; k < A.Ap[u+1]; k++ {
+				v := A.Aj[k]
+				if visited[v] || A.Ax[k] == 0 {
+					continue
+				}
+				visited[v] = true
+				component = append(component, v)
+				queue = append(queue, v)
 			}
-			triplets = append(triplets,
-				Triplet{Row: iv, Col: ip, Val: 1.0},
-				Triplet{Row: iv, Col: in, Val: -1.0},
-				Triplet{Row: ip, Col: iv, Val: 1.0},
-				Triplet{Row: in, Col: iv, Val: -1.0},
-			)
-			rhs[iv] = e.Voltage
-		case *problem.VoltageRegulator:
-			ivp := ni.nodeToGlobal[e.VP]
-			ivn := ni.nodeToGlobal[e.VN]
-			isf := ni.nodeToGlobal[e.SF]
-			ist := ni.nodeToGlobal[e.ST]
-			iv := ni.extraVars[e]
-			triplets = append(triplets,
-				Triplet{Row: iv, Col: ivp, Val: 1.0},
-				Triplet{Row: iv, Col: ivn, Val: -1.0},
-				Triplet{Row: ivp, Col: iv, Val: 1.0},
-				Triplet{Row: ivn, Col: iv, Val: -1.0},
-				Triplet{Row: iv, Col: isf, Val: e.Gain},
-				Triplet{Row: iv, Col: ist, Val: -e.Gain},
-			)
-			rhs[iv] += e.Voltage
+		}
+		hasKnown := false
+		for _, node := range component {
+			if _, ok := known[node]; ok {
+				hasKnown = true
+				break
+			}
+		}
+		if !hasKnown && len(component) > 0 {
+			known[component[0]] = 0
+			fmt.Printf("[PADEN solver] component grounded: nodes=%d first=%d\n", len(component), component[0])
 		}
 	}
-	return triplets
 }
+
+func applyDirichletSym(A *CSRMatrix, b []float64, known map[int]float64) (*CSRMatrix, []float64) {
+	n := A.N
+	bNew := make([]float64, n)
+	triplets := make([]Triplet, 0, A.nnz)
+	for i := 0; i < n; i++ {
+		if val, ok := known[i]; ok {
+			bNew[i] = val
+			triplets = append(triplets, Triplet{Row: i, Col: i, Val: 1.0})
+			continue
+		}
+		rhs := b[i]
+		for k := A.Ap[i]; k < A.Ap[i+1]; k++ {
+			j := A.Aj[k]
+			val := A.Ax[k]
+			if _, ok := known[j]; ok {
+				rhs -= val * known[j]
+			} else {
+				triplets = append(triplets, Triplet{Row: i, Col: j, Val: val})
+			}
+		}
+		bNew[i] = rhs
+	}
+	return NewCSRFromTriplets(n, triplets), bNew
+}
+
+func reduceDirichlet(A *CSRMatrix, b []float64, known map[int]float64, unknownIdx []int, uCount int) (*CSRMatrix, []float64, error) {
+	bNew := make([]float64, uCount)
+	triplets := make([]Triplet, 0, A.nnz)
+	for i := 0; i < A.N; i++ {
+		ui := unknownIdx[i]
+		if ui < 0 {
+			continue
+		}
+		rhs := b[i]
+		for k := A.Ap[i]; k < A.Ap[i+1]; k++ {
+			j := A.Aj[k]
+			val := A.Ax[k]
+			if uj := unknownIdx[j]; uj >= 0 {
+				triplets = append(triplets, Triplet{Row: ui, Col: uj, Val: val})
+			} else {
+				rhs -= val * known[j]
+			}
+		}
+		bNew[ui] = rhs
+	}
+	return NewCSRFromTriplets(uCount, triplets), bNew, nil
+}
+
 
 func findBestGroundNode(prob *problem.Problem, ni *nodeIndexer) int {
 	maxVoltage := math.Inf(-1)
-	groundIdx := 0
+	groundIdx := -1
 	for _, net := range prob.Networks {
 		for _, elem := range net.Elements {
 			if vs, ok := elem.(*problem.VoltageSource); ok {
-				if vs.Voltage > maxVoltage {
+				if idx, ok := ni.nodeToGlobal[vs.N]; ok && vs.Voltage > maxVoltage {
 					maxVoltage = vs.Voltage
-					groundIdx = ni.nodeToGlobal[vs.N]
+					groundIdx = idx
 				}
 			}
 		}
@@ -529,7 +816,7 @@ func findBestGroundNode(prob *problem.Problem, ni *nodeIndexer) int {
 	return groundIdx
 }
 
-func produceLayerSolutions(prob *problem.Problem, vindex *vertexIndexer, meshes []*mesh.Mesh, meshToLayer []int, v []float64, disconnected [][]*mesh.CompactMesh) []*LayerSolution {
+func produceLayerSolutions(prob *problem.Problem, vindex *vertexIndexer, meshes []*mesh.Mesh, meshToLayer []int, v []float64, disconnected [][]*mesh.CompactMesh, globalToNew []int) []*LayerSolution {
 	layerSols := make([]*LayerSolution, len(prob.Layers))
 	for li := range prob.Layers {
 		layerSols[li] = &LayerSolution{}
@@ -541,8 +828,8 @@ func produceLayerSolutions(prob *problem.Problem, vindex *vertexIndexer, meshes 
 		N := len(cm.VertexXY)
 		potentials := make([]float64, N)
 		for vi := 0; vi < N; vi++ {
-			gi := vindex.localToGlobal[[2]int{mi, vi}]
-			potentials[vi] = v[gi]
+			giOrig := vindex.localToGlobal[[2]int{mi, vi}]
+			potentials[vi] = v[globalToNew[giOrig]]
 		}
 		pd, cd := computePowerCurrent(cm.VertexXY, cm.Triangles, potentials, prob.Layers[li].Conductance)
 		layerSols[li].CompactMeshes = append(layerSols[li].CompactMeshes, cm)
@@ -553,6 +840,22 @@ func produceLayerSolutions(prob *problem.Problem, vindex *vertexIndexer, meshes 
 
 	for li, dms := range disconnected {
 		layerSols[li].DisconnectedCompact = dms
+	}
+
+	for li, ls := range layerSols {
+		totalTris := 0
+		vMin, vMax := math.Inf(1), math.Inf(-1)
+		for _, pots := range ls.Potentials {
+			for _, p := range pots {
+				if p < vMin { vMin = p }
+				if p > vMax { vMax = p }
+			}
+		}
+		for _, cm := range ls.CompactMeshes {
+			totalTris += len(cm.Triangles)
+		}
+		fmt.Printf("[PADEN solver] layer %d result meshes=%d triangles=%d disconnected=%d vrange=[%.4f,%.4f]\n",
+			li, len(ls.CompactMeshes), totalTris, len(ls.DisconnectedCompact), vMin, vMax)
 	}
 
 	return layerSols
@@ -584,6 +887,68 @@ func computePowerCurrent(vertexXY [][2]float64, triangles [][3]int, potentials [
 		cd[i] = []float64{-dVdx * conductance, -dVdy * conductance}
 	}
 	return pd, cd
+}
+
+func logNetworkPotentials(prob *problem.Problem, ni *nodeIndexer, v []float64) {
+	for _, net := range prob.Networks {
+		for _, conn := range net.Connections {
+			idx, ok := ni.nodeToGlobal[conn.NodeID]
+			layerName := "internal"
+			if conn.Layer != nil {
+				layerName = conn.Layer.Name
+			}
+			if ok {
+				fmt.Printf("[PADEN solver] conn %s (%.3f,%.3f) idx=%d v=%.6f\n", layerName, conn.Point.X, conn.Point.Y, idx, v[idx])
+			} else {
+				fmt.Printf("[PADEN solver] conn %s (%.3f,%.3f) not indexed\n", layerName, conn.Point.X, conn.Point.Y)
+			}
+		}
+		for _, elem := range net.Elements {
+			switch e := elem.(type) {
+			case *problem.VoltageSource:
+				ip, okP := ni.nodeToGlobal[e.P]
+				in, okN := ni.nodeToGlobal[e.N]
+				fmt.Printf("[PADEN solver] VS %.3fV P=%d(v=%.6f) N=%d(v=%.6f)\n",
+					e.Voltage, ip, mapV(v, ip, okP), in, mapV(v, in, okN))
+			case *problem.CurrentSource:
+				iF, okF := ni.nodeToGlobal[e.F]
+				iT, okT := ni.nodeToGlobal[e.T]
+				fmt.Printf("[PADEN solver] CS %.3fA F=%d(v=%.6f) T=%d(v=%.6f)\n",
+					e.Current, iF, mapV(v, iF, okF), iT, mapV(v, iT, okT))
+			}
+		}
+	}
+}
+
+func mapV(v []float64, i int, ok bool) float64 {
+	if !ok || i < 0 || i >= len(v) {
+		return math.NaN()
+	}
+	return v[i]
+}
+
+func logNetworkInfo(stage string, networks []*problem.Network) {
+	numVS, numCS, numR, numVR := 0, 0, 0, 0
+	var voltages, currents []float64
+	for _, net := range networks {
+		for _, elem := range net.Elements {
+			switch e := elem.(type) {
+			case *problem.VoltageSource:
+				numVS++
+				voltages = append(voltages, e.Voltage)
+			case *problem.CurrentSource:
+				numCS++
+				currents = append(currents, e.Current)
+			case *problem.Resistor:
+				numR++
+			case *problem.VoltageRegulator:
+				numVR++
+				voltages = append(voltages, e.Voltage)
+			}
+		}
+	}
+	fmt.Printf("[PADEN solver] networks %s: count=%d VS=%d CS=%d R=%d VR=%d voltages=%v currents=%v\n",
+		stage, len(networks), numVS, numCS, numR, numVR, voltages, currents)
 }
 
 func polygonArea(poly geometry.Polygon) float64 {
@@ -660,4 +1025,67 @@ func distanceToSegment(p, a, b geometry.Point) float64 {
 		return math.Hypot(p.X-b.X, p.Y-b.Y)
 	}
 	return math.Hypot(p.X-(a.X+t*dx), p.Y-(a.Y+t*dy))
+}
+
+type unionFind struct {
+	parent []int
+}
+
+func newUnionFind(n int) *unionFind {
+	uf := &unionFind{parent: make([]int, n)}
+	for i := range uf.parent {
+		uf.parent[i] = i
+	}
+	return uf
+}
+
+func (uf *unionFind) find(x int) int {
+	p := uf.parent[x]
+	if p == x {
+		return x
+	}
+	uf.parent[x] = uf.find(p)
+	return uf.parent[x]
+}
+
+func (uf *unionFind) union(a, b int) {
+	ra := uf.find(a)
+	rb := uf.find(b)
+	if ra != rb {
+		uf.parent[rb] = ra
+	}
+}
+
+// scaleSymmetric returns D^{-1/2} A D^{-1/2} and D^{-1/2} b, along with the
+// scale vector s = diag(D^{-1/2}). The caller can recover x = s .* xScaled.
+func scaleSymmetric(A *CSRMatrix, b []float64) (*CSRMatrix, []float64, []float64) {
+	d := A.Diagonal()
+	s := make([]float64, A.N)
+	for i, v := range d {
+		if v > 1e-12 {
+			s[i] = 1.0 / math.Sqrt(v)
+		} else {
+			s[i] = 1.0
+		}
+	}
+
+	triplets := make([]Triplet, 0, A.nnz)
+	for i := 0; i < A.N; i++ {
+		si := s[i]
+		for k := A.Ap[i]; k < A.Ap[i+1]; k++ {
+			j := A.Aj[k]
+			triplets = append(triplets, Triplet{
+				Row: i,
+				Col: j,
+				Val: A.Ax[k] * si * s[j],
+			})
+		}
+	}
+
+	scaledB := make([]float64, A.N)
+	for i := range b {
+		scaledB[i] = b[i] * s[i]
+	}
+
+	return NewCSRFromTriplets(A.N, triplets), scaledB, s
 }

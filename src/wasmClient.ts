@@ -108,7 +108,13 @@ export class PdnWasmClient {
 			}, 600000); // 10 minutes for large boards
 
 			progressSub = eda.sys_MessageBus.subscribe(TOPIC_PROGRESS, () => {
-				// Progress updates are currently informational only.
+				// Any progress heartbeat means the worker is still alive, so reset
+				// the analysis timeout.
+				clearTimeout(timeout);
+				timeout = setTimeout(() => {
+					cleanup();
+					reject(new Error('WASM analysis timed out'));
+				}, 600000);
 			});
 
 			resultSub = eda.sys_MessageBus.subscribe(replyTopic, (msg: any) => {

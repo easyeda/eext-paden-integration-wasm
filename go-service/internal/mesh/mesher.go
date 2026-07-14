@@ -43,6 +43,12 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 		return NewMesh(), nil
 	}
 
+	// Very dense point clouds make our pure-Go Delaunay too slow in WASM.
+	// Fall back to earcut (JS) for these cases; it uses polygon vertices only.
+	if len(pts) > 12000 {
+		return EarcutFallback(poly)
+	}
+
 	// Delaunay triangulation
 	tris := delaunayTriangulate(pts)
 
@@ -109,7 +115,7 @@ func (m *Mesher) generatePoints(poly geometry.Polygon, seedPoints []Point) []Poi
 	}
 
 	// Limit total grid points to keep WASM memory reasonable.
-	maxVerts := 10000
+	maxVerts := 5000
 	spacing := maxSize
 	if (w*h)/(spacing*spacing) > float64(maxVerts)*0.6 {
 		spacing = math.Sqrt((w * h) / (float64(maxVerts) * 0.6))
@@ -154,6 +160,9 @@ func (m *Mesher) subdivideEdge(a, b Point, maxSize float64, add func(Point)) {
 }
 
 func (m *Mesher) refineMesh(mesh *Mesh, poly geometry.Polygon) *Mesh {
+	if m.Config.MinimumAngle <= 0 || len(mesh.Vertices) > 12000 {
+		return mesh
+	}
 	cosThresh := math.Cos(math.Pi * m.Config.MinimumAngle / 180.0)
 	maxIter := 3
 

@@ -110,7 +110,11 @@ func serializeLayerSolutions(sol *solver.Solution, transform *[4]float64) []Laye
 	out := make([]LayerSolutionOutput, len(sol.Problem.Layers))
 	for i, layer := range sol.Problem.Layers {
 		ls := sol.LayerSolutions[i]
-		lso := LayerSolutionOutput{LayerName: layer.Name}
+		lso := LayerSolutionOutput{
+			LayerName:          layer.Name,
+			Meshes:             make([]MeshOutput, 0),
+			DisconnectedMeshes: make([]DisconnectedMeshOutput, 0),
+		}
 		for mi, cm := range ls.CompactMeshes {
 			vertices := make([][]float64, len(cm.VertexXY))
 			for vi, xy := range cm.VertexXY {
@@ -196,7 +200,7 @@ func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[s
 		}
 		// Fallback to original geometry if no mesh boundaries
 		if len(polys) == 0 {
-			for _, poly := range sol.OriginalGeometries[i] {
+			for _, poly := range sol.Problem.Layers[i].Shape {
 				exterior := toPointSlice(poly[0], transform)
 				var holes [][]geometry.Point
 				for hi := 1; hi < len(poly); hi++ {

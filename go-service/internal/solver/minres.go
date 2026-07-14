@@ -35,16 +35,20 @@ func SolveMINRES(a *CSRMatrix, b []float64, maxIter int, tol float64) ([]float64
 	c := []float64{1.0, 1.0}
 	s := []float64{0.0, 0.0}
 
-	// Search directions w_{k-1} and w_{k-2}
-	wPrev := make([]float64, n)
-	wPrev2 := make([]float64, n)
+	// Search directions w_{k-1} and w_{k-2} using rotating buffers to avoid
+	// per-iteration allocations in the tight loop.
+	wBuf := make([][]float64, 3)
+	for i := range wBuf {
+		wBuf[i] = make([]float64, n)
+	}
 
 	phi := bnrm // residual norm
 	beta := 0.0 // beta_k (Lanczos)
+	start := time.Now()
 
 	for iter := 0; iter < maxIter; iter++ {
-		if iter%25 == 0 {
-			fmt.Printf("[PADEN solver] MINRES iter %d, residual=%.6e\n", iter, phi)
+		if iter%50 == 0 {
+			fmt.Printf("[PADEN solver] MINRES iter %d, residual=%.6e, elapsed=%v\n", iter, phi, time.Since(start))
 			// Yield to the JavaScript event loop so the EasyEDA UI stays responsive.
 			time.Sleep(1 * time.Millisecond)
 		}
@@ -89,7 +93,9 @@ func SolveMINRES(a *CSRMatrix, b []float64, maxIter int, tol float64) ([]float64
 
 		// Update search direction and solution.
 		// w_k = (v - delta2 * w_{k-1} - delta3 * w_{k-2}) / gamma
-		w := make([]float64, n)
+		w := wBuf[iter%3]
+		wPrev := wBuf[(iter+2)%3]
+		wPrev2 := wBuf[(iter+1)%3]
 		for i := 0; i < n; i++ {
 			w[i] = (v[i] - delta2*wPrev[i] - delta3*wPrev2[i]) / gamma
 		}
@@ -115,9 +121,6 @@ func SolveMINRES(a *CSRMatrix, b []float64, maxIter int, tol float64) ([]float64
 		// Append new rotation.
 		c = append(c, ck)
 		s = append(s, sk)
-
-		// Shift search directions.
-		wPrev2, wPrev = wPrev, w
 	}
 
 	return x, fmt.Errorf("MINRES did not converge after %d iterations (residual=%g)", maxIter, phi)

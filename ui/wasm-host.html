@@ -117,6 +117,9 @@
 
         let ready = false;
 
+        // Expose forwarded worker logs so the bridge can read them.
+        window.__padenLogs = window.__padenLogs || [];
+
         worker.onmessage = (event) => {
           const msg = event.data;
           if (!msg || !msg.type) return;
@@ -140,6 +143,12 @@
               break;
             case 'progress':
               bus.publish('pdn-wasm-progress', msg.progress);
+              break;
+            case 'log':
+              window.__padenLogs.push(msg);
+              if (window.__padenLogs.length > 2000)
+                window.__padenLogs.splice(0, window.__padenLogs.length - 2000);
+              console.log(`[WASM Worker:${msg.level}]`, msg.message);
               break;
           }
         };
