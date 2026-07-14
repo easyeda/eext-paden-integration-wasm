@@ -99,7 +99,7 @@
     ▼
 1. 提取 PCB 数据
    - 走线 (EasyEDA_Track)
-   - 过孔 (EasyEDA_Via)  
+   - 过孔 (EasyEDA_Via)
    - 焊盘 (EasyEDA_Pad)
    - 层名 (layerNames)
    │
@@ -161,7 +161,7 @@
 #### `runPdnAnalysis()` - 主分析流程
 
 ```typescript
-async function runPdnAnalysis(): Promise<void>
+async function runPdnAnalysis(): Promise<void>;
 ```
 
 **执行流程**:
@@ -768,7 +768,7 @@ $$
 ### 2. 单位转换常量
 
 ```typescript
-const MIL_TO_MM = 0.0254;  // 1 mil = 0.0254 mm
+const MIL_TO_MM = 0.0254; // 1 mil = 0.0254 mm
 ```
 
 ### 3. 内存管理策略

@@ -1,8 +1,8 @@
 # PADEN 仿真扩展 - 详细代码分析文档
 
-> **版本**: 1.0.8  
-> **生成日期**: 2026-06-04  
-> **项目**: eext-paden-integration  
+> **版本**: 1.0.8
+> **生成日期**: 2026-06-04
+> **项目**: eext-paden-integration
 > **许可**: Apache-2.0
 
 ---
@@ -195,11 +195,11 @@ EasyEDA PCB → extract.ts → EasyEDA_PcbData
 ```typescript
 // 主要流程
 export async function runPdnAnalysis(): Promise<void> {
-  // 1. 检查后端服务
-  // 2. 提取 PCB 数据
-  // 3. 打开配置面板
-  // 4. 执行多网络分析 (N+1 次求解)
-  // 5. 展示结果
+	// 1. 检查后端服务
+	// 2. 提取 PCB 数据
+	// 3. 打开配置面板
+	// 4. 执行多网络分析 (N+1 次求解)
+	// 5. 展示结果
 }
 ```
 
@@ -231,13 +231,13 @@ export class PcbExtractor {
   async extractNetworkInfo(): Promise<EasyEDA_PcbData> {
     // 1. 提取层名称
     const layerNames = await this.extractLayerNames();
-    
+
     // 2. 提取过孔、焊盘、走线（并发）
     const [bulkVias, bulkPads, bulkTracks] = await Promise.all([...]);
-    
+
     // 3. 提取器件焊盘（并发控制）
     const compPinResults = await this.parallelMap(compMeta, async (...) => {...}, 8);
-    
+
     return { tracks, vias, pads, copperPours, layerNames, outerLayerIds };
   }
 }
@@ -269,25 +269,25 @@ private async parallelMap<T, R>(
 
 ```typescript
 export class PcbDataConverter {
-  // 构建 Gerber 配置
-  buildGerberConfig(easyedaData, config): Record<string, any> {
-    return {
-      layers,           // 层配置（电导、厚度）
-      vias,             // 过孔规格
-      pads,             // 焊盘规格
-      sources,          // 电压源
-      loads,            // 电流负载
-      tracks,           // 走线数据
-      easyeda_bounds,   // EasyEDA 边界框
-      layer_cu_thickness, // 层铜厚度
-      temp_rise,        // 允许温升
-    };
-  }
-  
-  // 反序列化求解结果
-  deserializeSolution(solution: SerializedSolution): SolutionData {
-    // 将 Python 格式转换为 TypeScript 格式
-  }
+	// 构建 Gerber 配置
+	buildGerberConfig(easyedaData, config): Record<string, any> {
+		return {
+			layers, // 层配置（电导、厚度）
+			vias, // 过孔规格
+			pads, // 焊盘规格
+			sources, // 电压源
+			loads, // 电流负载
+			tracks, // 走线数据
+			easyeda_bounds, // EasyEDA 边界框
+			layer_cu_thickness, // 层铜厚度
+			temp_rise, // 允许温升
+		};
+	}
+
+	// 反序列化求解结果
+	deserializeSolution(solution: SerializedSolution): SolutionData {
+		// 将 Python 格式转换为 TypeScript 格式
+	}
 }
 ```
 
@@ -296,11 +296,11 @@ export class PcbDataConverter {
 ```typescript
 // "Blind: Top-Layer2" → [Top, Layer2]
 // "Buried: Layer2-Layer5" → [Layer2, Layer3, Layer4, Layer5]
-const parseViaLayerRange = (viaType: string): string[] | null => {
-  const blindMatch = viaType.match(/Blind:\s*(.+?)\s*-\s*(.+)/);
-  const buriedMatch = viaType.match(/Buried:\s*(.+?)\s*-\s*(.+)/);
-  // ...
-};
+function parseViaLayerRange(viaType: string): string[] | null {
+	const blindMatch = viaType.match(/Blind:\s*(.+?)\s*-\s*(.+)/);
+	const buriedMatch = viaType.match(/Buried:\s*(.+?)\s*-\s*(.+)/);
+	// ...
+}
 ```
 
 ### 4.4 api.ts - HTTP 通信
@@ -309,30 +309,30 @@ const parseViaLayerRange = (viaType: string): string[] | null => {
 
 ```typescript
 export class PdnApiClient {
-  private host: string;
-  private port: number;
-  
-  // 检查服务状态
-  async checkService(): Promise<boolean> {
-    const response = await eda.sys_ClientUrl.request(
-      `http://${this.host}:${this.port}/test`
-    );
-    return response.ok;
-  }
-  
-  // 发送 Gerber 分析请求
-  async analyzeGerber(gerberBlob: Blob, configJson: string): Promise<any> {
-    const formData = new FormData();
-    formData.append('gerber', gerberBlob, 'gerber.zip');
-    formData.append('config', configJson);
-    
-    const response = await eda.sys_ClientUrl.request(
-      `http://${this.host}:${this.port}/analyze-gerber`,
-      'POST',
-      formData
-    );
-    return await response.json();
-  }
+	private host: string;
+	private port: number;
+
+	// 检查服务状态
+	async checkService(): Promise<boolean> {
+		const response = await eda.sys_ClientUrl.request(
+			`http://${this.host}:${this.port}/test`
+		);
+		return response.ok;
+	}
+
+	// 发送 Gerber 分析请求
+	async analyzeGerber(gerberBlob: Blob, configJson: string): Promise<any> {
+		const formData = new FormData();
+		formData.append('gerber', gerberBlob, 'gerber.zip');
+		formData.append('config', configJson);
+
+		const response = await eda.sys_ClientUrl.request(
+			`http://${this.host}:${this.port}/analyze-gerber`,
+			'POST',
+			formData
+		);
+		return await response.json();
+	}
 }
 ```
 
@@ -342,19 +342,19 @@ export class PdnApiClient {
 
 ```typescript
 export class ResultDisplay {
-  // 清理 Storage
-  static cleanupStorage(): void {
-    eda.sys_Storage.setExtensionUserConfig('pdn-results', '');
-    eda.sys_Storage.setExtensionUserConfig('pdn-results-images', '');
-  }
-  
-  // 展示结果集
-  showResultSet(resultSet, layerNames): Promise<'close' | 'reanalyze'> {
-    // 1. 将数据写入 Storage
-    // 2. 订阅 MessageBus 消息
-    // 3. 打开 IFrame
-    // 4. 等待用户操作
-  }
+	// 清理 Storage
+	static cleanupStorage(): void {
+		eda.sys_Storage.setExtensionUserConfig('pdn-results', '');
+		eda.sys_Storage.setExtensionUserConfig('pdn-results-images', '');
+	}
+
+	// 展示结果集
+	showResultSet(resultSet, layerNames): Promise<'close' | 'reanalyze'> {
+		// 1. 将数据写入 Storage
+		// 2. 订阅 MessageBus 消息
+		// 3. 打开 IFrame
+		// 4. 等待用户操作
+	}
 }
 ```
 
@@ -523,24 +523,24 @@ def laplace_operator(mesh: Mesh) -> scipy.sparse.coo_matrix:
     N = len(mesh.vertices)
     row_is, col_is, values = [], [], []
     diagonal_entries = np.zeros(N)
-    
+
     for i, vertex_i in enumerate(mesh.vertices):
         for edge in vertex_i.orbit():
             ratio = edge.cotan()  # cot(α) + cot(β)
             vertex_k = edge.twin.origin
             k = mesh.vertices.to_index(vertex_k)
-            
+
             row_is.append(i)
             col_is.append(k)
             values.append(ratio)
             diagonal_entries[i] -= ratio
-    
+
     # 插入对角线
     for i, val in enumerate(diagonal_entries):
         row_is.append(i)
         col_is.append(i)
         values.append(val)
-    
+
     return scipy.sparse.coo_matrix((values, (row_is, col_is)), shape=(N, N))
 ```
 
@@ -629,7 +629,7 @@ class Mesher:
         maximum_size: float = 1.2  # mm
         variable_density_min_distance: float = 0.5
         variable_density_max_distance: float = 5.0
-    
+
     def poly_to_mesh(self, poly, seed_points) -> Mesh:
         # 1. 清理多边形 (buffer(0))
         # 2. 简化边界 (simplify)
@@ -648,29 +648,34 @@ class Mesher:
 
 ```typescript
 export interface EasyEDA_Track {
-  net: string;
-  x1: number; y1: number;
-  x2: number; y2: number;
-  width: number;      // mil
-  layer: number;
+	net: string;
+	x1: number;
+	y1: number;
+	x2: number;
+	y2: number;
+	width: number; // mil
+	layer: number;
 }
 
 export interface EasyEDA_Via {
-  net: string;
-  x: number; y: number;
-  diameter: number;
-  hole_diameter: number;
-  via_type?: string;  // "Blind: Top-Layer2" | "Buried: Layer2-Layer5"
+	net: string;
+	x: number;
+	y: number;
+	diameter: number;
+	hole_diameter: number;
+	via_type?: string; // "Blind: Top-Layer2" | "Buried: Layer2-Layer5"
 }
 
 export interface EasyEDA_Pad {
-  net: string;
-  x: number; y: number;
-  pad_number: string;
-  width: number; height: number;
-  hole_diameter: number;
-  layer?: number;     // undefined = THT (通孔焊盘)
-  ref_des?: string;
+	net: string;
+	x: number;
+	y: number;
+	pad_number: string;
+	width: number;
+	height: number;
+	hole_diameter: number;
+	layer?: number; // undefined = THT (通孔焊盘)
+	ref_des?: string;
 }
 ```
 
@@ -678,17 +683,17 @@ export interface EasyEDA_Pad {
 
 ```typescript
 export interface PdnConfig {
-  rails: PdnRailConfig[];
-  layerCuThickness: Record<number, number>;
-  tempRise?: number;
+	rails: PdnRailConfig[];
+	layerCuThickness: Record<number, number>;
+	tempRise?: number;
 }
 
 export interface PdnRailConfig {
-  net: string;
-  voltage: number;
-  sources: PdnSourceConfig[];
-  loads: PdnLoadConfig[];
-  gnd_net?: string;
+	net: string;
+	voltage: number;
+	sources: PdnSourceConfig[];
+	loads: PdnLoadConfig[];
+	gnd_net?: string;
 }
 ```
 
@@ -696,16 +701,16 @@ export interface PdnRailConfig {
 
 ```typescript
 export interface SolutionData {
-  layerSolutions: LayerSolutionData[];
-  solverInfo: SolverInfoData;
-  diagnostics?: string[];
-  currentWarnings?: CurrentCheckWarning[];
+	layerSolutions: LayerSolutionData[];
+	solverInfo: SolverInfoData;
+	diagnostics?: string[];
+	currentWarnings?: CurrentCheckWarning[];
 }
 
 export interface LayerSolutionData {
-  layerName: string;
-  meshes: MeshData[];
-  disconnectedMeshes: MeshData[];
+	layerName: string;
+	meshes: MeshData[];
+	disconnectedMeshes: MeshData[];
 }
 ```
 
@@ -730,7 +735,7 @@ class VoltageSource(BaseLumped):
     p: NodeID
     n: NodeID
     voltage: float
-    
+
     @property
     def extra_variable_count(self) -> int:
         return 1  # 引入电流变量
@@ -786,17 +791,17 @@ async analyzeGerber(gerberBlob: Blob, configJson: string): Promise<any> {
   const formData = new FormData();
   formData.append('gerber', gerberBlob, 'gerber.zip');
   formData.append('config', configJson);
-  
+
   const response = await eda.sys_ClientUrl.request(
     `http://${this.host}:${this.port}/analyze-gerber`,
     'POST',
     formData
   );
-  
+
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   }
-  
+
   return await response.json();
 }
 ```
@@ -815,9 +820,9 @@ async analyzeGerber(gerberBlob: Blob, configJson: string): Promise<any> {
 
 **数据流**:
 ```
-MessageBus: 'pdn-config-ready' 
+MessageBus: 'pdn-config-ready'
   → 发布 'pdn-config-data' (padsByNet, layerNames)
-  
+
 MessageBus: 'pdn-config-result'
   → 接收用户配置
 ```
@@ -852,24 +857,24 @@ MessageBus: 'pdn-results-ready'
 
 ```json
 {
-  "name": "paden-integration",
-  "displayName": "PADEN仿真",
-  "version": "1.0.8",
-  "categories": "PCB",
-  "keywords": ["PDN", "Power Analysis", "Simulation"],
-  "activationEvents": {
-    "onEditorPcb": true
-  },
-  "headerMenus": {
-    "pcb": [{
-      "id": "PDN-Analysis",
-      "title": "PADEN仿真",
-      "menuItems": [
-        { "id": "RunPDNAnalysis", "title": "运行PADEN仿真..." },
-        { "id": "About", "title": "关于..." }
-      ]
-    }]
-  }
+	"name": "paden-integration",
+	"displayName": "PADEN仿真",
+	"version": "1.0.8",
+	"categories": "PCB",
+	"keywords": ["PDN", "Power Analysis", "Simulation"],
+	"activationEvents": {
+		"onEditorPcb": true
+	},
+	"headerMenus": {
+		"pcb": [{
+			"id": "PDN-Analysis",
+			"title": "PADEN仿真",
+			"menuItems": [
+				{ "id": "RunPDNAnalysis", "title": "运行PADEN仿真..." },
+				{ "id": "About", "title": "关于..." }
+			]
+		}]
+	}
 }
 ```
 
@@ -878,13 +883,13 @@ MessageBus: 'pdn-results-ready'
 **esbuild.prod.ts**:
 ```typescript
 esbuild.build({
-  entryPoints: ['./src/index.ts'],
-  bundle: true,
-  platform: 'browser',
-  target: 'es2020',
-  format: 'iife',
-  outfile: './dist/index.js',
-  external: ['eda'],
+	entryPoints: ['./src/index.ts'],
+	bundle: true,
+	platform: 'browser',
+	target: 'es2020',
+	format: 'iife',
+	outfile: './dist/index.js',
+	external: ['eda'],
 });
 ```
 
@@ -892,12 +897,12 @@ esbuild.build({
 
 ```json
 {
-  "scripts": {
-    "compile": "rimraf ./dist/ && ts-node ./config/esbuild.prod.ts",
-    "lint": "eslint",
-    "fix": "eslint --fix",
-    "build": "npm run compile && ts-node ./build/packaged.ts"
-  }
+	"scripts": {
+		"compile": "rimraf ./dist/ && ts-node ./config/esbuild.prod.ts",
+		"lint": "eslint",
+		"fix": "eslint --fix",
+		"build": "npm run compile && ts-node ./build/packaged.ts"
+	}
 }
 ```
 
