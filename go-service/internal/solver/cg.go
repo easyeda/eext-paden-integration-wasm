@@ -35,6 +35,7 @@ func SolveCG(a *CSRMatrix, b []float64, maxIter int, tol float64, precond Precon
 		a.Multiply(p, Ap)
 		pAp := Dot(p, Ap)
 		if math.Abs(pAp) < 1e-30 {
+			fmt.Printf("[PADEN solver] CG breakdown at iter %d: pAp=%g\n", iter, pAp)
 			return x, fmt.Errorf("CG breakdown: p^T A p = %g", pAp)
 		}
 		alpha := rz / pAp
@@ -43,6 +44,7 @@ func SolveCG(a *CSRMatrix, b []float64, maxIter int, tol float64, precond Precon
 
 		resNorm := math.Sqrt(Dot(r, r))
 		if resNorm < tol {
+			fmt.Printf("[PADEN solver] CG converged at iter %d: res=%g\n", iter, resNorm)
 			return x, nil
 		}
 
@@ -67,7 +69,9 @@ func SolveCG(a *CSRMatrix, b []float64, maxIter int, tol float64, precond Precon
 		rz = rzNew
 	}
 
-	return x, fmt.Errorf("CG did not converge after %d iterations (residual=%g)", maxIter, math.Sqrt(Dot(r, r)))
+	res := math.Sqrt(Dot(r, r))
+	fmt.Printf("[PADEN solver] CG did not converge after %d iterations (residual=%g)\n", maxIter, res)
+	return x, fmt.Errorf("CG did not converge after %d iterations (residual=%g)", maxIter, res)
 }
 
 // Preconditioner is the interface for CG preconditioners.
