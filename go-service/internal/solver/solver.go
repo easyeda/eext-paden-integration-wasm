@@ -631,7 +631,6 @@ func stampLaplacian(meshes []*mesh.Mesh, meshToLayer []int, prob *problem.Proble
 		}
 
 		nonzero := 0
-		const minEdgeG = 1e-12
 		for e, w := range edgeCotan {
 			if w <= 0 {
 				continue
@@ -641,9 +640,6 @@ func stampLaplacian(meshes []*mesh.Mesh, meshToLayer []int, prob *problem.Proble
 			gi := globalToNew[vindex.localToGlobal[[2]int{mi, i}]]
 			gj := globalToNew[vindex.localToGlobal[[2]int{mi, j}]]
 			g := conductance * w
-			if g < minEdgeG {
-				g = minEdgeG
-			}
 			triplets = append(triplets, Triplet{Row: gi, Col: gj, Val: -g})
 			triplets = append(triplets, Triplet{Row: gj, Col: gi, Val: -g})
 			diag[i] += g
@@ -749,7 +745,12 @@ func ensureComponentGrounding(A *CSRMatrix, known map[int]float64) {
 			}
 		}
 		if !hasKnown && len(component) > 0 {
-			known[component[0]] = 0
+			// Fix every node in a source-less component to ground.  This removes
+			// the ill-conditioned floating block from the unknown set instead of
+			// leaving it dangling with only one grounded node.
+			for _, node := range component {
+				known[node] = 0
+			}
 			fmt.Printf("[PADEN solver] component grounded: nodes=%d first=%d\n", len(component), component[0])
 		}
 	}
