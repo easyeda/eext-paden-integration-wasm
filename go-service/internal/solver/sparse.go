@@ -61,6 +61,7 @@ func NewCSRFromTriplets(n int, triplets []Triplet) *CSRMatrix {
 		rowStart := ap[i]
 		rowEnd := ap[i+1]
 		if rowStart == rowEnd {
+			m.Ap[i+1] = m.Ap[i]
 			continue
 		}
 
