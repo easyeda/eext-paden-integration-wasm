@@ -72,6 +72,13 @@ export class PdnWasmClient {
 			eda.sys_IFrame.openIFrame('/ui/wasm-host.html', 1, 1, WASM_HOST_FRAME, {
 				grayscaleMask: false,
 				buttonCallbackFn: () => {},
+			}).then(() => {
+				// The host IFrame must exist for MessageBus/worker communication,
+				// but it should never be visible as a dialog.
+				try {
+					eda.sys_IFrame.hideIFrame(WASM_HOST_FRAME);
+				}
+				catch {}
 			}).catch((e) => {
 				cleanup();
 				reject(e);
