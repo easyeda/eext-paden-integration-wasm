@@ -57,8 +57,59 @@ function toClipperPaths(polygons) {
 	return paths;
 }
 
+function ringSignedArea(ring) {
+	let a = 0;
+	const n = ring.length;
+	for (let i = 0; i < n; i++) {
+		const j = (i + 1) % n;
+		a += ring[i].x * ring[j].y - ring[j].x * ring[i].y;
+	}
+	return a / 2;
+}
+
+function ringContainsPoint(ring, p) {
+	let inside = false;
+	const n = ring.length;
+	for (let i = 0, j = n - 1; i < n; j = i, i++) {
+		const xi = ring[i].x;
+		const yi = ring[i].y;
+		const xj = ring[j].x;
+		const yj = ring[j].y;
+		if (((yi > p.y) !== (yj > p.y)) && (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi)) {
+			inside = !inside;
+		}
+	}
+	return inside;
+}
+
+function ringContainsRing(outer, inner) {
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (const p of outer) {
+		if (p.x < minX)
+			minX = p.x;
+		if (p.x > maxX)
+			maxX = p.x;
+		if (p.y < minY)
+			minY = p.y;
+		if (p.y > maxY)
+			maxY = p.y;
+	}
+	for (const p of inner) {
+		if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY)
+			return false;
+	}
+	for (const p of inner) {
+		if (!ringContainsPoint(outer, p))
+			return false;
+	}
+	return true;
+}
+
 function fromClipperPaths(paths) {
-	const out = [];
+	const rings = [];
 	const n = paths.size();
 	for (let i = 0; i < n; i++) {
 		const path = paths.get(i);
@@ -68,9 +119,47 @@ function fromClipperPaths(paths) {
 			const pt = path.get(j);
 			ring.push({ x: pt.x, y: pt.y });
 		}
-		out.push(ring);
+		rings.push(ring);
 	}
-	return [out];
+
+	if (rings.length === 0)
+		return [];
+	if (rings.length === 1)
+		return [[rings[0]]];
+
+	// Clipper2 returns a flat list of paths.  With FillRule.NonZero the
+	// exterior rings have one signed area and holes have the opposite sign.
+	// Group each hole with the smallest exterior that fully contains it.
+	const areas = rings.map(ringSignedArea);
+	const indices = rings.map((_, i) => i).sort((a, b) => Math.abs(areas[b]) - Math.abs(areas[a]));
+
+	const polygons = [];
+	const used = new Set();
+
+	for (const extIdx of indices) {
+		if (used.has(extIdx))
+			continue;
+		used.add(extIdx);
+
+		const exterior = rings[extIdx];
+		const poly = [exterior];
+		const extArea = areas[extIdx];
+
+		for (const holeIdx of indices) {
+			if (used.has(holeIdx))
+				continue;
+			// A hole must have opposite winding to its exterior.
+			if (extArea * areas[holeIdx] > 0)
+				continue;
+			if (ringContainsRing(exterior, rings[holeIdx])) {
+				poly.push(rings[holeIdx]);
+				used.add(holeIdx);
+			}
+		}
+		polygons.push(poly);
+	}
+
+	return polygons;
 }
 
 function ensureModule() {
@@ -160,28 +249,37 @@ function shapeToPolygons(shape) {
 }
 
 function imageGraphicToPolygons(graphic) {
+	let polys = [];
 	if (graphic.type === 'imageShape') {
-		return shapeToPolygons(graphic.shape);
+		polys = shapeToPolygons(graphic.shape);
 	}
-	if (graphic.type === 'imageRegion') {
+	else if (graphic.type === 'imageRegion') {
 		const pts = pathSegmentsToPoints(graphic.segments);
 		if (pts.length >= 3)
-			return [[pts]];
+			polys = [[pts]];
 	}
-	if (graphic.type === 'imagePath') {
+	else if (graphic.type === 'imagePath') {
 		// Stroke with width: convert to polygon by offsetting the path.
 		const pts = pathSegmentsToPoints(graphic.segments);
 		if (pts.length < 2)
 			return [];
 		const linePoly = [[pts]];
 		try {
-			return clipperOffset(linePoly, graphic.width / 2);
+			polys = clipperOffset(linePoly, graphic.width / 2);
 		}
 		catch {
 			return [];
 		}
 	}
-	return [];
+
+	// tracespace plotter uses graphic.polarity === 'clear' for negative geometry
+	// (e.g. tracks/pads carved out of a copper pour).  Mark these so they are
+	// subtracted from the dark polygons later.
+	if ((graphic.polarity === 'clear' || graphic.polarity === 'erase') && polys.length > 0) {
+		polys.forEach(p => p._erase = true);
+	}
+
+	return polys;
 }
 
 function flattenLayeredErasures(polygons) {

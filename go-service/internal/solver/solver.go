@@ -4,6 +4,7 @@ package solver
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -206,12 +207,22 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	}
 	Areg := Abc.AddDiagonal(reg)
 
-	maxIter := M
-	if maxIter > 5000 {
-		maxIter = 5000
+	maxIter := M * 4
+	if maxIter < 1000 {
+		maxIter = 1000
 	}
-	tol := 1e-9
-	fmt.Printf("[PADEN solver] starting CG for M=%d, maxIter=%d\n", M, maxIter)
+	if maxIter > 10000 {
+		maxIter = 10000
+	}
+	rhsNorm := math.Sqrt(Dot(rhsBc, rhsBc))
+	tol := 1e-9 * math.Max(rhsNorm, 1.0)
+	dMin, dMax := math.Inf(1), math.Inf(-1)
+	for _, v := range Abc.Diagonal() {
+		if v < dMin { dMin = v }
+		if v > dMax { dMax = v }
+	}
+	fmt.Printf("[PADEN solver] starting CG for M=%d, maxIter=%d, knownAfterGround=%d, diag=[%.3e,%.3e], rhsNorm=%.3e, tol=%.3e\n",
+		M, maxIter, len(known), dMin, dMax, rhsNorm, tol)
 	x, err := SolveCG(Areg, rhsBc, maxIter, tol, NewJacobiPreconditioner(Areg))
 	if err != nil {
 		return nil, fmt.Errorf("solver failed: %w", err)
@@ -610,24 +621,59 @@ func stampLaplacian(meshes []*mesh.Mesh, meshToLayer []int, prob *problem.Proble
 			pts[i] = v.P
 		}
 
-		// Accumulate cotangent weights directly from the triangle list.  This avoids
-		// relying on the half-edge structure, whose Next/Prev links can be corrupted
-		// when FromTriangleSoup shares edges between adjacent triangles.
-		edgeCotan := make(map[[2]int]float64)
+		// Compute raw cotangent weights directly from the triangle list.  Tiny
+		// sliver triangles can produce enormous weights that make the Laplacian
+		// extremely ill-conditioned, so clamp each mesh's weights to a band around
+		// the median weight for that mesh.
+		type edgeWeight struct {
+			edge [2]int
+			w    float64
+		}
+		rawWeights := make([]edgeWeight, 0, len(m.Triangles)*3)
+		positive := make([]float64, 0, len(m.Triangles)*3)
 		for _, tri := range m.Triangles {
 			a, b, c := tri[0], tri[1], tri[2]
 			if a < 0 || b < 0 || c < 0 || a >= N || b >= N || c >= N {
 				continue
 			}
 			if w := cotanWeight(pts[a], pts[b], pts[c]); w > 0 {
-				edgeCotan[orderedEdge(a, b)] += w
+				e := orderedEdge(a, b)
+				rawWeights = append(rawWeights, edgeWeight{edge: e, w: w})
+				positive = append(positive, w)
 			}
 			if w := cotanWeight(pts[b], pts[c], pts[a]); w > 0 {
-				edgeCotan[orderedEdge(b, c)] += w
+				e := orderedEdge(b, c)
+				rawWeights = append(rawWeights, edgeWeight{edge: e, w: w})
+				positive = append(positive, w)
 			}
 			if w := cotanWeight(pts[c], pts[a], pts[b]); w > 0 {
-				edgeCotan[orderedEdge(c, a)] += w
+				e := orderedEdge(c, a)
+				rawWeights = append(rawWeights, edgeWeight{edge: e, w: w})
+				positive = append(positive, w)
 			}
+		}
+
+		var lo, hi float64
+		if len(positive) > 0 {
+			sort.Float64s(positive)
+			med := positive[len(positive)/2]
+			if med <= 0 {
+				med = 1.0
+			}
+			lo = med / 1e4
+			hi = med * 1e4
+		}
+
+		edgeCotan := make(map[[2]int]float64)
+		for _, ew := range rawWeights {
+			w := ew.w
+			if w < lo {
+				w = lo
+			}
+			if w > hi {
+				w = hi
+			}
+			edgeCotan[ew.edge] += w
 		}
 
 		nonzero := 0

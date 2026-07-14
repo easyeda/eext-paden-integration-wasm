@@ -260,11 +260,12 @@ func delaunayTriangulate(pts []Point) [][3]int {
 	midX := (minX + maxX) / 2
 	midY := (minY + maxY) / 2
 
-	// Super triangle
+	// Super triangle — must be counter-clockwise so that inCircumcircle(det>0)
+	// works consistently for all triangles created by Bowyer-Watson.
 	super := [3]Point{
 		{X: midX - 20*dmax, Y: midY - dmax},
-		{X: midX, Y: midY + 20*dmax},
 		{X: midX + 20*dmax, Y: midY - dmax},
+		{X: midX, Y: midY + 20*dmax},
 	}
 	allPts := append([]Point{super[0], super[1], super[2]}, pts...)
 	superIdx := []int{0, 1, 2}
@@ -306,10 +307,17 @@ func delaunayTriangulate(pts []Point) [][3]int {
 		}
 		triangles = newTris
 
-		// Add new triangles from boundary to p
+		// Add new triangles from boundary to p, keeping every triangle
+		// counter-clockwise so the circumcircle test remains consistent.
 		for e, c := range edgeCount {
 			if c == 1 {
-				triangles = append(triangles, [3]int{e[0], e[1], i})
+				a, b := e[0], e[1]
+				cross := (allPts[b].X-allPts[a].X)*(allPts[i].Y-allPts[a].Y) -
+					(allPts[b].Y-allPts[a].Y)*(allPts[i].X-allPts[a].X)
+				if cross < 0 {
+					a, b = b, a
+				}
+				triangles = append(triangles, [3]int{a, b, i})
 			}
 		}
 	}

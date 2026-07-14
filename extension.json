@@ -1,8 +1,8 @@
 {
 	"name": "paden-integration-wasm",
 	"uuid": "d1a7827995f44a09b5993afafc430cda",
-	"displayName": "PADEN仿真",
-	"description": "通过与 PADEN 桥接实现 PCB 电源分配网络，DC压降等分析。",
+	"displayName": "PADEN仿真(WASM版)",
+	"description": "通过Go编写 PADEN 计算逻辑，并在WASM环境中运行，实现 PCB 电源分配网络，DC压降等分析。",
 	"version": "1.1.0",
 	"publisher": "EasyEDA",
 	"engines": {
@@ -41,11 +41,6 @@
 						"id": "RunPDNAnalysis",
 						"title": "运行PADEN仿真...",
 						"registerFn": "runPdnAnalysis"
-					},
-					{
-						"id": "About",
-						"title": "关于...",
-						"registerFn": "about"
 					}
 				]
 			}

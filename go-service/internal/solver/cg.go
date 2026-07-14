@@ -26,6 +26,7 @@ func SolveCG(a *CSRMatrix, b []float64, maxIter int, tol float64, precond Precon
 	}
 
 	rz := Dot(r, p)
+	fmt.Printf("[PADEN solver] CG init: rz=%g, r0=%g\n", rz, math.Sqrt(Dot(r, r)))
 	if rz == 0 {
 		return x, nil
 	}
@@ -43,6 +44,9 @@ func SolveCG(a *CSRMatrix, b []float64, maxIter int, tol float64, precond Precon
 		Axpy(-alpha, Ap, r)
 
 		resNorm := math.Sqrt(Dot(r, r))
+		if iter < 5 || iter%50 == 0 {
+			fmt.Printf("[PADEN solver] CG iter %d: res=%g, pAp=%g, alpha=%g\n", iter, resNorm, pAp, alpha)
+		}
 		if resNorm < tol {
 			fmt.Printf("[PADEN solver] CG converged at iter %d: res=%g\n", iter, resNorm)
 			return x, nil

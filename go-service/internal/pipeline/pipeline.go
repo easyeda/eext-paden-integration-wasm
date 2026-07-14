@@ -314,10 +314,11 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, d *Diag
 	gerberCx := (allBounds.MinX + allBounds.MaxX) / 2
 	gerberCy := (allBounds.MinY + allBounds.MaxY) / 2
 
-	// tracespace/plotter emits standard Gerber coordinates where Y increases
-	// upward; EasyEDA canvas coordinates have Y increasing downward.  Flip Y
-	// so pads/vias line up with the Gerber copper geometry.
-	sx := 1.0
+	// tracespace/plotter emits Gerber coordinates that are mirrored in X
+	// relative to the EasyEDA canvas and have Y increasing upward (EasyEDA
+	// canvas has Y increasing downward).  Flip both axes so pads/vias line
+	// up with the Gerber copper geometry.
+	sx := -1.0
 	sy := -1.0
 	ox := gerberCx - sx*easyedaCx
 	oy := gerberCy - sy*easyedaCy
