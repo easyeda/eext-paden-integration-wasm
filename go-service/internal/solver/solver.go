@@ -631,6 +631,7 @@ func stampLaplacian(meshes []*mesh.Mesh, meshToLayer []int, prob *problem.Proble
 		}
 
 		nonzero := 0
+		const minEdgeG = 1e-12
 		for e, w := range edgeCotan {
 			if w <= 0 {
 				continue
@@ -640,6 +641,9 @@ func stampLaplacian(meshes []*mesh.Mesh, meshToLayer []int, prob *problem.Proble
 			gi := globalToNew[vindex.localToGlobal[[2]int{mi, i}]]
 			gj := globalToNew[vindex.localToGlobal[[2]int{mi, j}]]
 			g := conductance * w
+			if g < minEdgeG {
+				g = minEdgeG
+			}
 			triplets = append(triplets, Triplet{Row: gi, Col: gj, Val: -g})
 			triplets = append(triplets, Triplet{Row: gj, Col: gi, Val: -g})
 			diag[i] += g

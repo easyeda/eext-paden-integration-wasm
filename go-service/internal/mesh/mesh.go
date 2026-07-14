@@ -182,19 +182,72 @@ func (m *Mesh) AddFace(v1, v2, v3 *Vertex) *Face {
 
 // FromTriangleSoup builds a half-edge mesh from a list of points and triangles.
 func FromTriangleSoup(points []Point, triangles [][3]int) *Mesh {
-	m := NewMesh()
-	verts := make([]*Vertex, len(points))
-	for i, p := range points {
-		verts[i] = m.AddVertex(p)
+	// First compaction: map every index referenced by any triangle to a compact
+	// vertex.  This lets us compute triangle areas using real coordinates.
+	newIndex := make([]int, len(points))
+	for i := range newIndex {
+		newIndex[i] = -1
+	}
+	var compactPts []Point
+	for _, tri := range triangles {
+		for _, idx := range tri {
+			if idx < 0 || idx >= len(newIndex) || newIndex[idx] >= 0 {
+				continue
+			}
+			newIndex[idx] = len(compactPts)
+			compactPts = append(compactPts, points[idx])
+		}
 	}
 
+	// Drop degenerate triangles and remember which compact vertices survive.
+	type triIdx [3]int
+	var filtered []triIdx
+	used := make([]bool, len(compactPts))
 	for _, tri := range triangles {
-		v0, v1, v2 := verts[tri[0]], verts[tri[1]], verts[tri[2]]
-		area := math.Abs((v1.P.X-v0.P.X)*(v2.P.Y-v0.P.Y) - (v2.P.X-v0.P.X)*(v1.P.Y-v0.P.Y))
+		a, b, c := newIndex[tri[0]], newIndex[tri[1]], newIndex[tri[2]]
+		if a < 0 || b < 0 || c < 0 {
+			continue
+		}
+		v0, v1, v2 := compactPts[a], compactPts[b], compactPts[c]
+		area := math.Abs((v1.X-v0.X)*(v2.Y-v0.Y) - (v2.X-v0.X)*(v1.Y-v0.Y))
 		if area < 1e-12 {
 			continue
 		}
-		m.AddFace(v0, v1, v2)
+		filtered = append(filtered, triIdx{a, b, c})
+		used[a] = true
+		used[b] = true
+		used[c] = true
+	}
+
+	// Second compaction: remove vertices that were only referenced by degenerate
+	// triangles.  These would otherwise become isolated zero-degree nodes.
+	finalIndex := make([]int, len(compactPts))
+	for i := range finalIndex {
+		finalIndex[i] = -1
+	}
+	var finalPts []Point
+	for i, u := range used {
+		if u {
+			finalIndex[i] = len(finalPts)
+			finalPts = append(finalPts, compactPts[i])
+		}
+	}
+	compactTris := make([][3]int, 0, len(filtered))
+	for _, tri := range filtered {
+		a, b, c := finalIndex[tri[0]], finalIndex[tri[1]], finalIndex[tri[2]]
+		if a >= 0 && b >= 0 && c >= 0 {
+			compactTris = append(compactTris, [3]int{a, b, c})
+		}
+	}
+
+	m := NewMesh()
+	verts := make([]*Vertex, len(finalPts))
+	for i, p := range finalPts {
+		verts[i] = m.AddVertex(p)
+	}
+
+	for _, tri := range compactTris {
+		m.AddFace(verts[tri[0]], verts[tri[1]], verts[tri[2]])
 	}
 
 	m.BuildBoundaries()
