@@ -108,28 +108,15 @@ function ringContainsRing(outer, inner) {
 	return true;
 }
 
-function fromClipperPaths(paths) {
-	const rings = [];
-	const n = paths.size();
-	for (let i = 0; i < n; i++) {
-		const path = paths.get(i);
-		const ring = [];
-		const m = path.size();
-		for (let j = 0; j < m; j++) {
-			const pt = path.get(j);
-			ring.push({ x: pt.x, y: pt.y });
-		}
-		rings.push(ring);
-	}
-
+// Group a flat list of rings into polygons with holes.  Exterior rings and
+// holes are distinguished by signed area (opposite signs).  Each hole is
+// attached to the smallest exterior that fully contains it.
+function groupRingsIntoPolygons(rings) {
 	if (rings.length === 0)
 		return [];
 	if (rings.length === 1)
 		return [[rings[0]]];
 
-	// Clipper2 returns a flat list of paths.  With FillRule.NonZero the
-	// exterior rings have one signed area and holes have the opposite sign.
-	// Group each hole with the smallest exterior that fully contains it.
 	const areas = rings.map(ringSignedArea);
 	const indices = rings.map((_, i) => i).sort((a, b) => Math.abs(areas[b]) - Math.abs(areas[a]));
 
@@ -160,6 +147,23 @@ function fromClipperPaths(paths) {
 	}
 
 	return polygons;
+}
+
+function fromClipperPaths(paths) {
+	const rings = [];
+	const n = paths.size();
+	for (let i = 0; i < n; i++) {
+		const path = paths.get(i);
+		const ring = [];
+		const m = path.size();
+		for (let j = 0; j < m; j++) {
+			const pt = path.get(j);
+			ring.push({ x: pt.x, y: pt.y });
+		}
+		rings.push(ring);
+	}
+
+	return groupRingsIntoPolygons(rings);
 }
 
 function ensureModule() {
@@ -301,7 +305,7 @@ function flattenLayeredErasures(polygons) {
 }
 
 function gerberToPolygons(gerberText) {
-	console.warn('[geometry bridge] ===== bridge v20260708-nbsp-fix =====');
+	console.warn('[geometry bridge] ===== bridge v20260709-hole-grouping =====');
 	const parseFn = getParse();
 	const plotFn = getPlot();
 
@@ -340,14 +344,35 @@ function gerberToPolygons(gerberText) {
 		throw e;
 	}
 	console.warn('[geometry bridge] plotted image:', { type: image?.type, units: image?.units, size: image?.size, childrenCount: image?.children?.length });
+
+	let darkCount = 0;
+	let eraseCount = 0;
 	let all = [];
 	for (const child of image.children || []) {
 		const childPolys = imageGraphicToPolygons(child);
-		console.warn('[geometry bridge] image child:', { type: child?.type, shapeType: child?.shape?.type, region: child?.region, width: child?.width, polygons: childPolys.length });
+		const isErase = childPolys.some(p => p._erase);
+		if (isErase)
+			eraseCount += childPolys.length;
+		else
+			darkCount += childPolys.length;
+		console.warn('[geometry bridge] image child:', { type: child?.type, shapeType: child?.shape?.type, region: child?.region, width: child?.width, polarity: child?.polarity, polygons: childPolys.length, isErase });
 		all.push(...childPolys);
 	}
+	console.warn('[geometry bridge] raw graphics:', { darkCount, eraseCount, total: all.length });
+
 	all = flattenLayeredErasures(all);
-	console.warn('[geometry bridge] gerberToPolygons result:', { totalPolygons: all.length });
+	console.warn('[geometry bridge] after erasure subtraction:', { totalPolygons: all.length });
+
+	// tracespace returns a flat list of single-ring polygons.  Re-group them
+	// into polygons with holes so the mesher treats clearances correctly.
+	const rings = [];
+	for (const poly of all) {
+		for (const ring of poly)
+			rings.push(ring);
+	}
+	all = groupRingsIntoPolygons(rings);
+	console.warn('[geometry bridge] after hole grouping:', { totalPolygons: all.length, totalRings: rings.length });
+
 	return all;
 }
 
