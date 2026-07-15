@@ -79,10 +79,11 @@ type ConnectionPoint struct {
 	IsSource bool    `json:"is_source"`
 }
 
-// BoundaryPolygon describes layer boundary exterior and holes.
+// BoundaryPolygon describes layer boundary exterior and holes as [x,y] arrays
+// so the JS renderer can consume them directly.
 type BoundaryPolygon struct {
-	Exterior []geometry.Point   `json:"exterior"`
-	Holes    [][]geometry.Point `json:"holes"`
+	Exterior [][]float64   `json:"exterior"`
+	Holes    [][][]float64 `json:"holes"`
 }
 
 // SerializeSolution converts a solver.Solution to JSON bytes.
@@ -181,53 +182,36 @@ func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[s
 	out := make(map[string][]BoundaryPolygon)
 	for i, layer := range sol.Problem.Layers {
 		var polys []BoundaryPolygon
-		ls := sol.LayerSolutions[i]
-		for _, cm := range ls.CompactMeshes {
-			boundaries := cm.ExtractBoundaries()
-			for _, b := range boundaries {
-				exterior := toPointSlice(b["exterior"], transform)
-				holesRaw, _ := b["holes"].([][]geometry.Point)
-				polys = append(polys, BoundaryPolygon{Exterior: exterior, Holes: holesRaw})
+		// Use the original Gerber polygon structure for the copper-fill stencil.
+		// It already has holes grouped with their exterior, so the stencil fill
+		// matches the PCB canvas exactly. The solved mesh is drawn on top.
+		for _, poly := range sol.Problem.Layers[i].Shape {
+			exterior := toPointSlice(poly[0], transform)
+			var holes [][][]float64
+			for hi := 1; hi < len(poly); hi++ {
+				holes = append(holes, toPointSlice(poly[hi], transform))
 			}
-		}
-		for _, dcm := range ls.DisconnectedCompact {
-			boundaries := dcm.ExtractBoundaries()
-			for _, b := range boundaries {
-				exterior := toPointSlice(b["exterior"], transform)
-				holesRaw, _ := b["holes"].([][]geometry.Point)
-				polys = append(polys, BoundaryPolygon{Exterior: exterior, Holes: holesRaw})
-			}
-		}
-		// Fallback to original geometry if no mesh boundaries
-		if len(polys) == 0 {
-			for _, poly := range sol.Problem.Layers[i].Shape {
-				exterior := toPointSlice(poly[0], transform)
-				var holes [][]geometry.Point
-				for hi := 1; hi < len(poly); hi++ {
-					holes = append(holes, toPointSlice(poly[hi], transform))
-				}
-				polys = append(polys, BoundaryPolygon{Exterior: exterior, Holes: holes})
-			}
+			polys = append(polys, BoundaryPolygon{Exterior: exterior, Holes: holes})
 		}
 		out[layer.Name] = polys
 	}
 	return out
 }
 
-func toPointSlice(pts interface{}, transform *[4]float64) []geometry.Point {
+func toPointSlice(pts interface{}, transform *[4]float64) [][]float64 {
 	switch v := pts.(type) {
 	case []geometry.Point:
-		out := make([]geometry.Point, len(v))
+		out := make([][]float64, len(v))
 		for i, p := range v {
 			x, y := toEasyEDA(p.X, p.Y, transform)
-			out[i] = geometry.Point{X: x, Y: y}
+			out[i] = []float64{x, y}
 		}
 		return out
 	case [][]float64:
-		out := make([]geometry.Point, len(v))
+		out := make([][]float64, len(v))
 		for i, p := range v {
 			x, y := toEasyEDA(p[0], p[1], transform)
-			out[i] = geometry.Point{X: x, Y: y}
+			out[i] = []float64{x, y}
 		}
 		return out
 	default:
@@ -324,7 +308,7 @@ func checkCurrentCapacities(sol *solver.Solution, cfg pipeline.Config) []Current
 			if traceWidth <= 0 {
 				traceWidth = 0.2
 			}
-			maxCurrent := widthToCurrent(traceWidth/mmToMil, cuOz, cfg.TempRise, layerType)
+			maxCurrent := widthToCurrent(traceWidth*mmToMil, cuOz, cfg.TempRise, layerType)
 			utilization := current / maxCurrent
 			isExceeded := utilization > 1.0
 			if !isExceeded && utilization <= 0.8 {

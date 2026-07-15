@@ -103,7 +103,7 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	}
 
 	// 3. Coordinate transform
-	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, d)
+	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, cfg, d)
 	if transform != nil {
 		d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.2f,%.2f)", transform[0], transform[1], transform[2], transform[3]))
 	}
@@ -289,7 +289,7 @@ func polygonSignedArea(poly geometry.Polygon) float64 {
 	return area
 }
 
-func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, d *DiagCollector) *[4]float64 {
+func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Config, d *DiagCollector) *[4]float64 {
 	if bounds == nil || len(layers) == 0 {
 		return nil
 	}
@@ -314,12 +314,39 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, d *Diag
 	gerberCx := (allBounds.MinX + allBounds.MaxX) / 2
 	gerberCy := (allBounds.MinY + allBounds.MaxY) / 2
 
-	// tracespace/plotter emits Gerber coordinates that are mirrored in X
-	// relative to the EasyEDA canvas and have Y increasing upward (EasyEDA
-	// canvas has Y increasing downward).  Flip both axes so pads/vias line
-	// up with the Gerber copper geometry.
-	sx := -1.0
-	sy := -1.0
+	layerDict := make(map[string]*problem.Layer)
+	allLayers := make([]*problem.Layer, 0, len(layers))
+	for _, l := range layers {
+		if layerDict[l.Name] == nil {
+			layerDict[l.Name] = l
+			allLayers = append(allLayers, l)
+		}
+	}
+
+	testPts := collectOrientationPoints(cfg, layerDict, allLayers)
+
+	// Try the four axis-flip candidates around the common center and pick the
+	// one that lands the most pads/vias inside the parsed Gerber copper.
+	candidates := []struct{ sx, sy float64 }{
+		{1, -1},
+		{-1, -1},
+		{1, 1},
+		{-1, 1},
+	}
+	best := candidates[0]
+	bestScore := -1
+	for _, c := range candidates {
+		ox := gerberCx - c.sx*easyedaCx
+		oy := gerberCy - c.sy*easyedaCy
+		score := scoreOrientation(c.sx, c.sy, ox, oy, testPts)
+		if score > bestScore {
+			bestScore = score
+			best = c
+		}
+	}
+
+	sx := best.sx
+	sy := best.sy
 	ox := gerberCx - sx*easyedaCx
 	oy := gerberCy - sy*easyedaCy
 
@@ -327,9 +354,76 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, d *Diag
 		bounds.MinX, bounds.MaxX, bounds.MinY, bounds.MaxY))
 	d.Info(fmt.Sprintf("Gerber bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		allBounds.MinX, allBounds.MaxX, allBounds.MinY, allBounds.MaxY))
-	d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.2f,%.2f)", sx, sy, ox, oy))
+	d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.2f,%.2f) (score=%d/%d)",
+		sx, sy, ox, oy, bestScore, len(testPts)))
 
 	return &[4]float64{sx, sy, ox, oy}
+}
+
+type orientPoint struct {
+	x, y    float64
+	layers  []*problem.Layer
+}
+
+func collectOrientationPoints(cfg Config, layerDict map[string]*problem.Layer, allLayers []*problem.Layer) []orientPoint {
+	var pts []orientPoint
+	add := func(p Pad) {
+		if p.IsTHT {
+			pts = append(pts, orientPoint{x: p.X, y: p.Y, layers: allLayers})
+			return
+		}
+		if l := layerDict[p.Layer]; l != nil {
+			pts = append(pts, orientPoint{x: p.X, y: p.Y, layers: []*problem.Layer{l}})
+		}
+	}
+	for _, p := range cfg.Pads {
+		add(p)
+	}
+	for _, src := range cfg.Sources {
+		for _, p := range src.Pads {
+			add(p)
+		}
+		for _, p := range src.GndPads {
+			add(p)
+		}
+	}
+	for _, ld := range cfg.Loads {
+		for _, p := range ld.Pads {
+			add(p)
+		}
+		for _, p := range ld.GndPads {
+			add(p)
+		}
+	}
+	for _, v := range cfg.Vias {
+		var viaLayers []*problem.Layer
+		for _, name := range v.LayerNames {
+			if l := layerDict[name]; l != nil {
+				viaLayers = append(viaLayers, l)
+			}
+		}
+		if len(viaLayers) == 0 {
+			viaLayers = allLayers
+		}
+		pts = append(pts, orientPoint{x: v.X, y: v.Y, layers: viaLayers})
+	}
+	return pts
+}
+
+func scoreOrientation(sx, sy, ox, oy float64, pts []orientPoint) int {
+	score := 0
+	for _, p := range pts {
+		xg := p.x*sx + ox
+		yg := p.y*sy + oy
+		pt := geometry.Point{X: xg, Y: yg}
+		for _, l := range p.layers {
+			if pointOnLayer(pt, l) {
+				score++
+				break
+			}
+		}
+	}
+	return score
 }
 
 func buildStackup(thickness map[string]float64, layers []*problem.Layer) []float64 {

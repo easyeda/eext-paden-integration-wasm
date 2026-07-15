@@ -698,14 +698,13 @@ function buildAllLayerBuffers() {
   let globalVMin = Infinity, globalVMax = -Infinity;
   for (let li = 0; li < resultData.layerSolutions.length; li++) {
     for (const m of resultData.layerSolutions[li].meshes) {
-      // Compute average voltage to identify net (VCC vs GND)
-      let sum = 0, cnt = 0;
+      // Use max potential to decide whether a mesh belongs to a GND net.
+      // Averaging hides mixed source/GND meshes whose max is still above GND.
+      let mMax = -Infinity;
       for (const p of m.potentials) {
-        if (p != null && isFinite(p)) { sum += p; cnt++; }
+        if (p != null && isFinite(p) && p > mMax) mMax = p;
       }
-      const avg = cnt > 0 ? sum / cnt : 0;
-      // Skip GND meshes (average voltage near 0V)
-      if (avg < vccVoltage * 0.3) continue;
+      if (mMax < vccVoltage * 0.3) continue;
       for (const p of m.potentials) {
         if (p != null && isFinite(p)) {
           if (p < globalVMin) globalVMin = p;
@@ -721,12 +720,11 @@ function buildAllLayerBuffers() {
   let globalPdMin = Infinity, globalPdMax = -Infinity;
   for (let li = 0; li < resultData.layerSolutions.length; li++) {
     for (const m of resultData.layerSolutions[li].meshes) {
-      let vSum = 0, vCnt = 0;
+      let mMax = -Infinity;
       for (const p of m.potentials) {
-        if (p != null && isFinite(p)) { vSum += p; vCnt++; }
+        if (p != null && isFinite(p) && p > mMax) mMax = p;
       }
-      const avg = vCnt > 0 ? vSum / vCnt : 0;
-      if (avg < vccVoltage * 0.3) continue;
+      if (mMax < vccVoltage * 0.3) continue;
       const pd = m.powerDensities || [];
       for (const v of pd) {
         if (v != null && isFinite(v) && v > 0) {
@@ -742,10 +740,9 @@ function buildAllLayerBuffers() {
   let globalGndPdMin = Infinity, globalGndPdMax = -Infinity;
   for (let li = 0; li < resultData.layerSolutions.length; li++) {
     for (const m of resultData.layerSolutions[li].meshes) {
-      let vSum = 0, vCnt = 0;
-      for (const p of m.potentials) { if (p != null && isFinite(p)) { vSum += p; vCnt++; } }
-      const avg = vCnt > 0 ? vSum / vCnt : 0;
-      if (avg >= vccVoltage * 0.3) continue; // Skip VCC meshes
+      let mMax = -Infinity;
+      for (const p of m.potentials) { if (p != null && isFinite(p) && p > mMax) mMax = p; }
+      if (mMax >= vccVoltage * 0.3) continue; // Skip VCC meshes
       const pd = m.powerDensities || [];
       for (const v of pd) {
         if (v != null && isFinite(v) && v > 0) {
@@ -765,22 +762,29 @@ function buildAllLayerBuffers() {
     meshDiagLines.push(`\n层${li} "${ls.layerName}": ${meshCount} 个已连接mesh, ${discCount} 个断开mesh`);
     for (let mi = 0; mi < meshCount; mi++) {
       const m = ls.meshes[mi];
-      const vMin = Math.min(...m.potentials);
-      const vMax = Math.max(...m.potentials);
-      const hasCD = m.currentDensities && m.currentDensities.length > 0;
-      const hasPD = m.powerDensities && m.powerDensities.length > 0;
+      const pots = m.potentials || [];
+      const verts = m.vertices || [];
+      const tris = m.triangles || [];
+      const vMin = pots.length > 0 ? Math.min(...pots) : 0;
+      const vMax = pots.length > 0 ? Math.max(...pots) : 0;
+      const cds = m.currentDensities || [];
+      const pds = m.powerDensities || [];
+      const hasCD = cds.length > 0;
+      const hasPD = pds.length > 0;
       let cdInfo = hasCD ? '有' : '无';
       if (hasCD) {
         let cdMax = 0;
-        for (const jv of m.currentDensities) { const mag = Math.sqrt(jv[0]*jv[0]+jv[1]*jv[1]); if(mag>cdMax) cdMax=mag; }
+        for (const jv of cds) { const mag = Math.sqrt(jv[0]*jv[0]+jv[1]*jv[1]); if(mag>cdMax) cdMax=mag; }
         cdInfo += ` (max=${cdMax.toExponential(3)})`;
       }
-      meshDiagLines.push(`  mesh[${mi}]: ${m.vertices.length}顶点, ${m.triangles.length}三角, 电压=[${vMin.toFixed(4)}, ${vMax.toFixed(4)}]V, 电流密度=${cdInfo}, 功率密度=${hasPD?'有':'无'}`);
+      meshDiagLines.push(`  mesh[${mi}]: ${verts.length}顶点, ${tris.length}三角, 电压=[${vMin.toFixed(4)}, ${vMax.toFixed(4)}]V, 电流密度=${cdInfo}, 功率密度=${hasPD?'有':'无'}`);
     }
     if (discCount > 0) {
       for (let di = 0; di < ls.disconnectedMeshes.length; di++) {
         const dm = ls.disconnectedMeshes[di];
-        meshDiagLines.push(`  断开mesh[${di}]: ${dm.vertices.length}顶点, ${dm.triangles.length}三角 (无求解数据)`);
+        const dVerts = dm.vertices || [];
+        const dTris = dm.triangles || [];
+        meshDiagLines.push(`  断开mesh[${di}]: ${dVerts.length}顶点, ${dTris.length}三角 (无求解数据)`);
       }
     }
     try {
@@ -862,12 +866,15 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   const perMeshIdxRanges = [];
   for (let mi = 0; mi < ls.meshes.length; mi++) {
     const m = ls.meshes[mi];
-    const n = m.vertices.length;
+    const mVerts = m.vertices || [];
+    const mPots = m.potentials || [];
+    const mTris = m.triangles || [];
+    const n = mVerts.length;
     const vBase = voltages.length;
     const idxStart = indices.length;
     for (let i = 0; i < n; i++) {
-      positions.push(vx(m.vertices[i]), vy(m.vertices[i]));
-      voltages.push(m.potentials[i] != null && isFinite(m.potentials[i]) ? m.potentials[i] : 0);
+      positions.push(vx(mVerts[i]), vy(mVerts[i]));
+      voltages.push(mPots[i] != null && isFinite(mPots[i]) ? mPots[i] : 0);
     }
     // 记录此 mesh 的电压范围
     let mVMin = Infinity, mVMax = -Infinity;
@@ -880,12 +887,12 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     // Power density: may be per-face or per-vertex
     const pdBase = powerDensities.length;
     const pd = m.powerDensities || [];
-    if (pd.length === m.triangles.length && pd.length !== m.vertices.length) {
+    if (pd.length === mTris.length && pd.length !== mVerts.length) {
       // Per-face → average to per-vertex
       const vpds = new Array(n).fill(0);
       const vcnt = new Array(n).fill(0);
-      for (let ti = 0; ti < m.triangles.length; ti++) {
-        const tri = m.triangles[ti];
+      for (let ti = 0; ti < mTris.length; ti++) {
+        const tri = mTris[ti];
         const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
         if (!tv || tv.length < 3) continue;
         const val = pd[ti] != null && isFinite(pd[ti]) ? pd[ti] : 0;
@@ -905,7 +912,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     }
     if (mPdMin === Infinity) { mPdMin = 0; mPdMax = 1; }
     meshPDRanges.push({ pdMin: mPdMin, pdMax: mPdMax, start: pdBase, count: n });
-    for (const tri of m.triangles) {
+    for (const tri of mTris) {
       const v = Array.isArray(tri) ? tri : (tri.vertices || tri);
       if (!v || v.length < 3) continue;
       indices.push(v[0]+offset, v[1]+offset, v[2]+offset);
@@ -938,10 +945,12 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   const outlineVerts = [];
   for (const poly of polys) {
     const ext = poly.exterior;
+    if (!ext || !Array.isArray(ext)) continue;
     for (let i = 0; i < ext.length - 1; i++) {
       outlineVerts.push(ext[i][0], ext[i][1], ext[i+1][0], ext[i+1][1]);
     }
     for (const hole of (poly.holes || [])) {
+      if (!hole || !Array.isArray(hole)) continue;
       for (let i = 0; i < hole.length - 1; i++) {
         outlineVerts.push(hole[i][0], hole[i][1], hole[i+1][0], hole[i+1][1]);
       }
@@ -954,7 +963,9 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     glData.outlineCount = outlineVerts.length / 4;
   }
 
-  // Board copper fill: stencil-based polygon fill for copper pour shapes
+  // Board copper fill: stencil-based polygon fill for copper pour shapes.
+  // Exterior fans increment the stencil, hole fans decrement it, so overlapping
+  // exteriors union correctly and holes are carved out.
   const boardStencilVerts = [];
   const boardStencilFans = [];
   for (const poly of polys) {
@@ -962,12 +973,12 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     if (!ext || ext.length < 3) continue;
     const off = boardStencilVerts.length / 2;
     for (const pt of ext) boardStencilVerts.push(pt[0], pt[1]);
-    boardStencilFans.push({ offset: off, count: ext.length });
+    boardStencilFans.push({ offset: off, count: ext.length, isHole: false });
     for (const hole of (poly.holes || [])) {
       if (hole.length < 3) continue;
       const hOff = boardStencilVerts.length / 2;
       for (const pt of hole) boardStencilVerts.push(pt[0], pt[1]);
-      boardStencilFans.push({ offset: hOff, count: hole.length });
+      boardStencilFans.push({ offset: hOff, count: hole.length, isHole: true });
     }
   }
   if (boardStencilVerts.length > 0) {
@@ -1187,9 +1198,10 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
 
   for (let mi = 0; mi < ls.meshes.length; mi++) {
     const m = ls.meshes[mi];
+    const mTris2 = m.triangles || [];
     // 统计每条边的出现次数，出现次数为1的边是边界边
     const edgeCount = new Map();
-    for (const tri of m.triangles) {
+    for (const tri of mTris2) {
       const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
       if (!tv || tv.length < 3) continue;
       // 三角形的三条边（顶点索引从小到大排序以确保一致性）
@@ -1209,7 +1221,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     });
     // 标记包含边界边的三角形
     let triIdx = 0;
-    for (const tri of m.triangles) {
+    for (const tri of mTris2) {
       const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
       if (!tv || tv.length < 3) { triIdx++; continue; }
       const edges = [
@@ -1232,14 +1244,17 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
 
   for (let mi = 0; mi < ls.meshes.length; mi++) {
     const m = ls.meshes[mi];
+    const mTris3 = m.triangles || [];
+    const mVerts = m.vertices || [];
+    const mCD = m.currentDensities || [];
     // 跳过没有电流密度的 mesh
-    if (!m.currentDensities || m.currentDensities.length === 0) {
-      meshVtxOffset += m.vertices.length;
+    if (mCD.length === 0) {
+      meshVtxOffset += mVerts.length;
       continue;
     }
 
     let triIdx = 0;
-    for (const tri of m.triangles) {
+    for (const tri of mTris3) {
       const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
       if (!tv || tv.length < 3) { triIdx++; continue; }
 
@@ -1250,7 +1265,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
         continue;
       }
 
-      // 获取三角形三个顶点的坐标（���虑 mesh 偏移）
+      // 获取三角形三个顶点的坐标（考虑 mesh 偏移）
       const ax = positions[(tv[0] + meshVtxOffset) * 2], ay = positions[(tv[0] + meshVtxOffset) * 2 + 1];
       const bx = positions[(tv[1] + meshVtxOffset) * 2], by = positions[(tv[1] + meshVtxOffset) * 2 + 1];
       const cx = positions[(tv[2] + meshVtxOffset) * 2], cy = positions[(tv[2] + meshVtxOffset) * 2 + 1];
@@ -1276,9 +1291,9 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
       const cy_tri = (ay + by + cy) / 3;
 
       // 获取三个顶点的电流密度向量并平均
-      const cd_a = m.currentDensities[tv[0]] || [0, 0];
-      const cd_b = m.currentDensities[tv[1]] || [0, 0];
-      const cd_c = m.currentDensities[tv[2]] || [0, 0];
+      const cd_a = mCD[tv[0]] || [0, 0];
+      const cd_b = mCD[tv[1]] || [0, 0];
+      const cd_c = mCD[tv[2]] || [0, 0];
       const jx = (cd_a[0] + cd_b[0] + cd_c[0]) / 3;
       const jy = (cd_a[1] + cd_b[1] + cd_c[1]) / 3;
 
@@ -1314,7 +1329,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
       triIdx++;
     }
     // 更新偏移，指向下一个 mesh 的起始位置
-    meshVtxOffset += m.vertices.length;
+    meshVtxOffset += mVerts.length;
   }
 
   if (arrowVerts.length > 0) {
@@ -1406,7 +1421,6 @@ function renderSingleLayer(li, mvp) {
     gl.clear(gl.STENCIL_BUFFER_BIT);
 
     gl.stencilFunc(gl.ALWAYS, 0, 0xFF);
-    gl.stencilOp(gl.KEEP, gl.KEEP, gl.INVERT);
     gl.colorMask(false, false, false, false);
 
     gl.useProgram(lineProg.prog);
@@ -1414,8 +1428,20 @@ function renderSingleLayer(li, mvp) {
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.copperStencilVBO);
     gl.enableVertexAttribArray(lineProg.a.a_pos);
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
+
+    // Exterior fans increment the stencil.
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
     for (const fan of gd.copperStencilFans) {
-      gl.drawArrays(gl.TRIANGLE_FAN, fan.offset, fan.count);
+      if (!fan.isHole) {
+        gl.drawArrays(gl.TRIANGLE_FAN, fan.offset, fan.count);
+      }
+    }
+    // Hole fans decrement the stencil.
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.DECR);
+    for (const fan of gd.copperStencilFans) {
+      if (fan.isHole) {
+        gl.drawArrays(gl.TRIANGLE_FAN, fan.offset, fan.count);
+      }
     }
 
     gl.colorMask(true, true, true, true);
@@ -1731,17 +1757,14 @@ function findNetworkNameAt(wx, wy, layerIdx) {
       const lb = ((cy-ay)*(wx-cx) + (ax-cx)*(wy-cy)) / denom;
       const lc = 1 - la - lb;
       if (la >= -0.001 && lb >= -0.001 && lc >= -0.001) {
-        // Cursor is inside this triangle, calculate mesh average voltage
-        let sum = 0, cnt = 0;
-        for (const p of m.potentials) {
-          if (p != null && isFinite(p)) { sum += p; cnt++; }
-        }
-        if (cnt === 0) continue;
-        const meshAvgV = sum / cnt;
+        // Interpolate voltage at the cursor position for accurate net detection.
+        const va = m.potentials[tv[0]], vb = m.potentials[tv[1]], vc = m.potentials[tv[2]];
+        if (va == null || vb == null || vc == null) continue;
+        const hitV = la * va + lb * vb + lc * vc;
 
         // Match with network by voltage
         // GND networks have voltage near 0
-        if (meshAvgV < vccVoltage * 0.3) {
+        if (hitV < vccVoltage * 0.3) {
           // Find GND network
           for (const ni of networkInfoData) {
             if (ni.gnd_net) {
@@ -1756,7 +1779,7 @@ function findNetworkNameAt(wx, wy, layerIdx) {
         let bestMatch = null;
         let minVDiff = Infinity;
         for (const ni of networkInfoData) {
-          const vDiff = Math.abs(ni.voltage - meshAvgV);
+          const vDiff = Math.abs(ni.voltage - hitV);
           if (vDiff < minVDiff) {
             minVDiff = vDiff;
             bestMatch = ni.name;

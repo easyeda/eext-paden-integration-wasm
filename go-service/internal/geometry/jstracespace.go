@@ -51,6 +51,13 @@ func ParseGerberZip(zipBytes []byte, layerNames []string) (map[string]GerberLaye
 		}
 
 		layerName := matchLayerName(f.Name, layerNames)
+		// Outline / mechanical layers should never masquerade as copper layers.
+		// Keep them under their filename so extractBoardOutline can find them.
+		if isOutlineFile(nameLower) && layerName != baseNameNoExt(f.Name) {
+			fmt.Printf("[GerberZip] %s looks like an outline/mechanical file; storing as %s instead of %s\n", f.Name, baseNameNoExt(f.Name), layerName)
+			layerName = baseNameNoExt(f.Name)
+		}
+		fmt.Printf("[GerberZip] %s -> layer '%s' (%d polygons)\n", f.Name, layerName, len(polygons))
 		layers[layerName] = GerberLayer{
 			Name:     layerName,
 			Filename: f.Name,
@@ -78,6 +85,29 @@ func isGerberFile(name string) bool {
 		hasSuffix(name, ".gko") || hasSuffix(name, ".gbo") || hasSuffix(name, ".gto") ||
 		hasSuffix(name, ".gm1") || hasSuffix(name, ".gm2") || hasSuffix(name, ".gm3") ||
 		hasSuffix(name, ".gbp") || hasSuffix(name, ".gtp")
+}
+
+// isOutlineFile returns true for mechanical/outline layers that should not be
+// treated as signal/plane copper layers.
+func isOutlineFile(name string) bool {
+	checks := []string{"outline", "edge", "board", "profile", "gko", "gml", "gm1", "gm2", "gm3", "gm4", "gm5"}
+	for _, c := range checks {
+		if contains(name, c) {
+			return true
+		}
+	}
+	return false
+}
+
+func baseNameNoExt(filename string) string {
+	base := filename
+	if idx := lastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	if idx := lastIndex(base, "."); idx >= 0 {
+		base = base[:idx]
+	}
+	return base
 }
 
 func matchLayerName(filename string, layerNames []string) string {
@@ -123,4 +153,13 @@ func lastIndex(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

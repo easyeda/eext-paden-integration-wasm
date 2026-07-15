@@ -3,6 +3,7 @@ package mesh
 
 import (
 	"math"
+	"sort"
 
 	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 )
@@ -370,12 +371,77 @@ func (m *Mesh) ToCompact() *CompactMesh {
 	return cm
 }
 
-// ExtractBoundaries extracts boundary rings from the compact mesh.
+// ExtractBoundaries extracts boundary rings from the compact mesh and groups
+// holes with the smallest containing exterior.
 func (cm *CompactMesh) ExtractBoundaries() []map[string]interface{} {
 	if len(cm.Triangles) == 0 {
 		return nil
 	}
 
+	rings := cm.extractBoundaryRings()
+	if len(rings) == 0 {
+		return nil
+	}
+
+	type ringInfo struct {
+		pts  []geometry.Point
+		area float64
+	}
+	infos := make([]ringInfo, len(rings))
+	for i, r := range rings {
+		infos[i] = ringInfo{pts: r, area: ringSignedArea(r)}
+	}
+
+	// Sort by absolute area descending so larger exteriors are processed first.
+	order := make([]int, len(infos))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool {
+		return math.Abs(infos[order[i]].area) > math.Abs(infos[order[j]].area)
+	})
+
+	used := make(map[int]bool)
+	var result []map[string]interface{}
+
+	for _, idx := range order {
+		if used[idx] {
+			continue
+		}
+		used[idx] = true
+		info := infos[idx]
+		if info.area < 0 {
+			// Negative ring is a hole without an outer; treat as exterior for display.
+			result = append(result, map[string]interface{}{
+				"exterior": info.pts,
+				"holes":    [][]geometry.Point{},
+			})
+			continue
+		}
+		var polyHoles [][]geometry.Point
+		for _, hIdx := range order {
+			if used[hIdx] {
+				continue
+			}
+			holeInfo := infos[hIdx]
+			if holeInfo.area > 0 {
+				continue
+			}
+			if ringContainsRing(info.pts, holeInfo.pts) {
+				polyHoles = append(polyHoles, holeInfo.pts)
+				used[hIdx] = true
+			}
+		}
+		result = append(result, map[string]interface{}{
+			"exterior": info.pts,
+			"holes":    polyHoles,
+		})
+	}
+
+	return result
+}
+
+func (cm *CompactMesh) extractBoundaryRings() [][]geometry.Point {
 	edgeCount := make(map[[2]int]int)
 	addEdge := func(a, b int) {
 		if a > b {
@@ -398,7 +464,7 @@ func (cm *CompactMesh) ExtractBoundaries() []map[string]interface{} {
 	}
 
 	visited := make(map[int]bool)
-	var rings [][]int
+	var rings [][]geometry.Point
 	for start := range adj {
 		if visited[start] {
 			continue
@@ -428,44 +494,55 @@ func (cm *CompactMesh) ExtractBoundaries() []map[string]interface{} {
 				break
 			}
 		}
-		if len(ring) >= 3 {
-			rings = append(rings, ring)
+		if len(ring) < 3 {
+			continue
 		}
-	}
-
-	var result []map[string]interface{}
-	var exteriors [][]geometry.Point
-	var holes [][]geometry.Point
-	for _, ring := range rings {
 		pts := make([]geometry.Point, len(ring))
 		for i, idx := range ring {
 			pts[i] = geometry.Point{X: cm.VertexXY[idx][0], Y: cm.VertexXY[idx][1]}
 		}
-		area := 0.0
-		for i := 0; i < len(pts); i++ {
-			j := (i + 1) % len(pts)
-			area += pts[i].X*pts[j].Y - pts[j].X*pts[i].Y
-		}
-		if area > 0 {
-			exteriors = append(exteriors, pts)
-		} else {
-			holes = append(holes, pts)
-		}
+		rings = append(rings, pts)
 	}
+	return rings
+}
 
-	for _, ext := range exteriors {
-		result = append(result, map[string]interface{}{
-			"exterior": ext,
-			"holes":    holes,
-		})
+func ringSignedArea(r []geometry.Point) float64 {
+	var a float64
+	n := len(r)
+	for i := 0; i < n; i++ {
+		j := (i + 1) % n
+		a += r[i].X*r[j].Y - r[j].X*r[i].Y
 	}
-	if len(exteriors) == 0 && len(holes) > 0 {
-		for _, hole := range holes {
-			result = append(result, map[string]interface{}{
-				"exterior": hole,
-				"holes":    [][]geometry.Point{},
-			})
+	return a / 2
+}
+
+func ringContainsRing(outer, inner []geometry.Point) bool {
+	var minX, minY, maxX, maxY float64
+	minX, minY = math.Inf(1), math.Inf(1)
+	maxX, maxY = math.Inf(-1), math.Inf(-1)
+	for _, p := range outer {
+		if p.X < minX {
+			minX = p.X
+		}
+		if p.X > maxX {
+			maxX = p.X
+		}
+		if p.Y < minY {
+			minY = p.Y
+		}
+		if p.Y > maxY {
+			maxY = p.Y
 		}
 	}
-	return result
+	for _, p := range inner {
+		if p.X < minX || p.X > maxX || p.Y < minY || p.Y > maxY {
+			return false
+		}
+	}
+	for _, p := range inner {
+		if !pointInRing(p, outer) {
+			return false
+		}
+	}
+	return true
 }
