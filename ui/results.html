@@ -2695,6 +2695,8 @@ try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) +
       btn.disabled = false;
     });
   }
+  // Expose for the inline onclick handler in the diagnostic dialog.
+  window.copyDiag = copyDiag;
 
   document.getElementById('btn-diag').addEventListener('click', showDiag);
 })();
