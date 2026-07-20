@@ -103,7 +103,7 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	}
 
 	// 3. Coordinate transform
-	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, cfg, d)
+	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, cfg, outline, d)
 	if transform != nil {
 		d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.2f,%.2f)", transform[0], transform[1], transform[2], transform[3]))
 	}
@@ -289,7 +289,7 @@ func polygonSignedArea(poly geometry.Polygon) float64 {
 	return area
 }
 
-func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Config, d *DiagCollector) *[4]float64 {
+func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Config, outline geometry.MultiPolygon, d *DiagCollector) *[4]float64 {
 	if bounds == nil || len(layers) == 0 {
 		return nil
 	}
@@ -324,6 +324,18 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Con
 	}
 
 	testPts := collectOrientationPoints(cfg, layerDict, allLayers)
+	if len(testPts) == 0 {
+		return nil
+	}
+
+	// Use the board outline as the primary reference shape. Every pad/via must
+	// lie inside it, so orientation scoring based on the outline is far more
+	// robust than copper-only scoring (which can match VCC pads to GND copper
+	// when the board is mirrored).
+	outlineShape := geometry.Polygon{}
+	if len(outline) > 0 && len(outline[0]) > 0 {
+		outlineShape = outline[0]
+	}
 
 	// Try the four axis-flip candidates around the common center and pick the
 	// one that lands the most pads/vias inside the parsed Gerber copper.
@@ -338,8 +350,9 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Con
 	for _, c := range candidates {
 		ox := gerberCx - c.sx*easyedaCx
 		oy := gerberCy - c.sy*easyedaCy
-		score := scoreOrientation(c.sx, c.sy, ox, oy, testPts)
-		if score > bestScore {
+		score := scoreOrientation(c.sx, c.sy, ox, oy, testPts, outlineShape)
+		// Tie-break toward the canonical Gerber orientation (Y up vs EasyEDA Y down).
+		if score > bestScore || (score == bestScore && c.sx == 1 && c.sy == -1) {
 			bestScore = score
 			best = c
 		}
@@ -410,12 +423,16 @@ func collectOrientationPoints(cfg Config, layerDict map[string]*problem.Layer, a
 	return pts
 }
 
-func scoreOrientation(sx, sy, ox, oy float64, pts []orientPoint) int {
+func scoreOrientation(sx, sy, ox, oy float64, pts []orientPoint, outline geometry.Polygon) int {
 	score := 0
 	for _, p := range pts {
 		xg := p.x*sx + ox
 		yg := p.y*sy + oy
 		pt := geometry.Point{X: xg, Y: yg}
+		// Primary requirement: the point must be inside the board outline.
+		if len(outline) > 0 && !pointInPolygonMesh(pt, outline) {
+			continue
+		}
 		for _, l := range p.layers {
 			if pointOnLayer(pt, l) {
 				score++

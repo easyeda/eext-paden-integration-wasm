@@ -1680,11 +1680,7 @@ function setupInteraction() {
 function isShowingAllNetworks() {
   if (!resultSet || !resultSet.results) return false;
   const currentLabel = resultSet.results[currentResultIdx]?.label || '';
-  // Detect if this is the combined/all networks view
-  // Check for "全部" (all in Chinese) or English "all" in the label
-  const result = currentLabel.includes('全部') || currentLabel.toLowerCase().includes('all');
-  _log('Debug', 'isShowingAllNetworks: label="' + currentLabel + '" result=' + result);
-  return result;
+  return currentLabel.includes('全部') || currentLabel.toLowerCase().includes('all');
 }
 
 function updateStatus(mx, my) {
@@ -2650,14 +2646,13 @@ try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) +
     overlay.style.display = '';
   }
   function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-  function copyDiag() {
+  async function copyDiag() {
     var diags = resultData && resultData.diagnostics ? resultData.diagnostics : [];
     var currentWarnings = resultData && resultData.currentWarnings ? resultData.currentWarnings : [];
     var warningLines = [];
     if (currentWarnings.length > 0) {
       warningLines.push('========== 电流容量检查 ==========');
       for (var w of currentWarnings) {
-        // 如果 message 包含换行符，拆分成多行显示
         if (w.message && w.message.indexOf('\n') >= 0) {
           warningLines.push.apply(warningLines, w.message.split('\n'));
         } else {
@@ -2668,6 +2663,21 @@ try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) +
     }
     var allLines = [].concat(dataFlowLog, [''], diags, [''], warningLines, [''], meshDiagLines);
     var text = allLines.join('\n');
+    var btn = document.getElementById('diag-header-copy-btn');
+
+    // Try Clipboard API first, fallback to textarea selection.
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        var origText = btn.textContent;
+        btn.textContent = '已复制';
+        setTimeout(function() { btn.textContent = origText; }, 1500);
+        return;
+      } catch (e) {
+        console.warn('[Results] Clipboard API failed, falling back', e);
+      }
+    }
+
     var body = document.getElementById('diag-content');
     var origHtml = body.innerHTML;
     var ta = document.createElement('textarea');
@@ -2677,7 +2687,6 @@ try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) +
     body.textContent = '';
     body.appendChild(ta);
     ta.select();
-    var btn = document.getElementById('diag-header-copy-btn');
     btn.textContent = '请按 Ctrl+C 复制';
     btn.disabled = true;
     ta.addEventListener('blur', function() {

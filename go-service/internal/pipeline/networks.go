@@ -208,7 +208,25 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 					conns = append(conns, c)
 				}
 			}
-			// If no layer contains/near the point, pick the nearest layer/point as last resort.
+			// If no layer contains/near the point, snap to every layer's nearest
+			// copper within a small tolerance. A THT pad physically touches all
+			// layers, so connecting to multiple layers is expected; the tolerance
+			// keeps the snap close enough that it lands on the same-net copper.
+			if len(conns) == 0 {
+				const snapTol = 0.5
+				for _, layer := range layerDict {
+					nearest, ok := findNearestPointOnLayer(pt, layer)
+					if !ok {
+						continue
+					}
+					dist := math.Hypot(nearest.X-pt.X, nearest.Y-pt.Y)
+					if dist <= snapTol {
+						conns = append(conns, problem.NewConnection(layer, nearest))
+					}
+				}
+			}
+			// Last resort: single nearest layer/point so the analysis does not
+			// silently drop the pad.
 			if len(conns) == 0 {
 				var bestLayer *problem.Layer
 				var bestPt geometry.Point
