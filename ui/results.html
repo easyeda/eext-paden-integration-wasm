@@ -1368,8 +1368,10 @@ function computeMVP() {
 
 function screenToWorld(sx, sy) {
   const aspect = canvas.width / canvas.height;
-  const clipX = (sx / canvas.width) * 2 - 1;
-  const clipY = 1 - (sy / canvas.height) * 2;
+  const cssW = canvas.clientWidth || canvas.width;
+  const cssH = canvas.clientHeight || canvas.height;
+  const clipX = (sx / cssW) * 2 - 1;
+  const clipY = 1 - (sy / cssH) * 2;
   return {
     x: clipX * aspect / viewZoom + viewCX,
     y: clipY / viewZoom + viewCY
@@ -1626,8 +1628,10 @@ function setupInteraction() {
   canvas.addEventListener('mousemove', e => {
     if (isDrag) {
       const aspect = canvas.width / canvas.height;
-      viewCX -= (e.offsetX - lastMX) * 2 * aspect / (viewZoom * canvas.width);
-      viewCY += (e.offsetY - lastMY) * 2 / (viewZoom * canvas.height);
+      const cssW = canvas.clientWidth || canvas.width;
+      const cssH = canvas.clientHeight || canvas.height;
+      viewCX -= (e.offsetX - lastMX) * 2 * aspect / (viewZoom * cssW);
+      viewCY += (e.offsetY - lastMY) * 2 / (viewZoom * cssH);
       lastMX = e.offsetX; lastMY = e.offsetY;
       render();
     }
