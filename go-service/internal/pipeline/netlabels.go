@@ -53,6 +53,16 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 					if pi.net != "" {
 						votes[polyIdx][pi.net]++
 					}
+					continue
+				}
+				// For THT pads the pad centre is inside the drilled hole, so it is not
+				// contained in the filled copper area. The copper annular ring (or the
+				// copper pour surrounding the hole) still belongs to the pad's net, so
+				// treat the pad as a vote if it lies inside any ring of the polygon.
+				if pi.tht && pointInsidePolygonRings(pi.pt, poly) {
+					if pi.net != "" {
+						votes[polyIdx][pi.net]++
+					}
 				}
 			}
 		}
@@ -77,4 +87,59 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 	if conflicts > 0 {
 		d.Warn(fmt.Sprintf("Net inference: %d polygons contain pads from multiple nets", conflicts))
 	}
+}
+
+// inferPolygonNetsFromTracks labels polygons that contain track endpoints.
+// This helps connect trace runs that do not pass through any labelled pad.
+func inferPolygonNetsFromTracks(layers []*problem.Layer, tracks []Track, layerIDToName map[int]string, transform *[4]float64) {
+	for _, t := range tracks {
+		if t.Net == "" {
+			continue
+		}
+		layerName := layerIDToName[t.Layer]
+		if layerName == "" {
+			continue
+		}
+		var layer *problem.Layer
+		for _, l := range layers {
+			if l.Name == layerName {
+				layer = l
+				break
+			}
+		}
+		if layer == nil {
+			continue
+		}
+		for _, p := range []geometry.Point{
+			transformPoint(t.X1, t.Y1, transform),
+			transformPoint(t.X2, t.Y2, transform),
+		} {
+			for i, poly := range layer.Shape {
+				if pointInPolygonMesh(p, poly) {
+					if layer.NetLabels[i] == "" {
+						layer.NetLabels[i] = t.Net
+					}
+				}
+			}
+		}
+	}
+}
+
+func transformPoint(x, y float64, transform *[4]float64) geometry.Point {
+	if transform != nil {
+		return geometry.Point{X: x*transform[0] + transform[2], Y: y*transform[1] + transform[3]}
+	}
+	return geometry.Point{X: x, Y: y}
+}
+
+// pointInsidePolygonRings reports whether p is inside any ring (exterior or hole)
+// of poly. This is used for THT pad net inference where the pad centre lies in
+// the drilled hole.
+func pointInsidePolygonRings(p geometry.Point, poly geometry.Polygon) bool {
+	for _, ring := range poly {
+		if pointInRingMesh(p, ring) {
+			return true
+		}
+	}
+	return false
 }

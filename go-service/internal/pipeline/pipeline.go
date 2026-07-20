@@ -111,9 +111,14 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	// 4. Build stackup
 	stackup := buildStackup(cfg.LayerCuThickness, layers)
 
-	// 4a. Infer net labels for each copper polygon from pad positions.
+	// 4a. Infer net labels for each copper polygon from pad positions and tracks.
 	d.Info("Step 2b: Infer polygon nets")
+	layerIDToName := make(map[int]string)
+	for _, lc := range cfg.Layers {
+		layerIDToName[lc.LayerID] = lc.Name
+	}
 	inferPolygonNets(layers, cfg.Pads, transform, d)
+	inferPolygonNetsFromTracks(layers, cfg.Tracks, layerIDToName, transform)
 
 	// 5. Via specs
 	d.Info("Step 3: Via specs")
@@ -131,7 +136,13 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	userNetworks := buildUserNetworks(cfg, layerDict, transform, d)
 	d.Info(fmt.Sprintf("User networks: %d", len(userNetworks)))
 
+	// 7a. Track networks connect copper polygons that are linked by traces.
+	d.Info("Step 5b: Track networks")
+	trackNetworks := buildTrackNetworks(cfg, layerDict, layerIDToName, transform, d)
+	d.Info(fmt.Sprintf("Track networks: %d", len(trackNetworks)))
+
 	allNetworks := append(viaNetworks, userNetworks...)
+	allNetworks = append(allNetworks, trackNetworks...)
 	if len(allNetworks) == 0 {
 		return nil, d, fmt.Errorf("no valid networks")
 	}

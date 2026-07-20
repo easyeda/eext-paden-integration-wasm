@@ -115,6 +115,53 @@ func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stac
 	return networks
 }
 
+func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerIDToName map[int]string, transform *[4]float64, d *DiagCollector) []*problem.Network {
+	var networks []*problem.Network
+	for _, t := range cfg.Tracks {
+		if t.Net == "" || t.Width <= 0 {
+			continue
+		}
+		layerName := layerIDToName[t.Layer]
+		if layerName == "" {
+			continue
+		}
+		layer := layerDict[layerName]
+		if layer == nil {
+			continue
+		}
+		p1 := transformPoint(t.X1, t.Y1, transform)
+		p2 := transformPoint(t.X2, t.Y2, transform)
+		nearest1, ok1 := findNearestPointOnLayer(p1, layer, t.Net)
+		nearest2, ok2 := findNearestPointOnLayer(p2, layer, t.Net)
+		if !ok1 || !ok2 {
+			d.Info(fmt.Sprintf("Track '%s' on '%s': could not connect endpoints", t.Net, layerName))
+			continue
+		}
+		length := math.Hypot(p2.X-p1.X, p2.Y-p1.Y)
+		if length <= 1e-9 {
+			continue
+		}
+		res := length / (layer.Conductance * t.Width)
+		if res <= 0 || math.IsInf(res, 0) {
+			continue
+		}
+		conn1 := problem.NewConnection(layer, nearest1)
+		conn2 := problem.NewConnection(layer, nearest2)
+		net, err := problem.NewNetwork(
+			[]*problem.Connection{conn1, conn2},
+			[]problem.LumpedElement{
+				&problem.Resistor{A: conn1.NodeID, B: conn2.NodeID, Resistance: res},
+			},
+		)
+		if err != nil {
+			d.Warn(fmt.Sprintf("Track network error: %v", err))
+			continue
+		}
+		networks = append(networks, net)
+	}
+	return networks
+}
+
 func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet string) (geometry.Point, bool) {
 	for i, poly := range layer.Shape {
 		if !polygonMatchesNet(layer, i, targetNet) {
