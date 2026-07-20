@@ -371,6 +371,7 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Con
 		ox := gerberCx - c.sx*easyedaCx
 		oy := gerberCy - c.sy*easyedaCy
 		score := scoreOrientation(c.sx, c.sy, ox, oy, testPts, outlineShape)
+		d.Info(fmt.Sprintf("  orientation (% .0f,% .0f): score=%d", c.sx, c.sy, score))
 		// Tie-break toward the canonical Gerber orientation (Y up vs EasyEDA Y down).
 		if score > bestScore || (score == bestScore && c.sx == 1 && c.sy == -1) {
 			bestScore = score
@@ -394,19 +395,20 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Con
 }
 
 type orientPoint struct {
-	x, y    float64
-	layers  []*problem.Layer
+	x, y   float64
+	net    string
+	layers []*problem.Layer
 }
 
 func collectOrientationPoints(cfg Config, layerDict map[string]*problem.Layer, allLayers []*problem.Layer) []orientPoint {
 	var pts []orientPoint
 	add := func(p Pad) {
 		if p.IsTHT {
-			pts = append(pts, orientPoint{x: p.X, y: p.Y, layers: allLayers})
+			pts = append(pts, orientPoint{x: p.X, y: p.Y, net: p.Net, layers: allLayers})
 			return
 		}
 		if l := layerDict[p.Layer]; l != nil {
-			pts = append(pts, orientPoint{x: p.X, y: p.Y, layers: []*problem.Layer{l}})
+			pts = append(pts, orientPoint{x: p.X, y: p.Y, net: p.Net, layers: []*problem.Layer{l}})
 		}
 	}
 	for _, p := range cfg.Pads {
@@ -444,8 +446,14 @@ func collectOrientationPoints(cfg Config, layerDict map[string]*problem.Layer, a
 }
 
 func scoreOrientation(sx, sy, ox, oy float64, pts []orientPoint, outline geometry.Polygon) int {
-	score := 0
-	for _, p := range pts {
+	type polyKey struct {
+		layer   *problem.Layer
+		polyIdx int
+	}
+	polyNets := make(map[polyKey]map[string]int)
+	polyPts := make(map[polyKey][]int)
+
+	for i, p := range pts {
 		xg := p.x*sx + ox
 		yg := p.y*sy + oy
 		pt := geometry.Point{X: xg, Y: yg}
@@ -454,13 +462,42 @@ func scoreOrientation(sx, sy, ox, oy float64, pts []orientPoint, outline geometr
 			continue
 		}
 		for _, l := range p.layers {
-			if pointOnLayer(pt, l, "") {
-				score++
+			for pi, poly := range l.Shape {
+				if !pointTouchesPolygon(pt, poly) {
+					continue
+				}
+				k := polyKey{layer: l, polyIdx: pi}
+				if polyNets[k] == nil {
+					polyNets[k] = make(map[string]int)
+				}
+				polyNets[k][p.net]++
+				polyPts[k] = append(polyPts[k], i)
 				break
 			}
 		}
 	}
+
+	score := 0
+	for k, indices := range polyPts {
+		nets := polyNets[k]
+		for _, idx := range indices {
+			if len(nets) == 1 && nets[pts[idx].net] > 0 {
+				score++
+			} else {
+				score -= 2
+			}
+		}
+	}
 	return score
+}
+
+// pointTouchesPolygon reports whether pt is inside the filled area or inside
+// any ring of poly. The latter catches THT pad centres that sit in drilled holes.
+func pointTouchesPolygon(pt geometry.Point, poly geometry.Polygon) bool {
+	if pointInPolygonMesh(pt, poly) {
+		return true
+	}
+	return pointInsidePolygonRings(pt, poly)
 }
 
 func buildStackup(thickness map[string]float64, layers []*problem.Layer) []float64 {
