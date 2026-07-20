@@ -10,11 +10,12 @@ type LayerConfig struct {
 
 // Pad describes a component pad.
 type Pad struct {
-	X     float64 `json:"x"`
-	Y     float64 `json:"y"`
-	Layer string  `json:"layer"`
-	Net   string  `json:"net"`
-	IsTHT bool    `json:"is_tht"`
+	X            float64 `json:"x"`
+	Y            float64 `json:"y"`
+	Layer        string  `json:"layer"`
+	Net          string  `json:"net"`
+	IsTHT        bool    `json:"is_tht"`
+	HoleDiameter float64 `json:"hole_diameter"`
 }
 
 // Via describes a via.

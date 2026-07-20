@@ -111,6 +111,11 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	// 4. Build stackup
 	stackup := buildStackup(cfg.LayerCuThickness, layers)
 
+	// 3a. Drill THT pad holes out of all copper layers so annular rings are not
+	// swallowed by adjacent copper pours of the wrong net.
+	d.Info("Step 2a: Subtract THT pad holes")
+	subtractTHTPadHoles(layers, cfg.Pads, transform, d)
+
 	// 4a. Infer net labels for each copper polygon from pad positions and tracks.
 	d.Info("Step 2b: Infer polygon nets")
 	layerIDToName := make(map[int]string)

@@ -195,6 +195,7 @@ export class PcbDataConverter {
 				y: pad.y * this.MIL_TO_MM,
 				layer: layerName,
 				is_tht: pad.layer == null || pad.hole_diameter > 0,
+				hole_diameter: pad.hole_diameter * this.MIL_TO_MM,
 			});
 		}
 
