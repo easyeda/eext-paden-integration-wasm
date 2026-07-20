@@ -10,8 +10,8 @@
 	},
 	"license": "Apache-2.0",
 	"repository": {
-		"type": "extension-store",
-		"url": ""
+		"type": "git",
+		"url": "https://github.com/easyeda/eext-paden-integration-wasm"
 	},
 	"categories": "PCB",
 	"keywords": [
@@ -35,7 +35,7 @@
 		"pcb": [
 			{
 				"id": "PDN-Analysis",
-				"title": "PADEN仿真",
+				"title": "PADEN仿真(WASM版)",
 				"menuItems": [
 					{
 						"id": "RunPDNAnalysis",

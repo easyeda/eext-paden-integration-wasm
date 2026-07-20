@@ -2,9 +2,10 @@ package pipeline
 
 import (
 	"fmt"
+	"math"
 
-	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 	"github.com/easyeda/eext-paden-integration/go-service/internal/problem"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 )
 
 // inferPolygonNets labels every polygon in each layer with the net of the pads
@@ -18,10 +19,11 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 	}
 
 	type padInfo struct {
-		pt    geometry.Point
-		net   string
-		layer string
-		tht   bool
+		pt           geometry.Point
+		net          string
+		layer        string
+		tht          bool
+		holeDiameter float64
 	}
 	infos := make([]padInfo, 0, len(pads))
 	for _, p := range pads {
@@ -31,10 +33,11 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 			y = y*transform[1] + transform[3]
 		}
 		infos = append(infos, padInfo{
-			pt:    geometry.Point{X: x, Y: y},
-			net:   p.Net,
-			layer: p.Layer,
-			tht:   p.IsTHT,
+			pt:           geometry.Point{X: x, Y: y},
+			net:          p.Net,
+			layer:        p.Layer,
+			tht:          p.IsTHT,
+			holeDiameter: p.HoleDiameter,
 		})
 	}
 
@@ -48,18 +51,27 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 			if !pi.tht && pi.layer != l.Name {
 				continue
 			}
+			if pi.tht {
+				// The pad centre is inside the drilled hole, so sample the annular ring
+				// to find the copper that actually belongs to this pad. Using the centre
+				// would label the wrong-net plane whose hole contains the pad.
+				probeRadius := pi.holeDiameter * 0.75
+				if probeRadius <= 0 {
+					probeRadius = 0.3
+				}
+				for _, probe := range thtAnnularProbes(pi.pt, probeRadius) {
+					for polyIdx, poly := range l.Shape {
+						if pointInPolygonMesh(probe, poly) {
+							if pi.net != "" {
+								votes[polyIdx][pi.net]++
+							}
+						}
+					}
+				}
+				continue
+			}
 			for polyIdx, poly := range l.Shape {
 				if pointInPolygonMesh(pi.pt, poly) {
-					if pi.net != "" {
-						votes[polyIdx][pi.net]++
-					}
-					continue
-				}
-				// For THT pads the pad centre is inside the drilled hole, so it is not
-				// contained in the filled copper area. The copper annular ring (or the
-				// copper pour surrounding the hole) still belongs to the pad's net, so
-				// treat the pad as a vote if it lies inside any ring of the polygon.
-				if pi.tht && pointInsidePolygonRings(pi.pt, poly) {
 					if pi.net != "" {
 						votes[polyIdx][pi.net]++
 					}
@@ -142,4 +154,20 @@ func pointInsidePolygonRings(p geometry.Point, poly geometry.Polygon) bool {
 		}
 	}
 	return false
+}
+
+// thtAnnularProbes returns sample points around a THT pad centre at the given
+// radius. Sampling the annular ring avoids voting from the drilled hole itself,
+// which may be filled by a copper pour of the wrong net.
+func thtAnnularProbes(centre geometry.Point, radius float64) []geometry.Point {
+	const n = 8
+	probes := make([]geometry.Point, n)
+	for i := 0; i < n; i++ {
+		a := 2 * math.Pi * float64(i) / float64(n)
+		probes[i] = geometry.Point{
+			X: centre.X + radius*math.Cos(a),
+			Y: centre.Y + radius*math.Sin(a),
+		}
+	}
+	return probes
 }
