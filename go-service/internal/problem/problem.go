@@ -10,8 +10,9 @@ import (
 // Layer represents a single copper layer of the input circuit board.
 type Layer struct {
 	Shape       geometry.MultiPolygon
+	NetLabels   []string // inferred net for each polygon in Shape; empty = unknown
 	Name        string
-	Conductance float64 // Siemens = conductivity [S/mm] * thickness [mm]
+	Conductance float64  // Siemens = conductivity [S/mm] * thickness [mm]
 }
 
 // Bounds returns the bounding box of all polygons in the layer.

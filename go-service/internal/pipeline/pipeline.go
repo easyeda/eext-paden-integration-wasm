@@ -111,6 +111,10 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	// 4. Build stackup
 	stackup := buildStackup(cfg.LayerCuThickness, layers)
 
+	// 4a. Infer net labels for each copper polygon from pad positions.
+	d.Info("Step 2b: Infer polygon nets")
+	inferPolygonNets(layers, cfg.Pads, transform, d)
+
 	// 5. Via specs
 	d.Info("Step 3: Via specs")
 	viaSpecs := extractViaSpecs(cfg.Vias, layerDict, transform)
@@ -434,7 +438,7 @@ func scoreOrientation(sx, sy, ox, oy float64, pts []orientPoint, outline geometr
 			continue
 		}
 		for _, l := range p.layers {
-			if pointOnLayer(pt, l) {
+			if pointOnLayer(pt, l, "") {
 				score++
 				break
 			}

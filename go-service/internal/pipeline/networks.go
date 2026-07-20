@@ -91,8 +91,8 @@ func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stac
 			length := (thicknessA + thicknessB) / 2
 			res := viaResistance(spec.DrillDiameter, length, 0.025, 5.95e4)
 
-			nearestA, okA := findNearestPointOnLayer(spec.Point, a.layer)
-			nearestB, okB := findNearestPointOnLayer(spec.Point, b.layer)
+			nearestA, okA := findNearestPointOnLayer(spec.Point, a.layer, spec.Net)
+			nearestB, okB := findNearestPointOnLayer(spec.Point, b.layer, spec.Net)
 			if !okA || !okB {
 				continue
 			}
@@ -115,8 +115,11 @@ func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stac
 	return networks
 }
 
-func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer) (geometry.Point, bool) {
-	for _, poly := range layer.Shape {
+func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet string) (geometry.Point, bool) {
+	for i, poly := range layer.Shape {
+		if !polygonMatchesNet(layer, i, targetNet) {
+			continue
+		}
 		if pointInPolygonMesh(pt, poly) {
 			return pt, true
 		}
@@ -125,7 +128,10 @@ func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer) (geometry.
 	nearest := pt
 	minDist := math.Inf(1)
 	found := false
-	for _, poly := range layer.Shape {
+	for i, poly := range layer.Shape {
+		if !polygonMatchesNet(layer, i, targetNet) {
+			continue
+		}
 		for _, ring := range poly {
 			for i := 0; i < len(ring); i++ {
 				a := ring[i]
@@ -141,6 +147,18 @@ func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer) (geometry.
 		}
 	}
 	return nearest, found
+}
+
+// polygonMatchesNet reports whether the polygon at index i should be considered
+// for a pad/via belonging to targetNet. Empty targetNet disables filtering.
+func polygonMatchesNet(layer *problem.Layer, i int, targetNet string) bool {
+	if targetNet == "" {
+		return true
+	}
+	if layer.NetLabels == nil || i >= len(layer.NetLabels) {
+		return false
+	}
+	return layer.NetLabels[i] == targetNet
 }
 
 func nearestPointOnSegment(p, a, b geometry.Point) geometry.Point {
@@ -182,10 +200,10 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 
 		tryConnect := func(l *problem.Layer, p geometry.Point) *problem.Connection {
 			// Prefer exact containment; if just outside, snap to nearest boundary point.
-			if pointOnLayer(p, l) {
+			if pointOnLayer(p, l, pad.Net) {
 				return problem.NewConnection(l, p)
 			}
-			nearest, ok := findNearestPointOnLayer(p, l)
+			nearest, ok := findNearestPointOnLayer(p, l, pad.Net)
 			if !ok {
 				return nil
 			}
@@ -215,7 +233,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 			if len(conns) == 0 {
 				const snapTol = 0.5
 				for _, layer := range layerDict {
-					nearest, ok := findNearestPointOnLayer(pt, layer)
+					nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net)
 					if !ok {
 						continue
 					}
@@ -232,7 +250,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 				var bestPt geometry.Point
 				bestDist := math.Inf(1)
 				for _, layer := range layerDict {
-					nearest, ok := findNearestPointOnLayer(pt, layer)
+					nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net)
 					if !ok {
 						continue
 					}
@@ -259,7 +277,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 			var bestPt geometry.Point
 			bestDist := math.Inf(1)
 			for _, l := range layerDict {
-				nearest, ok := findNearestPointOnLayer(pt, l)
+				nearest, ok := findNearestPointOnLayer(pt, l, pad.Net)
 				if !ok {
 					continue
 				}
@@ -276,11 +294,11 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 			return nil
 		}
 		if c := tryConnect(layer, pt); c != nil {
-			nearest, _ := findNearestPointOnLayer(pt, layer)
+			nearest, _ := findNearestPointOnLayer(pt, layer, pad.Net)
 			d.Info(fmt.Sprintf("connectPad SMD: layer '%s' connected nearest=%.3f,%.3f", pad.Layer, nearest.X, nearest.Y))
 			return []*problem.Connection{c}
 		}
-		nearest, ok := findNearestPointOnLayer(pt, layer)
+		nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net)
 		if !ok {
 			d.Info(fmt.Sprintf("connectPad SMD: layer '%s' has no geometry", pad.Layer))
 			return nil
@@ -517,8 +535,11 @@ func connectSourcePads(pads []Pad, connectPad func(Pad) []*problem.Connection) [
 	return conns
 }
 
-func pointOnLayer(pt geometry.Point, layer *problem.Layer) bool {
-	for _, poly := range layer.Shape {
+func pointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet string) bool {
+	for i, poly := range layer.Shape {
+		if !polygonMatchesNet(layer, i, targetNet) {
+			continue
+		}
 		if pointInPolygonMesh(pt, poly) {
 			return true
 		}
