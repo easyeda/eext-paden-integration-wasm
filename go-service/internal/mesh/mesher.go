@@ -59,6 +59,13 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 	points := append([]Point(nil), tri.Vertices...)
 	triangles := append([][3]int(nil), tri.Triangles...)
 
+	// 1a. Drop earcut triangles that are degenerate or have centroids outside the
+	// polygon. This prevents triangles spanning holes from corrupting the mesh.
+	triangles = filterValidTriangles(points, triangles, poly)
+	if len(triangles) == 0 {
+		return NewMesh(), nil
+	}
+
 	// 2. Insert seed points by splitting their containing triangles.
 	for _, seed := range seedPoints {
 		if !pointInPolygon(seed, poly) {
@@ -503,13 +510,41 @@ func round(v float64, decimals int) float64 {
 	return math.Round(v*pow) / pow
 }
 
+// filterValidTriangles drops degenerate or hole-spanning triangles.
+func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Polygon) [][3]int {
+	var filtered [][3]int
+	dropped := 0
+	for _, t := range triangles {
+		a, b, c := points[t[0]], points[t[1]], points[t[2]]
+		area := math.Abs((b.X-a.X)*(c.Y-a.Y) - (c.X-a.X)*(b.Y-a.Y))
+		if area <= 1e-12 {
+			dropped++
+			continue
+		}
+		cen := Point{X: (a.X + b.X + c.X) / 3, Y: (a.Y + b.Y + c.Y) / 3}
+		if !pointInPolygon(cen, poly) {
+			dropped++
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	if dropped > 0 {
+		fmt.Printf("[PADEN mesh] dropped %d/%d invalid earcut triangles\n", dropped, len(triangles))
+	}
+	return filtered
+}
+
 // EarcutFallback triangulates a polygon using the JS earcut library.
 func EarcutFallback(poly geometry.Polygon) (*Mesh, error) {
 	tri, err := Earcut(poly)
 	if err != nil {
 		return nil, err
 	}
-	return FromTriangleSoup(tri.Vertices, tri.Triangles), nil
+	valid := filterValidTriangles(tri.Vertices, tri.Triangles, poly)
+	if len(valid) == 0 {
+		return NewMesh(), nil
+	}
+	return FromTriangleSoup(tri.Vertices, valid), nil
 }
 
 // sort helpers for deterministic behavior

@@ -65,9 +65,10 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	const maxMeshVerts = 15000
 	var meshes []*mesh.Mesh
 	var meshToLayer []int
+	var meshToGeom [][2]int
 	totalMeshVerts := 0
 	for attempt := 0; attempt < 5; attempt++ {
-		meshes, meshToLayer = generateMeshes(prob, layerGeoms, connected, cfg)
+		meshes, meshToLayer, meshToGeom = generateMeshes(prob, layerGeoms, connected, cfg)
 		totalMeshVerts = 0
 		for _, m := range meshes {
 			totalMeshVerts += len(m.Vertices)
@@ -106,7 +107,7 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	logNetworkInfo("after filtering", filteredNetworks)
 
 	// Build node indexer
-	nodeIndexer := buildNodeIndexer(prob, meshes, meshToLayer, vindex, filteredNetworks)
+	nodeIndexer := buildNodeIndexer(prob, meshes, meshToLayer, meshToGeom, vindex, filteredNetworks)
 
 	// Merge nodes that are shorted by ideal 0 V voltage sources.
 	originalN := len(vindex.globalToLocal) + nodeIndexer.internalCount
@@ -288,24 +289,33 @@ type nodeIndexer struct {
 	internalCount int
 }
 
-func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []int, vindex *vertexIndexer, networks []*problem.Network) *nodeIndexer {
+func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []int, meshToGeom [][2]int, vindex *vertexIndexer, networks []*problem.Network) *nodeIndexer {
 	ni := &nodeIndexer{
 		nodeToGlobal: make(map[*problem.NodeID]int),
 		extraVars:    make(map[problem.LumpedElement]int),
 	}
 
-	// Build per-layer kdtree-like nearest vertex lookup using simple linear search
-	type layerVert struct {
+	// Build per-mesh vertex lists so we can snap connection points to the correct
+	// polygon/mesh instead of the nearest vertex globally on the layer. Snapping
+	// globally caused VCC pads to connect to GND mesh vertices when the GND copper
+	// happened to be closer.
+	type meshVert struct {
 		globalIdx int
 		p         mesh.Point
 	}
-	layerVerts := make(map[int][]layerVert)
+	meshVerts := make(map[int][]meshVert)
 	for mi, m := range meshes {
-		li := meshToLayer[mi]
 		for vii, v := range m.Vertices {
 			gi := vindex.localToGlobal[[2]int{mi, vii}]
-			layerVerts[li] = append(layerVerts[li], layerVert{globalIdx: gi, p: v.P})
+			meshVerts[mi] = append(meshVerts[mi], meshVert{globalIdx: gi, p: v.P})
 		}
+	}
+
+	// Map each layer/geom pair to the mesh index that represents it.
+	geomToMesh := make(map[[2]int][]int)
+	for mi, lg := range meshToGeom {
+		key := [2]int{lg[0], lg[1]}
+		geomToMesh[key] = append(geomToMesh[key], mi)
 	}
 
 	// Robust layer lookup by pointer (preferred) or by name (fallback).
@@ -319,13 +329,43 @@ func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []
 	}
 	fmt.Printf("[PADEN solver] layer order: %s\n", strings.Join(layerNames, ", "))
 	fmt.Printf("[PADEN solver] meshToLayer: %v\n", meshToLayer)
-	for li, verts := range layerVerts {
+	for mi, verts := range meshVerts {
 		if len(verts) > 0 {
-			fmt.Printf("[PADEN solver] layer %d vertex range [%d,%d] count=%d\n", li, verts[0].globalIdx, verts[len(verts)-1].globalIdx, len(verts))
+			fmt.Printf("[PADEN solver] mesh %d layer %d vertex range [%d,%d] count=%d\n", mi, meshToLayer[mi], verts[0].globalIdx, verts[len(verts)-1].globalIdx, len(verts))
 		}
 	}
 
-	// Index connection nodes
+	// Helper: snap a point to the nearest vertex of the meshes that represent a
+	// specific layer/geom. If no mesh exists for that geom, fall back to all
+	// meshes on the layer.
+	snapToGeom := func(pt mesh.Point, li, gi int) (int, float64, bool) {
+		candidates := geomToMesh[[2]int{li, gi}]
+		if len(candidates) == 0 {
+			// No mesh for this exact geom; try any mesh on the layer.
+			for mi, l := range meshToLayer {
+				if l == li {
+					candidates = append(candidates, mi)
+				}
+			}
+		}
+		if len(candidates) == 0 {
+			return -1, 0, false
+		}
+		best := -1
+		bestDist := math.Inf(1)
+		for _, mi := range candidates {
+			for _, mv := range meshVerts[mi] {
+				d := math.Hypot(mv.p.X-pt.X, mv.p.Y-pt.Y)
+				if d < bestDist {
+					bestDist = d
+					best = mv.globalIdx
+				}
+			}
+		}
+		return best, bestDist, best >= 0
+	}
+
+	// Index connection nodes to the mesh that contains the connection point.
 	for _, net := range networks {
 		for _, conn := range net.Connections {
 			li := -1
@@ -341,23 +381,35 @@ func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []
 				fmt.Printf("[PADEN solver] conn layer '%s' not in problem layers\n", conn.Layer.Name)
 				continue
 			}
-			verts := layerVerts[li]
-			if len(verts) == 0 {
-				fmt.Printf("[PADEN solver] conn layer '%s' has no mesh vertices\n", conn.Layer.Name)
-				continue
-			}
-			best := verts[0]
-			bestDist := math.Hypot(best.p.X-conn.Point.X, best.p.Y-conn.Point.Y)
-			for _, lv := range verts[1:] {
-				d := math.Hypot(lv.p.X-conn.Point.X, lv.p.Y-conn.Point.Y)
-				if d < bestDist {
-					bestDist = d
-					best = lv
+
+			// Find the geom on this layer that contains the connection point.
+			pt := mesh.Point{X: conn.Point.X, Y: conn.Point.Y}
+			gi := -1
+			if conn.Layer != nil && li >= 0 && li < len(prob.Layers) {
+				for i, poly := range prob.Layers[li].Shape {
+					if pointHitsGeom(conn.Point, poly) {
+						gi = i
+						break
+					}
 				}
 			}
-			ni.nodeToGlobal[conn.NodeID] = best.globalIdx
-			fmt.Printf("[PADEN solver] conn %s (%.3f,%.3f) -> layerIdx=%d nearest=(%.3f,%.3f) global=%d dist=%.4f\n",
-				conn.Layer.Name, conn.Point.X, conn.Point.Y, li, best.p.X, best.p.Y, best.globalIdx, bestDist)
+			if gi < 0 {
+				// The point is not inside any polygon on this layer. This can
+				// happen when the connection was snapped to a boundary in the
+				// pipeline. Use the nearest geom's mesh as a fallback.
+				gi = nearestGeomOnLayer(conn.Point, li, prob.Layers[li].Shape)
+				fmt.Printf("[PADEN solver] conn %s (%.3f,%.3f) not inside any polygon, nearest geom=%d\n",
+					conn.Layer.Name, conn.Point.X, conn.Point.Y, gi)
+			}
+
+			globalIdx, dist, ok := snapToGeom(pt, li, gi)
+			if !ok {
+				fmt.Printf("[PADEN solver] conn %s (%.3f,%.3f) has no mesh vertices\n", conn.Layer.Name, conn.Point.X, conn.Point.Y)
+				continue
+			}
+			ni.nodeToGlobal[conn.NodeID] = globalIdx
+			fmt.Printf("[PADEN solver] conn %s (%.3f,%.3f) -> layerIdx=%d geom=%d global=%d dist=%.4f\n",
+				conn.Layer.Name, conn.Point.X, conn.Point.Y, li, gi, globalIdx, dist)
 		}
 	}
 
@@ -380,11 +432,73 @@ func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []
 	return ni
 }
 
+func nearestGeomOnLayer(pt geometry.Point, li int, geoms []geometry.Polygon) int {
+	best := -1
+	bestDist := math.Inf(1)
+	for i, poly := range geoms {
+		d := distanceToPolygon(pt, poly)
+		if d < bestDist {
+			bestDist = d
+			best = i
+		}
+	}
+	return best
+}
+
 func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) map[[2]int]bool {
 	connected := make(map[[2]int]bool)
 	layerIdx := layerIndexMap(prob)
 
-	// Mark polygons hit by connections from networks with sources
+	// Build per-layer connected components where polygons are adjacent if they
+	// touch or overlap. A pad polygon and the copper pour it connects to are
+	// separate polygons after union; without this they would not both be meshed
+	// and the preview would show only the small pad shape.
+	component := make(map[[2]int]int)
+	nextComp := 0
+	for li, geoms := range layerGeoms {
+		n := len(geoms)
+		parent := make([]int, n)
+		for i := range parent {
+			parent[i] = i
+		}
+		var find func(int) int
+		find = func(x int) int {
+			if parent[x] != x {
+				parent[x] = find(parent[x])
+			}
+			return parent[x]
+		}
+		union := func(a, b int) {
+			ra, rb := find(a), find(b)
+			if ra != rb {
+				parent[rb] = ra
+			}
+		}
+
+		for i := 0; i < n; i++ {
+			for j := i + 1; j < n; j++ {
+				if !boxesOverlap(geoms[i].Bounds(), geoms[j].Bounds()) {
+					continue
+				}
+				if polygonsAdjacent(geoms[i], geoms[j]) {
+					union(i, j)
+				}
+			}
+		}
+
+		compMap := make(map[int]int)
+		for i := 0; i < n; i++ {
+			root := find(i)
+			if _, ok := compMap[root]; !ok {
+				compMap[root] = nextComp
+				nextComp++
+			}
+			component[[2]int{li, i}] = compMap[root]
+		}
+	}
+
+	// Determine which components contain a network connection point.
+	connectedComps := make(map[int]bool)
 	for _, net := range prob.Networks {
 		for _, conn := range net.Connections {
 			if conn.Layer == nil {
@@ -396,27 +510,17 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 			}
 			for gi, geom := range layerGeoms[li] {
 				if pointHitsGeom(conn.Point, geom) {
-					connected[[2]int{li, gi}] = true
+					connectedComps[component[[2]int{li, gi}]] = true
 				}
 			}
 		}
 	}
 
-	// Build adjacency: two geoms on same layer are adjacent if their bounding boxes overlap
+	// Mark every polygon in a connected component as connected.
 	for li, geoms := range layerGeoms {
-		for i := 0; i < len(geoms); i++ {
-			for j := i + 1; j < len(geoms); j++ {
-				b1 := geoms[i].Bounds()
-				b2 := geoms[j].Bounds()
-				if boxesOverlap(b1, b2) {
-					// Mark both connected if either is connected
-					if connected[[2]int{li, i}] {
-						connected[[2]int{li, j}] = true
-					}
-					if connected[[2]int{li, j}] {
-						connected[[2]int{li, i}] = true
-					}
-				}
+		for gi := range geoms {
+			if connectedComps[component[[2]int{li, gi}]] {
+				connected[[2]int{li, gi}] = true
 			}
 		}
 	}
@@ -443,6 +547,53 @@ func pointHitsGeom(p geometry.Point, geom geometry.Polygon) bool {
 
 func boxesOverlap(a, b geometry.Box) bool {
 	return a.MinX <= b.MaxX && a.MaxX >= b.MinX && a.MinY <= b.MaxY && a.MaxY >= b.MinY
+}
+
+// polygonsAdjacent reports whether two polygons touch or overlap. We already
+// know their bounding boxes overlap from the caller.
+func polygonsAdjacent(a, b geometry.Polygon) bool {
+	const tol = 0.001
+	// Fast path: one polygon contains a vertex of the other.
+	for _, ring := range a {
+		for _, p := range ring {
+			if pointHitsGeom(p, b) {
+				return true
+			}
+		}
+	}
+	for _, ring := range b {
+		for _, p := range ring {
+			if pointHitsGeom(p, a) {
+				return true
+			}
+		}
+	}
+	// Edge proximity check.
+	for _, ringA := range a {
+		for i := 0; i < len(ringA); i++ {
+			a1, a2 := ringA[i], ringA[(i+1)%len(ringA)]
+			for _, ringB := range b {
+				for j := 0; j < len(ringB); j++ {
+					b1, b2 := ringB[j], ringB[(j+1)%len(ringB)]
+					if segmentsClose(a1, a2, b1, b2, tol) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func segmentsClose(a1, a2, b1, b2 geometry.Point, tol float64) bool {
+	// Check if any endpoint of one segment is within tol of the other segment.
+	if distanceToSegment(a1, b1, b2) <= tol || distanceToSegment(a2, b1, b2) <= tol {
+		return true
+	}
+	if distanceToSegment(b1, a1, a2) <= tol || distanceToSegment(b2, a1, a2) <= tol {
+		return true
+	}
+	return false
 }
 
 func totalCopperArea(layerGeoms [][]geometry.Polygon) float64 {
@@ -472,12 +623,13 @@ func initialMeshConfig(totalArea float64) mesh.Config {
 	return cfg
 }
 
-func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool, cfg mesh.Config) ([]*mesh.Mesh, []int) {
+func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool, cfg mesh.Config) ([]*mesh.Mesh, []int, [][2]int) {
 	fmt.Printf("[PADEN solver] total copper area=%.1f mm^2, max mesh size=%.3f mm\n", totalCopperArea(layerGeoms), cfg.MaximumSize)
 	mesher := mesh.NewMesher(cfg)
 
 	var meshes []*mesh.Mesh
 	var meshToLayer []int
+	var meshToGeom [][2]int
 
 	for li, layer := range prob.Layers {
 		seedPoints := collectSeedPoints(prob, layer)
@@ -500,6 +652,7 @@ func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, conn
 			fmt.Printf("[PADEN solver] layer %d geom %d meshed in %v -> %d vertices\n", li, gi, dt, len(m.Vertices))
 			meshes = append(meshes, m)
 			meshToLayer = append(meshToLayer, li)
+			meshToGeom = append(meshToGeom, [2]int{li, gi})
 		}
 	}
 
@@ -516,7 +669,7 @@ func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, conn
 		fmt.Printf("[PADEN solver] layer %d meshes=%d verts=%d\n", li, s[0], s[1])
 	}
 
-	return meshes, meshToLayer
+	return meshes, meshToLayer, meshToGeom
 }
 
 func collectSeedPoints(prob *problem.Problem, layer *problem.Layer) []mesh.Point {
