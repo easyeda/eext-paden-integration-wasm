@@ -108,42 +108,77 @@ function ringContainsRing(outer, inner) {
 	return true;
 }
 
-// Group a flat list of rings into polygons with holes.  Exterior rings and
-// holes are distinguished by signed area (opposite signs).  Each hole is
-// attached to the smallest exterior that fully contains it.
+// Build a nesting tree from a flat list of rings. For each ring, find the
+// smallest (by absolute area) ring that strictly contains it. A ring with no
+// parent is a top-level exterior. A child with opposite winding is a hole;
+// a child with the same winding is an independent exterior (nested island).
+function buildRingTree(rings) {
+	const areas = rings.map(ringSignedArea);
+	const parents = Array.from({ length: rings.length }).fill(-1);
+	const children = rings.map(() => []);
+
+	for (let i = 0; i < rings.length; i++) {
+		let bestParent = -1;
+		let bestArea = Infinity;
+		for (let j = 0; j < rings.length; j++) {
+			if (i === j)
+				continue;
+			if (Math.abs(areas[j]) <= Math.abs(areas[i]))
+				continue;
+			if (!ringContainsRing(rings[j], rings[i]))
+				continue;
+			if (Math.abs(areas[j]) < bestArea) {
+				bestArea = Math.abs(areas[j]);
+				bestParent = j;
+			}
+		}
+		parents[i] = bestParent;
+		if (bestParent >= 0)
+			children[bestParent].push(i);
+	}
+
+	return { areas, parents, children };
+}
+
+// Group rings into polygons with holes using the nesting tree. Nested islands
+// (rings inside holes with the same winding as the exterior) become separate
+// polygons so they are not swallowed as holes.
 function groupRingsIntoPolygons(rings) {
 	if (rings.length === 0)
 		return [];
 	if (rings.length === 1)
 		return [[rings[0]]];
 
-	const areas = rings.map(ringSignedArea);
-	const indices = rings.map((_, i) => i).sort((a, b) => Math.abs(areas[b]) - Math.abs(areas[a]));
-
+	const { areas, parents, children } = buildRingTree(rings);
 	const polygons = [];
 	const used = new Set();
 
-	for (const extIdx of indices) {
+	function buildPolygon(extIdx) {
 		if (used.has(extIdx))
-			continue;
+			return;
 		used.add(extIdx);
-
-		const exterior = rings[extIdx];
-		const poly = [exterior];
 		const extArea = areas[extIdx];
-
-		for (const holeIdx of indices) {
-			if (used.has(holeIdx))
-				continue;
-			// A hole must have opposite winding to its exterior.
-			if (extArea * areas[holeIdx] > 0)
-				continue;
-			if (ringContainsRing(exterior, rings[holeIdx])) {
-				poly.push(rings[holeIdx]);
-				used.add(holeIdx);
+		const poly = [rings[extIdx]];
+		for (const childIdx of children[extIdx]) {
+			if (extArea * areas[childIdx] < 0) {
+				// Opposite winding: this child is a hole of extIdx.
+				poly.push(rings[childIdx]);
+				// Any descendants inside the hole with the same winding as the
+				// exterior are nested islands and become separate polygons.
+				for (const grandChildIdx of children[childIdx])
+					buildPolygon(grandChildIdx);
+			}
+			else {
+				// Same winding: independent exterior nested inside extIdx.
+				buildPolygon(childIdx);
 			}
 		}
 		polygons.push(poly);
+	}
+
+	for (let i = 0; i < rings.length; i++) {
+		if (parents[i] < 0)
+			buildPolygon(i);
 	}
 
 	return polygons;
@@ -372,8 +407,49 @@ function gerberToPolygons(gerberText) {
 	}
 	all = groupRingsIntoPolygons(rings);
 	console.warn('[geometry bridge] after hole grouping:', { totalPolygons: all.length, totalRings: rings.length });
+	for (let i = 0; i < all.length; i++) {
+		const poly = all[i];
+		const bounds = polygonBounds(poly);
+		const area = polygonSignedArea(poly);
+		console.warn(`[geometry bridge] grouped poly[${i}]: rings=${poly.length} area=${area.toFixed(3)} bounds=[${bounds.minX.toFixed(2)},${bounds.maxX.toFixed(2)}]x[${bounds.minY.toFixed(2)},${bounds.maxY.toFixed(2)}]`);
+	}
 
 	return all;
+}
+
+function polygonBounds(poly) {
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (const ring of poly) {
+		for (const p of ring) {
+			if (p.x < minX)
+				minX = p.x;
+			if (p.x > maxX)
+				maxX = p.x;
+			if (p.y < minY)
+				minY = p.y;
+			if (p.y > maxY)
+				maxY = p.y;
+		}
+	}
+	return { minX, minY, maxX, maxY };
+}
+
+function polygonSignedArea(poly) {
+	let area = 0;
+	for (let i = 0; i < poly.length; i++) {
+		const ring = poly[i];
+		let a = 0;
+		const n = ring.length;
+		for (let j = 0; j < n; j++) {
+			const k = (j + 1) % n;
+			a += ring[j].x * ring[k].y - ring[k].x * ring[j].y;
+		}
+		area += (i === 0 ? 1 : -1) * a / 2;
+	}
+	return area;
 }
 
 function clipperUnion(polygonsA, polygonsB) {
