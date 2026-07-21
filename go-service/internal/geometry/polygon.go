@@ -11,6 +11,30 @@ type Polygon []Ring
 // MultiPolygon groups multiple polygons.
 type MultiPolygon []Polygon
 
+// Bounds returns the bounding box of all polygons in the multi-polygon.
+func (mp MultiPolygon) Bounds() Box {
+	if len(mp) == 0 || len(mp[0]) == 0 || len(mp[0][0]) == 0 {
+		return Box{}
+	}
+	b := mp[0].Bounds()
+	for i := 1; i < len(mp); i++ {
+		bi := mp[i].Bounds()
+		if bi.MinX < b.MinX {
+			b.MinX = bi.MinX
+		}
+		if bi.MinY < b.MinY {
+			b.MinY = bi.MinY
+		}
+		if bi.MaxX > b.MaxX {
+			b.MaxX = bi.MaxX
+		}
+		if bi.MaxY > b.MaxY {
+			b.MaxY = bi.MaxY
+		}
+	}
+	return b
+}
+
 // Area returns the signed area of a ring using the shoelace formula.
 func (r Ring) Area() float64 {
 	n := len(r)

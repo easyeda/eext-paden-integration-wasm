@@ -39,11 +39,55 @@ func subtractTHTPadHoles(layers []*problem.Layer, pads []Pad, transform *[4]floa
 }
 
 func circlePolygon(cx, cy, r float64) geometry.Polygon {
-	const n = 16
+	const n = 32
 	ring := make(geometry.Ring, n)
 	for i := 0; i < n; i++ {
 		a := 2 * math.Pi * float64(i) / float64(n)
 		ring[i] = geometry.Point{X: cx + r*math.Cos(a), Y: cy + r*math.Sin(a)}
 	}
 	return geometry.Polygon{ring}
+}
+
+// punchViaHoles subtracts via drill holes from every copper layer that the via
+// passes through. This creates anti-pads around vias and prevents a via of one
+// net from being modelled as solid copper belonging to a different net.
+func punchViaHoles(layers []*problem.Layer, specs []viaSpec, d *DiagCollector) {
+	if len(specs) == 0 {
+		return
+	}
+	for _, layer := range layers {
+		var holes geometry.MultiPolygon
+		for _, vs := range specs {
+			if layerNameIn(vs.LayerNames, layer.Name) {
+				r := vs.DrillDiameter / 2
+				if r <= 0 {
+					continue
+				}
+				holes = append(holes, circlePolygon(vs.Point.X, vs.Point.Y, r))
+			}
+		}
+		if len(holes) == 0 {
+			continue
+		}
+		merged, err := geometry.Union(holes, nil)
+		if err != nil || len(merged) == 0 {
+			merged = holes
+		}
+		punched, err := geometry.Difference(layer.Shape, merged)
+		if err != nil || len(punched) == 0 {
+			d.Warn(fmt.Sprintf("Layer '%s': via hole punch failed, keeping original", layer.Name))
+			continue
+		}
+		layer.Shape = punched
+		d.Info(fmt.Sprintf("Layer '%s': punched %d via hole(s) -> %d polygon(s)", layer.Name, len(holes), len(punched)))
+	}
+}
+
+func layerNameIn(names []string, target string) bool {
+	for _, n := range names {
+		if n == target {
+			return true
+		}
+	}
+	return false
 }

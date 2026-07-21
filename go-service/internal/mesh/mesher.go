@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"fmt"
 	"math"
 	"sort"
 
@@ -31,41 +32,109 @@ func NewMesher(cfg Config) *Mesher {
 	return &Mesher{Config: cfg}
 }
 
-// PolygonToMesh triangulates a polygon with holes.
+// PolygonToMesh triangulates a polygon with holes using a robust earcut-based
+// approach. It starts with earcut on the polygon rings, inserts seed points,
+// then subdivides large triangles by centroid until the maximum edge length is
+// below the configured threshold. This avoids the fragile pure-Go Delaunay
+// path which produced corrupt triangles near the boundary.
 func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh, error) {
 	if len(poly) == 0 || len(poly[0]) < 3 {
 		return NewMesh(), nil
 	}
 
-	// Generate points: boundary + interior adaptive grid + seeds
-	pts := m.generatePoints(poly, seedPoints)
-	if len(pts) < 3 {
+	maxSize := m.Config.MaximumSize
+	if maxSize <= 0 {
+		maxSize = 1.2
+	}
+
+	// 1. Robust base triangulation from earcut.
+	tri, err := Earcut(poly)
+	if err != nil {
+		return nil, err
+	}
+	if len(tri.Triangles) == 0 {
 		return NewMesh(), nil
 	}
 
-	// Very dense point clouds make our pure-Go Delaunay too slow in WASM.
-	// Fall back to earcut (JS) for these cases; it uses polygon vertices only.
-	if len(pts) > 12000 {
-		return EarcutFallback(poly)
+	points := append([]Point(nil), tri.Vertices...)
+	triangles := append([][3]int(nil), tri.Triangles...)
+
+	// 2. Insert seed points by splitting their containing triangles.
+	for _, seed := range seedPoints {
+		if !pointInPolygon(seed, poly) {
+			continue
+		}
+		for ti := 0; ti < len(triangles); ti++ {
+			t := triangles[ti]
+			if !pointInTriangle(seed, points[t[0]], points[t[1]], points[t[2]]) {
+				continue
+			}
+			idx := len(points)
+			points = append(points, seed)
+			triangles[ti] = [3]int{t[0], t[1], idx}
+			triangles = append(triangles, [3]int{t[1], t[2], idx})
+			triangles = append(triangles, [3]int{t[2], t[0], idx})
+			break
+		}
 	}
 
-	// Delaunay triangulation
-	tris := delaunayTriangulate(pts)
+	// 3. Subdivide large triangles by centroid until size criterion is met.
+	const maxVerts = 12000
+	for iter := 0; iter < 30; iter++ {
+		changed := false
+		n := len(triangles)
+		for ti := 0; ti < n; ti++ {
+			t := triangles[ti]
+			a, b, c := points[t[0]], points[t[1]], points[t[2]]
+			ab := math.Hypot(b.X-a.X, b.Y-a.Y)
+			bc := math.Hypot(c.X-b.X, c.Y-b.Y)
+			ca := math.Hypot(a.X-c.X, a.Y-c.Y)
+			if math.Max(ab, math.Max(bc, ca)) <= maxSize*1.5 {
+				continue
+			}
+			if len(points) >= maxVerts {
+				break
+			}
+			cen := Point{X: (a.X + b.X + c.X) / 3, Y: (a.Y + b.Y + c.Y) / 3}
+			if !pointInPolygon(cen, poly) {
+				continue
+			}
+			idx := len(points)
+			points = append(points, cen)
+			triangles[ti] = [3]int{t[0], t[1], idx}
+			triangles = append(triangles, [3]int{t[1], t[2], idx})
+			triangles = append(triangles, [3]int{t[2], t[0], idx})
+			changed = true
+		}
+		if !changed {
+			break
+		}
+	}
 
-	// Filter triangles to those inside the polygon
-	filtered := filterTrianglesInsidePolygon(pts, tris, poly)
+	// 4. Drop degenerate triangles and validate remaining triangles.
+	var filtered [][3]int
+	outside := 0
+	for _, t := range triangles {
+		a, b, c := points[t[0]], points[t[1]], points[t[2]]
+		area := math.Abs((b.X-a.X)*(c.Y-a.Y) - (c.X-a.X)*(b.Y-a.Y))
+		if area <= 1e-12 {
+			continue
+		}
+		cen := Point{X: (a.X + b.X + c.X) / 3, Y: (a.Y + b.Y + c.Y) / 3}
+		if !pointInPolygon(cen, poly) {
+			outside++
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	if outside > 0 {
+		fmt.Printf("[PADEN mesh] WARNING: dropped %d/%d triangles outside polygon\n", outside, len(triangles))
+	}
 	if len(filtered) == 0 {
 		return NewMesh(), nil
 	}
 
-	mesh := FromTriangleSoup(pts, filtered)
-
-	// Refine thin triangles
-	if m.Config.MinimumAngle > 0 {
-		mesh = m.refineMesh(mesh, poly)
-	}
-
-	return mesh, nil
+	return FromTriangleSoup(points, filtered), nil
 }
 
 // generatePoints creates boundary + adaptive interior points.
@@ -414,6 +483,19 @@ func pointInRing(p Point, ring geometry.Ring) bool {
 		}
 	}
 	return inside
+}
+
+func pointInTriangle(p, a, b, c Point) bool {
+	// Barycentric technique with a small tolerance for points on edges.
+	den := (b.Y-c.Y)*(a.X-c.X) + (c.X-b.X)*(a.Y-c.Y)
+	if math.Abs(den) < 1e-12 {
+		return false
+	}
+	w1 := ((b.Y-c.Y)*(p.X-c.X) + (c.X-b.X)*(p.Y-c.Y)) / den
+	w2 := ((c.Y-a.Y)*(p.X-c.X) + (a.X-c.X)*(p.Y-c.Y)) / den
+	w3 := 1 - w1 - w2
+	tol := -1e-9
+	return w1 >= tol && w2 >= tol && w3 >= tol
 }
 
 func round(v float64, decimals int) float64 {

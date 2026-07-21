@@ -88,6 +88,25 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 		return nil, d, fmt.Errorf("no valid copper layers from Gerber")
 	}
 
+	// Clean each layer: union overlapping dark polygons and normalize ring
+	// orientations. This matches the Python backend's unary_union + orient
+	// preprocessing and prevents overlapping copper from confusing the mesher.
+	for _, layer := range layers {
+		if len(layer.Shape) == 0 {
+			continue
+		}
+		unioned, err := geometry.Union(layer.Shape, nil)
+		if err != nil || len(unioned) == 0 {
+			d.Warn(fmt.Sprintf("Layer '%s': union failed (%v), using raw geometry", layer.Name, err))
+		} else {
+			layer.Shape = unioned
+		}
+		for i := range layer.Shape {
+			layer.Shape[i].EnsureOrientation()
+		}
+		d.Info(fmt.Sprintf("Layer '%s': cleaned to %d polygon(s) area=%.3f", layer.Name, len(layer.Shape), layer.Area()))
+	}
+
 	layerDict := make(map[string]*problem.Layer)
 	for _, l := range layers {
 		layerDict[l.Name] = l
@@ -95,8 +114,9 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 
 	// 2. Extract board outline and clip
 	d.Info("Step 2: Board outline clipping")
-	outline := extractBoardOutline(parsed)
+	outline, outlineName := extractBoardOutline(parsed)
 	if outline != nil {
+		d.Info(fmt.Sprintf("Using outline layer '%s' with %d polygon(s)", outlineName, len(outline)))
 		clipLayersWithOutline(layers, outline, d)
 	} else {
 		d.Info("No board outline found")
@@ -125,6 +145,14 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	d.Info("Step 3: Via specs")
 	viaSpecs := extractViaSpecs(cfg.Vias, layerDict, transform)
 	d.Info(fmt.Sprintf("Via specs: %d", len(viaSpecs)))
+
+	// Punch via anti-pads so vias of one net do not sit in solid copper of another.
+	punchViaHoles(layers, viaSpecs, d)
+	for _, layer := range layers {
+		for i := range layer.Shape {
+			layer.Shape[i].EnsureOrientation()
+		}
+	}
 
 	// 6. Via networks
 	d.Info("Step 4: Via resistor networks")
@@ -232,33 +260,51 @@ func normalizeName(s string) string {
 	return b.String()
 }
 
-func extractBoardOutline(layers map[string]geometry.GerberLayer) geometry.MultiPolygon {
+func extractBoardOutline(layers map[string]geometry.GerberLayer) (geometry.MultiPolygon, string) {
 	for name, gl := range layers {
 		ln := strings.ToLower(name)
 		if strings.Contains(ln, "outline") || strings.Contains(ln, "edge") ||
 			strings.Contains(ln, "board") || strings.Contains(ln, "profile") ||
 			strings.Contains(ln, "gko") || strings.Contains(ln, "gml") {
 			if len(gl.Polygons) > 0 {
-				return gl.Polygons
+				return gl.Polygons, name
 			}
 		}
 	}
-	return nil
+	return nil, ""
 }
 
 func clipLayersWithOutline(layers []*problem.Layer, outline geometry.MultiPolygon, d *DiagCollector) {
 	if len(outline) == 0 {
 		return
 	}
-	// Use the first polygon of the outline
-	outlinePoly := outline[0]
-	filled := fillOutlinePolygon(outlinePoly)
+
+	// Board outline should be the largest polygon in the outline layer.
+	// Some outline layers contain small circular keepouts/test points as the
+	// first polygon; picking the largest avoids clipping the whole board to a
+	// tiny circle.
+	bestIdx := 0
+	bestArea := polygonSignedArea(outline[0])
+	for i := 1; i < len(outline); i++ {
+		a := polygonSignedArea(outline[i])
+		if math.Abs(a) > math.Abs(bestArea) {
+			bestArea = a
+			bestIdx = i
+		}
+	}
+	outlinePoly := outline[bestIdx]
+	b := outlinePoly.Bounds()
+	d.Info(fmt.Sprintf("Board outline: poly[%d] rings=%d area=%.3f bounds=[%.2f,%.2f]x[%.2f,%.2f]",
+		bestIdx, len(outlinePoly), bestArea, b.MinX, b.MaxX, b.MinY, b.MaxY))
+
+	filled := fillOutlinePolygon(outlinePoly, d)
 	if len(filled) == 0 {
 		return
 	}
 
 	for _, layer := range layers {
 		origArea := layer.Area()
+		lb := layer.Bounds()
 		clipped, err := geometry.Intersect(layer.Shape, filled)
 		if err != nil || len(clipped) == 0 {
 			d.Warn(fmt.Sprintf("Layer '%s': empty after clipping, keeping original", layer.Name))
@@ -270,18 +316,47 @@ func clipLayersWithOutline(layers []*problem.Layer, outline geometry.MultiPolygo
 				layer.Name, 100*(1-newArea/origArea)))
 			continue
 		}
+		cb := clipped.Bounds()
 		layer.Shape = clipped
-		d.Info(fmt.Sprintf("Layer '%s': clipped OK (%d polygons)", layer.Name, len(clipped)))
+		for i := range layer.Shape {
+			layer.Shape[i].EnsureOrientation()
+		}
+		d.Info(fmt.Sprintf("Layer '%s': clipped OK (%d polygons) area %.3f->%.3f bounds [%.2f,%.2f]x[%.2f,%.2f]->[%.2f,%.2f]x[%.2f,%.2f]",
+			layer.Name, len(clipped), origArea, newArea,
+			lb.MinX, lb.MaxX, lb.MinY, lb.MaxY,
+			cb.MinX, cb.MaxX, cb.MinY, cb.MaxY))
 	}
 }
 
-func fillOutlinePolygon(poly geometry.Polygon) geometry.MultiPolygon {
-	// Strip holes, keep only exterior ring
+func fillOutlinePolygon(poly geometry.Polygon, d *DiagCollector) geometry.MultiPolygon {
 	if len(poly) == 0 || len(poly[0]) < 3 {
 		return nil
 	}
-	exterior := poly[0]
-	return geometry.MultiPolygon{{exterior}}
+
+	// Strip interior rings (holes): board outline Gerbers draw the edge as a
+	// closed line stroke, so the filled board area is the exterior only. Real
+	// slots/cutouts are handled by the copper-layer Gerbers themselves.
+	filled := geometry.MultiPolygon{{poly[0]}}
+
+	// Detect thin frame outlines (stroke width only). If the filled area is much
+	// smaller than the bounding box, use the bounding box rectangle for clipping
+	// so copper is not reduced to a thin border.
+	area := math.Abs(polygonSignedArea(poly))
+	b := poly.Bounds()
+	bboxArea := (b.MaxX - b.MinX) * (b.MaxY - b.MinY)
+	if bboxArea > 0 && area/bboxArea < 0.5 {
+		d.Info(fmt.Sprintf("Outline is thin frame (area=%.3f, bbox=%.3f, ratio=%.4f), using bounding box",
+			area, bboxArea, area/bboxArea))
+		rect := geometry.Ring{
+			{X: b.MinX, Y: b.MinY},
+			{X: b.MaxX, Y: b.MinY},
+			{X: b.MaxX, Y: b.MaxY},
+			{X: b.MinX, Y: b.MaxY},
+		}
+		return geometry.MultiPolygon{{rect}}
+	}
+
+	return filled
 }
 
 func layerArea(mp geometry.MultiPolygon) float64 {
@@ -343,69 +418,25 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Con
 			allBounds.MaxY = b.MaxY
 		}
 	}
+
+	// Match the Python backend: same scale, same Y direction (both EasyEDA and
+	// pygerber/tracespace produce Y-down coordinates). Align centers to obtain
+	// the origin offset. Axis flipping was causing orientation mismatches and
+	// missed pad connections.
 	easyedaCx := (bounds.MinX + bounds.MaxX) / 2
 	easyedaCy := (bounds.MinY + bounds.MaxY) / 2
 	gerberCx := (allBounds.MinX + allBounds.MaxX) / 2
 	gerberCy := (allBounds.MinY + allBounds.MaxY) / 2
-
-	layerDict := make(map[string]*problem.Layer)
-	allLayers := make([]*problem.Layer, 0, len(layers))
-	for _, l := range layers {
-		if layerDict[l.Name] == nil {
-			layerDict[l.Name] = l
-			allLayers = append(allLayers, l)
-		}
-	}
-
-	testPts := collectOrientationPoints(cfg, layerDict, allLayers)
-	if len(testPts) == 0 {
-		return nil
-	}
-
-	// Use the board outline as the primary reference shape. Every pad/via must
-	// lie inside it, so orientation scoring based on the outline is far more
-	// robust than copper-only scoring (which can match VCC pads to GND copper
-	// when the board is mirrored).
-	outlineShape := geometry.Polygon{}
-	if len(outline) > 0 && len(outline[0]) > 0 {
-		outlineShape = outline[0]
-	}
-
-	// Try the four axis-flip candidates around the common center and pick the
-	// one that lands the most pads/vias inside the parsed Gerber copper.
-	candidates := []struct{ sx, sy float64 }{
-		{1, -1},
-		{-1, -1},
-		{1, 1},
-		{-1, 1},
-	}
-	best := candidates[0]
-	bestScore := -1
-	for _, c := range candidates {
-		ox := gerberCx - c.sx*easyedaCx
-		oy := gerberCy - c.sy*easyedaCy
-		score := scoreOrientation(c.sx, c.sy, ox, oy, testPts, outlineShape)
-		d.Info(fmt.Sprintf("  orientation (% .0f,% .0f): score=%d", c.sx, c.sy, score))
-		// Tie-break toward the canonical Gerber orientation (Y up vs EasyEDA Y down).
-		if score > bestScore || (score == bestScore && c.sx == 1 && c.sy == -1) {
-			bestScore = score
-			best = c
-		}
-	}
-
-	sx := best.sx
-	sy := best.sy
-	ox := gerberCx - sx*easyedaCx
-	oy := gerberCy - sy*easyedaCy
+	ox := gerberCx - easyedaCx
+	oy := gerberCy - easyedaCy
 
 	d.Info(fmt.Sprintf("EasyEDA bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		bounds.MinX, bounds.MaxX, bounds.MinY, bounds.MaxY))
 	d.Info(fmt.Sprintf("Gerber bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		allBounds.MinX, allBounds.MaxX, allBounds.MinY, allBounds.MaxY))
-	d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.2f,%.2f) (score=%d/%d)",
-		sx, sy, ox, oy, bestScore, len(testPts)))
+	d.Info(fmt.Sprintf("Transform: scale=(1.0000,1.0000), offset=(%.2f,%.2f)", ox, oy))
 
-	return &[4]float64{sx, sy, ox, oy}
+	return &[4]float64{1, 1, ox, oy}
 }
 
 type orientPoint struct {
