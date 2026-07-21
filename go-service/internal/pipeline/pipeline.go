@@ -88,12 +88,16 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 		return nil, d, fmt.Errorf("no valid copper layers from Gerber")
 	}
 
-	// Clean each layer: union overlapping dark polygons and normalize ring
-	// orientations. This matches the Python backend's unary_union + orient
-	// preprocessing and prevents overlapping copper from confusing the mesher.
+	// Clean each layer: normalize ring orientations first, then union overlapping
+	// dark polygons. Clipper2 is sensitive to winding direction, so orient before
+	// union to avoid negative polygons being treated as holes and cancelling out
+	// the real copper.
 	for _, layer := range layers {
 		if len(layer.Shape) == 0 {
 			continue
+		}
+		for i := range layer.Shape {
+			layer.Shape[i].EnsureOrientation()
 		}
 		unioned, err := geometry.Union(layer.Shape, nil)
 		if err != nil || len(unioned) == 0 {
