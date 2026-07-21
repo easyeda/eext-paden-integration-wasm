@@ -176,29 +176,60 @@ func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet 
 			return pt, true
 		}
 	}
-	// Find nearest point on polygon boundary
-	nearest := pt
+	// Find nearest point on polygon boundary. When a pad centre sits in a drilled
+	// hole of a large pour, the pour's hole boundary and the pad's annular ring
+	// can be equidistant. Prefer the smaller polygon (the actual pad copper) so
+	// the connection lands on the pad instead of the pour hole edge.
+	type candidate struct {
+		pt   geometry.Point
+		dist float64
+		area float64
+	}
+	var candidates []candidate
 	minDist := math.Inf(1)
-	found := false
 	for i, poly := range layer.Shape {
 		if !polygonMatchesNet(layer, i, targetNet) {
 			continue
 		}
+		area := polygonArea(poly)
 		for _, ring := range poly {
-			for i := 0; i < len(ring); i++ {
-				a := ring[i]
-				b := ring[(i+1)%len(ring)]
+			for j := 0; j < len(ring); j++ {
+				a := ring[j]
+				b := ring[(j+1)%len(ring)]
 				np := nearestPointOnSegment(pt, a, b)
 				d := math.Hypot(np.X-pt.X, np.Y-pt.Y)
-				if d < minDist {
+				if d < minDist-1e-3 {
 					minDist = d
-					nearest = np
-					found = true
+					candidates = []candidate{{pt: np, dist: d, area: area}}
+				} else if d <= minDist+1e-3 {
+					candidates = append(candidates, candidate{pt: np, dist: d, area: area})
 				}
 			}
 		}
 	}
-	return nearest, found
+	if len(candidates) == 0 {
+		return pt, false
+	}
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.area < best.area {
+			best = c
+		}
+	}
+	return best.pt, true
+}
+
+func polygonArea(poly geometry.Polygon) float64 {
+	var area float64
+	for i, ring := range poly {
+		a := ring.Area()
+		if i == 0 {
+			area += a
+		} else {
+			area -= a
+		}
+	}
+	return math.Abs(area)
 }
 
 // polygonMatchesNet reports whether the polygon at index i should be considered
