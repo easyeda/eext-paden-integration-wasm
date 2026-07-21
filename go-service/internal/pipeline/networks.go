@@ -134,9 +134,14 @@ func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerID
 		nearest1, ok1 := findNearestPointOnLayer(p1, layer, t.Net)
 		nearest2, ok2 := findNearestPointOnLayer(p2, layer, t.Net)
 		if !ok1 || !ok2 {
-			d.Info(fmt.Sprintf("Track '%s' on '%s': could not connect endpoints", t.Net, layerName))
+			in1, label1 := pointInAnyPolygon(p1, layer)
+			in2, label2 := pointInAnyPolygon(p2, layer)
+			d.Info(fmt.Sprintf("Track '%s' on '%s': could not connect endpoints (%.3f,%.3f in=%v net='%s') -> (%.3f,%.3f in=%v net='%s')",
+				t.Net, layerName, p1.X, p1.Y, in1, label1, p2.X, p2.Y, in2, label2))
 			continue
 		}
+		d.Info(fmt.Sprintf("Track '%s' on '%s': connected (%.3f,%.3f)->(%.3f,%.3f) via (%.3f,%.3f)->(%.3f,%.3f) R=%.6f",
+			t.Net, layerName, p1.X, p1.Y, p2.X, p2.Y, nearest1.X, nearest1.Y, nearest2.X, nearest2.Y, math.Hypot(p2.X-p1.X, p2.Y-p1.Y)/(layer.Conductance*t.Width)))
 		length := math.Hypot(p2.X-p1.X, p2.Y-p1.Y)
 		if length <= 1e-9 {
 			continue
@@ -592,4 +597,17 @@ func pointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet string) boo
 		}
 	}
 	return false
+}
+
+func pointInAnyPolygon(pt geometry.Point, layer *problem.Layer) (bool, string) {
+	for i, poly := range layer.Shape {
+		if pointInPolygonMesh(pt, poly) {
+			label := ""
+			if i < len(layer.NetLabels) {
+				label = layer.NetLabels[i]
+			}
+			return true, label
+		}
+	}
+	return false, ""
 }

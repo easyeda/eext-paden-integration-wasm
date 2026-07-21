@@ -102,12 +102,6 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 		d.Info("No board outline found")
 	}
 
-	// 2a. Merge overlapping/touching copper into connected components. Tracks and
-	// copper pours come from Gerber as separate polygons; without this step the
-	// mesher treats them as isolated meshes even though they are one conductor.
-	d.Info("Step 2a: Union connected copper polygons")
-	unionConnectedCopper(layers, d)
-
 	// 3. Coordinate transform
 	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, cfg, outline, d)
 	if transform != nil {
@@ -125,6 +119,7 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	}
 	inferPolygonNets(layers, cfg.Pads, transform, d)
 	inferPolygonNetsFromTracks(layers, cfg.Tracks, layerIDToName, transform)
+	logLayerPolygonSummary(layers, d)
 
 	// 5. Via specs
 	d.Info("Step 3: Via specs")
@@ -289,27 +284,6 @@ func fillOutlinePolygon(poly geometry.Polygon) geometry.MultiPolygon {
 	return geometry.MultiPolygon{{exterior}}
 }
 
-// unionConnectedCopper merges overlapping or touching polygons on each layer into
-// connected components. Gerber emits copper pours and tracks as separate polygons;
-// unioning them ensures the mesher sees a single conductor instead of isolated
-// fragments.
-func unionConnectedCopper(layers []*problem.Layer, d *DiagCollector) {
-	for _, layer := range layers {
-		if len(layer.Shape) <= 1 {
-			continue
-		}
-		unioned, err := geometry.Union(layer.Shape, nil)
-		if err != nil || len(unioned) == 0 {
-			d.Warn(fmt.Sprintf("Layer '%s': copper union failed, keeping original", layer.Name))
-			continue
-		}
-		if len(unioned) != len(layer.Shape) {
-			d.Info(fmt.Sprintf("Layer '%s': unioned %d polygons into %d", layer.Name, len(layer.Shape), len(unioned)))
-		}
-		layer.Shape = unioned
-	}
-}
-
 func layerArea(mp geometry.MultiPolygon) float64 {
 	var area float64
 	for _, poly := range mp {
@@ -329,6 +303,24 @@ func polygonSignedArea(poly geometry.Polygon) float64 {
 		}
 	}
 	return area
+}
+
+func logLayerPolygonSummary(layers []*problem.Layer, d *DiagCollector) {
+	for _, l := range layers {
+		b := l.Bounds()
+		d.Info(fmt.Sprintf("Layer '%s' summary: polygons=%d area=%.3f bounds=[%.2f,%.2f]x[%.2f,%.2f]",
+			l.Name, len(l.Shape), l.Area(), b.MinX, b.MaxX, b.MinY, b.MaxY))
+		for i, poly := range l.Shape {
+			pb := poly.Bounds()
+			label := ""
+			if i < len(l.NetLabels) {
+				label = l.NetLabels[i]
+			}
+			rings := len(poly)
+			d.Info(fmt.Sprintf("  poly[%d]: net='%s' rings=%d bounds=[%.2f,%.2f]x[%.2f,%.2f] area=%.3f",
+				i, label, rings, pb.MinX, pb.MaxX, pb.MinY, pb.MaxY, polygonSignedArea(poly)))
+		}
+	}
 }
 
 func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Config, outline geometry.MultiPolygon, d *DiagCollector) *[4]float64 {
