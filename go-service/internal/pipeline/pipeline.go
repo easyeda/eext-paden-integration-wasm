@@ -102,6 +102,12 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 		d.Info("No board outline found")
 	}
 
+	// 2a. Merge overlapping/touching copper into connected components. Tracks and
+	// copper pours come from Gerber as separate polygons; without this step the
+	// mesher treats them as isolated meshes even though they are one conductor.
+	d.Info("Step 2a: Union connected copper polygons")
+	unionConnectedCopper(layers, d)
+
 	// 3. Coordinate transform
 	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, cfg, outline, d)
 	if transform != nil {
@@ -281,6 +287,27 @@ func fillOutlinePolygon(poly geometry.Polygon) geometry.MultiPolygon {
 	}
 	exterior := poly[0]
 	return geometry.MultiPolygon{{exterior}}
+}
+
+// unionConnectedCopper merges overlapping or touching polygons on each layer into
+// connected components. Gerber emits copper pours and tracks as separate polygons;
+// unioning them ensures the mesher sees a single conductor instead of isolated
+// fragments.
+func unionConnectedCopper(layers []*problem.Layer, d *DiagCollector) {
+	for _, layer := range layers {
+		if len(layer.Shape) <= 1 {
+			continue
+		}
+		unioned, err := geometry.Union(layer.Shape, nil)
+		if err != nil || len(unioned) == 0 {
+			d.Warn(fmt.Sprintf("Layer '%s': copper union failed, keeping original", layer.Name))
+			continue
+		}
+		if len(unioned) != len(layer.Shape) {
+			d.Info(fmt.Sprintf("Layer '%s': unioned %d polygons into %d", layer.Name, len(layer.Shape), len(unioned)))
+		}
+		layer.Shape = unioned
+	}
 }
 
 func layerArea(mp geometry.MultiPolygon) float64 {
