@@ -48,8 +48,9 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 	}
 
 	// Simplify boundary to match Python's pre-processing and to avoid runaway
-	// subdivision on Gerber arc-approximated edges.
-	simplTol := math.Max(0.005, maxSize*0.02)
+	// subdivision on Gerber arc-approximated edges. Keep the tolerance small so
+	// the high-resolution circles/round caps from the geometry bridge survive.
+	simplTol := math.Max(0.002, maxSize*0.005)
 	poly = poly.Simplify(simplTol)
 	if len(poly) == 0 || len(poly[0]) < 3 {
 		return NewMesh(), nil
@@ -61,6 +62,7 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 	if pts := m.generatePoints(poly, seedPoints); len(pts) >= 3 {
 		tris := delaunayTriangulate(pts)
 		tris = filterTrianglesInsidePolygon(pts, tris, poly)
+		tris = improveMesh(pts, tris, poly)
 		if len(tris) > 0 {
 			mesh := FromTriangleSoup(pts, tris)
 			if len(mesh.Vertices) > 0 {
@@ -388,6 +390,118 @@ func filterTrianglesInsidePolygon(pts []Point, tris [][3]int, poly geometry.Poly
 		}
 	}
 	return filtered
+}
+
+// improveMesh performs edge-flips on interior edges to maximize the minimum
+// angle. This cleans up the slivers produced by unconstrained Delaunay near
+// narrow polygon features without moving vertices or changing the boundary.
+func improveMesh(pts []Point, tris [][3]int, poly geometry.Polygon) [][3]int {
+	const maxIter = 5
+	for iter := 0; iter < maxIter; iter++ {
+		edgeMap := make(map[[2]int][]int)
+		for ti, tri := range tris {
+			for k := 0; k < 3; k++ {
+				a, b := tri[k], tri[(k+1)%3]
+				if a > b {
+					a, b = b, a
+				}
+				edgeMap[[2]int{a, b}] = append(edgeMap[[2]int{a, b}], ti)
+			}
+		}
+
+		flipped := false
+		for e, tis := range edgeMap {
+			if len(tis) != 2 {
+				continue
+			}
+			a, b := e[0], e[1]
+			c := oppositeVertex(tris[tis[0]], a, b)
+			d := oppositeVertex(tris[tis[1]], a, b)
+			if c < 0 || d < 0 || c == d {
+				continue
+			}
+
+			// The quadrilateral must be convex for a flip to be valid.
+			// c and d are on opposite sides of ab (true because the two triangles
+			// lie on opposite sides). We also need a and b on opposite sides of cd.
+			crossCD := cross2(pts[c], pts[d], pts[a]) * cross2(pts[c], pts[d], pts[b])
+			if crossCD >= 0 {
+				continue
+			}
+
+			curMin := math.Min(triMinAngle(pts, tris[tis[0]]), triMinAngle(pts, tris[tis[1]]))
+
+			n1 := [3]int{c, a, d}
+			n2 := [3]int{c, d, b}
+			if signedArea2(pts[c], pts[a], pts[d]) <= 1e-12 || signedArea2(pts[c], pts[d], pts[b]) <= 1e-12 {
+				continue
+			}
+
+			newMin := math.Min(triMinAngle(pts, n1), triMinAngle(pts, n2))
+			if newMin <= curMin+1e-6 {
+				continue
+			}
+
+			cen1 := centroid(pts[c], pts[a], pts[d])
+			cen2 := centroid(pts[c], pts[d], pts[b])
+			if !pointInPolygon(cen1, poly) || !pointInPolygon(cen2, poly) {
+				continue
+			}
+
+			tris[tis[0]] = n1
+			tris[tis[1]] = n2
+			flipped = true
+		}
+		if !flipped {
+			break
+		}
+	}
+	return tris
+}
+
+func oppositeVertex(tri [3]int, a, b int) int {
+	for _, v := range tri {
+		if v != a && v != b {
+			return v
+		}
+	}
+	return -1
+}
+
+func cross2(a, b, c Point) float64 {
+	return (b.X-a.X)*(c.Y-a.Y) - (b.Y-a.Y)*(c.X-a.X)
+}
+
+func signedArea2(a, b, c Point) float64 {
+	return cross2(a, b, c)
+}
+
+func centroid(a, b, c Point) Point {
+	return Point{X: (a.X + b.X + c.X) / 3, Y: (a.Y + b.Y + c.Y) / 3}
+}
+
+func triMinAngle(pts []Point, tri [3]int) float64 {
+	p0, p1, p2 := pts[tri[0]], pts[tri[1]], pts[tri[2]]
+	a := math.Hypot(p1.X-p0.X, p1.Y-p0.Y)
+	b := math.Hypot(p2.X-p1.X, p2.Y-p1.Y)
+	c := math.Hypot(p0.X-p2.X, p0.Y-p2.Y)
+	if a < 1e-12 || b < 1e-12 || c < 1e-12 {
+		return 0
+	}
+	ang0 := math.Acos(clamp((a*a+c*c-b*b)/(2*a*c), -1, 1))
+	ang1 := math.Acos(clamp((a*a+b*b-c*c)/(2*a*b), -1, 1))
+	ang2 := math.Pi - ang0 - ang1
+	return math.Min(ang0, math.Min(ang1, ang2))
+}
+
+func clamp(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func pointInPolygon(p Point, poly geometry.Polygon) bool {

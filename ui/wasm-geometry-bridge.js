@@ -16,6 +16,7 @@
 
 // Dependencies are loaded by the host as modules and exposed as globals.
 const CLIPPER_PRECISION = 6;
+const CLIPPER_ARC_TOLERANCE = 0.005; // mm; smaller = smoother round caps/arcs
 
 let clipperModule = null;
 
@@ -243,7 +244,9 @@ function interpolateArc(start, end, center, radius) {
 	let sweep = endAngle - startAngle;
 	while (sweep <= -Math.PI) sweep += 2 * Math.PI;
 	while (sweep > Math.PI) sweep -= 2 * Math.PI;
-	const steps = Math.max(8, Math.ceil(Math.abs(sweep) / (Math.PI / 16)));
+	// Finer angular step (~5.6 deg) so round caps and arcs look smooth after offset.
+	const maxSteps = 128;
+	const steps = Math.min(maxSteps, Math.max(8, Math.ceil(Math.abs(sweep) / (Math.PI / 32))));
 	for (let i = 0; i <= steps; i++) {
 		const t = i / steps;
 		const angle = startAngle + sweep * t;
@@ -312,7 +315,9 @@ function shapeToPolygons(shape) {
 	if (shape.type === 'circle') {
 		const { cx, cy, r } = shape;
 		const ring = [];
-		const steps = 32;
+		// ~0.05 mm chord tolerance, capped to avoid exploding large outlines.
+		const maxSteps = 128;
+		const steps = Math.min(maxSteps, Math.max(32, Math.ceil((2 * Math.PI * r) / 0.05)));
 		for (let i = 0; i < steps; i++) {
 			const angle = (i / steps) * 2 * Math.PI;
 			ring.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
@@ -578,7 +583,7 @@ function clipperOffset(polygons, delta) {
 			module.EndType.Polygon,
 			2,
 			CLIPPER_PRECISION,
-			0.25,
+			CLIPPER_ARC_TOLERANCE,
 		);
 		// Offset holes in the opposite direction so they shrink/grow consistently
 		// with the polygon boundary.
@@ -595,7 +600,7 @@ function clipperOffset(polygons, delta) {
 				module.EndType.Polygon,
 				2,
 				CLIPPER_PRECISION,
-				0.25,
+				CLIPPER_ARC_TOLERANCE,
 			);
 			if (expandedHoles.size() > 0) {
 				const diff = module.DifferenceD(
@@ -633,7 +638,7 @@ function clipperOffsetOpen(polylines, delta) {
 		clipperModule.EndType.Round,
 		2,
 		CLIPPER_PRECISION,
-		0.25,
+		CLIPPER_ARC_TOLERANCE,
 	);
 	return fromClipperPaths(result);
 }
