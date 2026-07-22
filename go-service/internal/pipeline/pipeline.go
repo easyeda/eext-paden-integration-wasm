@@ -193,11 +193,14 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	}
 
 	if ipcNetlist != nil {
-		ensureNetLabels(layers)
 		sx, sy, ox, oy := alignIPC356AToGerber(ipcNetlist, outline)
 		d.Info(fmt.Sprintf("IPC-D-356A alignment: scale=(%.4f,%.4f), offset=(%.4f,%.4f)", sx, sy, ox, oy))
 		applyIPC356AOffset(ipcNetlist, ox, oy)
-		inferPolygonNetsFromIPC356A(layers, ipcNetlist, d)
+		// Punch holes for pads/vias so they are not absorbed into a large copper
+		// pour during union; this keeps each net's copper separate for labelling.
+		punchIPC356APadHoles(layers, ipcNetlist, d)
+		ensureNetLabels(layers)
+		inferPolygonNetsFromIPC356A(layers, ipcNetlist, cfg.GndNet, d)
 		// Fall back to pad/track inference only for polygons the netlist did not label.
 		inferPolygonNets(layers, cfg.Pads, transform, d, true)
 		inferPolygonNetsFromTracks(layers, cfg.Tracks, layerIDToName, transform)
@@ -239,6 +242,16 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 		}
 		layer.Shape = merged
 		layer.NetLabels = labels
+	}
+
+	// Remove sub-resolution slivers produced by net-based separation. Keep the
+	// threshold small enough that real small pads/traces (>= ~0.01 mm^2) survive.
+	for _, layer := range layers {
+		before := len(layer.Shape)
+		layer.Shape = removeTinyPolygons(layer.Shape, 1e-3)
+		if removed := before - len(layer.Shape); removed > 0 {
+			d.Info(fmt.Sprintf("Layer '%s': removed %d tiny polygon(s)", layer.Name, removed))
+		}
 	}
 
 	// 5. Via specs

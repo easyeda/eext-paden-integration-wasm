@@ -91,3 +91,28 @@ func layerNameIn(names []string, target string) bool {
 	}
 	return false
 }
+
+// removeTinyPolygons drops polygons whose area is below the threshold. Tiny
+// slivers produced by boolean operations do not contribute to the physics and
+// can create z-fighting / broken faces in the WebGL preview.
+func removeTinyPolygons(mp geometry.MultiPolygon, minArea float64) geometry.MultiPolygon {
+	if len(mp) == 0 {
+		return mp
+	}
+	out := make(geometry.MultiPolygon, 0, len(mp))
+	for _, poly := range mp {
+		area := 0.0
+		for i, ring := range poly {
+			a := math.Abs(ring.Area())
+			if i == 0 {
+				area += a
+			} else {
+				area -= a
+			}
+		}
+		if area >= minArea {
+			out = append(out, poly)
+		}
+	}
+	return out
+}
