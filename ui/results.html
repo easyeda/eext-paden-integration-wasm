@@ -500,7 +500,7 @@ function initGL() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-  gl.clearColor(0.051, 0.067, 0.09, 1.0);
+  gl.clearColor(0.08, 0.10, 0.12, 1.0);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   return true;
@@ -1454,7 +1454,7 @@ function renderSingleLayer(li, mvp) {
     if (currentViewMode === 'copper_coverage') {
       gl.uniform4f(lineProg.u.u_color, 0.15, 0.18, 0.22, 1.0); // Cold gray
     } else {
-      gl.uniform4f(lineProg.u.u_color, 0.04, 0.10, 0.06, 1.0); // Default green
+      gl.uniform4f(lineProg.u.u_color, 0.10, 0.16, 0.12, 1.0); // Subtle green context
     }
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.boardQuadVBO);
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
@@ -1542,7 +1542,7 @@ function renderSingleLayer(li, mvp) {
   if (gd.discVBO && gd.discIBO) {
     gl.useProgram(lineProg.prog);
     gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
-    gl.uniform4f(lineProg.u.u_color, 0.03, 0.16, 0.05, 1.0);
+    gl.uniform4f(lineProg.u.u_color, 0.08, 0.18, 0.10, 1.0);
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.discVBO);
     gl.enableVertexAttribArray(lineProg.a.a_pos);
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
