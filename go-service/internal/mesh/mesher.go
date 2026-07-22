@@ -158,7 +158,7 @@ func (m *Mesher) generatePoints(poly geometry.Polygon, seedPoints []Point) []Poi
 
 func (m *Mesher) subdivideEdge(a, b Point, maxSize float64, add func(Point)) {
 	length := math.Hypot(b.X-a.X, b.Y-a.Y)
-	if length <= maxSize*1.5 || length < 1e-9 {
+	if length <= maxSize || length < 1e-9 {
 		return
 	}
 	mid := Point{X: (a.X + b.X) / 2, Y: (a.Y + b.Y) / 2}
