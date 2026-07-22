@@ -200,6 +200,13 @@ func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[s
 
 func toPointSlice(pts interface{}, transform *[4]float64) [][]float64 {
 	switch v := pts.(type) {
+	case geometry.Ring:
+		out := make([][]float64, len(v))
+		for i, p := range v {
+			x, y := toEasyEDA(p.X, p.Y, transform)
+			out[i] = []float64{x, y}
+		}
+		return out
 	case []geometry.Point:
 		out := make([][]float64, len(v))
 		for i, p := range v {

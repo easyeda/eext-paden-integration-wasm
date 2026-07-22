@@ -908,8 +908,11 @@ func stampCurrentSources(net *problem.Network, ni *nodeIndexer, rhs []float64) {
 		if !okF || !okT {
 			continue
 		}
-		rhs[iF] += cs.Current
-		rhs[iT] -= cs.Current
+		// Current flows from F to T (load pad -> ground).  In the KCL
+		// "current entering node = rhs" convention this extracts current
+		// from F and injects it into T.
+		rhs[iF] -= cs.Current
+		rhs[iT] += cs.Current
 	}
 }
 
