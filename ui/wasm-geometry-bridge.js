@@ -244,6 +244,40 @@ function pathSegmentsToPoints(segments) {
 	return points;
 }
 
+// tracespace may group several disjoint strokes (separated by D02 moves) into a
+// single imagePath.  Split the segment list into connected polylines so each
+// stroke is offset independently.
+function pathSegmentsToConnectedPolylines(segments) {
+	if (!segments || segments.length === 0)
+		return [];
+	const polylines = [];
+	let current = [{ x: segments[0].start[0], y: segments[0].start[1] }];
+	function pushSeg(seg) {
+		if (seg.type === 'line') {
+			current.push({ x: seg.end[0], y: seg.end[1] });
+		}
+		else if (seg.type === 'arc') {
+			const arcPoints = interpolateArc(seg.start, seg.end, seg.center, seg.radius);
+			for (const p of arcPoints.slice(1))
+				current.push(p);
+		}
+	}
+	pushSeg(segments[0]);
+	for (let i = 1; i < segments.length; i++) {
+		const prev = segments[i - 1];
+		const seg = segments[i];
+		const dx = seg.start[0] - prev.end[0];
+		const dy = seg.start[1] - prev.end[1];
+		if (Math.hypot(dx, dy) > 1e-9) {
+			polylines.push(current);
+			current = [{ x: seg.start[0], y: seg.start[1] }];
+		}
+		pushSeg(seg);
+	}
+	polylines.push(current);
+	return polylines;
+}
+
 function shapeToPolygons(shape) {
 	const polygons = [];
 	if (shape.type === 'circle') {
@@ -298,16 +332,20 @@ function imageGraphicToPolygons(graphic) {
 			polys = [[pts]];
 	}
 	else if (graphic.type === 'imagePath') {
-		// Stroke with width: convert to polygon by offsetting the path.
-		const pts = pathSegmentsToPoints(graphic.segments);
-		if (pts.length < 2)
-			return [];
-		const linePoly = [[pts]];
-		try {
-			polys = clipperOffset(linePoly, graphic.width / 2);
-		}
-		catch {
-			return [];
+		// Stroke with width: convert to polygon by offsetting each connected
+		// sub-path independently.  tracespace groups disjoint D01 strokes under
+		// one imagePath, so concatenating them creates self-intersecting garbage.
+		const polylines = pathSegmentsToConnectedPolylines(graphic.segments);
+		for (const pts of polylines) {
+			if (pts.length < 2)
+				continue;
+			const linePoly = [[pts]];
+			try {
+				polys.push(...clipperOffset(linePoly, graphic.width / 2));
+			}
+			catch {
+				// ignore single failed stroke
+			}
 		}
 	}
 
@@ -481,11 +519,25 @@ function clipperIntersect(a, b) {
 function clipperOffset(polygons, delta) {
 	ensureModule();
 	const paths = toClipperPaths(polygons);
+	// Tracks are open polylines and need rounded end-caps; closed rings (pads,
+	// polygons) should be treated as polygons so holes/islands are preserved.
+	let isClosed = true;
+	for (let i = 0; i < paths.size() && isClosed; i++) {
+		const path = paths.get(i);
+		const n = path.size();
+		if (n === 0)
+			continue;
+		const first = path.get(0);
+		const last = path.get(n - 1);
+		if (Math.hypot(first.x - last.x, first.y - last.y) > 1e-9)
+			isClosed = false;
+	}
+	const endType = isClosed ? clipperModule.EndType.Polygon : clipperModule.EndType.Round;
 	const result = clipperModule.InflatePathsD(
 		paths,
 		delta,
 		clipperModule.JoinType.Miter,
-		clipperModule.EndType.Polygon,
+		endType,
 		2,
 		CLIPPER_PRECISION,
 		0.25,

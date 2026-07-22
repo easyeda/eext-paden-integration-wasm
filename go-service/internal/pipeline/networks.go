@@ -501,7 +501,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 			}
 			if len(fConns) > 0 {
 				csT := nConns[0]
-				if len(tConns) > 0 {
+				if len(tConns) > 0 && connKey(tConns[0]) != connKey(nConns[0]) {
 					csT = tConns[0]
 				}
 				elements = append(elements, &problem.CurrentSource{F: fConns[0].NodeID, T: csT.NodeID, Current: load.Current})
