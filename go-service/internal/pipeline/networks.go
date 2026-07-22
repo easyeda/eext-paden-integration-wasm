@@ -98,7 +98,9 @@ func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stac
 			}
 
 			connA := problem.NewConnection(a.layer, nearestA)
+			connA.Kind = "via"
 			connB := problem.NewConnection(b.layer, nearestB)
+			connB.Kind = "via"
 			net, err := problem.NewNetwork(
 				[]*problem.Connection{connA, connB},
 				[]problem.LumpedElement{
@@ -151,7 +153,9 @@ func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerID
 			continue
 		}
 		conn1 := problem.NewConnection(layer, nearest1)
+		conn1.Kind = "track"
 		conn2 := problem.NewConnection(layer, nearest2)
+		conn2.Kind = "track"
 		net, err := problem.NewNetwork(
 			[]*problem.Connection{conn1, conn2},
 			[]problem.LumpedElement{
@@ -289,24 +293,28 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 		return geometry.Point{X: x, Y: y}
 	}
 
-	connectPad := func(pad Pad) []*problem.Connection {
+	connectPad := func(pad Pad, kind string) []*problem.Connection {
 		pt := transformPt(pad.X, pad.Y)
-		d.Info(fmt.Sprintf("connectPad: pad layer='%s' isTHT=%v pt=%.3f,%.3f", pad.Layer, pad.IsTHT, pt.X, pt.Y))
+		d.Info(fmt.Sprintf("connectPad: pad layer='%s' isTHT=%v kind='%s' pt=%.3f,%.3f", pad.Layer, pad.IsTHT, kind, pt.X, pt.Y))
 
 		tryConnect := func(l *problem.Layer, p geometry.Point) *problem.Connection {
 			// Prefer exact containment; if just outside, snap to nearest boundary point.
+			var c *problem.Connection
 			if pointOnLayer(p, l, pad.Net) {
-				return problem.NewConnection(l, p)
+				c = problem.NewConnection(l, p)
+			} else {
+				nearest, ok := findNearestPointOnLayer(p, l, pad.Net)
+				if !ok {
+					return nil
+				}
+				dist := math.Hypot(nearest.X-p.X, nearest.Y-p.Y)
+				if dist > 0.5 {
+					return nil
+				}
+				c = problem.NewConnection(l, nearest)
 			}
-			nearest, ok := findNearestPointOnLayer(p, l, pad.Net)
-			if !ok {
-				return nil
-			}
-			dist := math.Hypot(nearest.X-p.X, nearest.Y-p.Y)
-			if dist <= 0.5 {
-				return problem.NewConnection(l, nearest)
-			}
-			return nil
+			c.Kind = kind
+			return c
 		}
 
 		if pad.IsTHT {
@@ -334,7 +342,9 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 					}
 					dist := math.Hypot(nearest.X-pt.X, nearest.Y-pt.Y)
 					if dist <= snapTol {
-						conns = append(conns, problem.NewConnection(layer, nearest))
+						c := problem.NewConnection(layer, nearest)
+						c.Kind = kind
+						conns = append(conns, c)
 					}
 				}
 			}
@@ -358,7 +368,9 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 				}
 				if bestLayer != nil {
 					d.Info(fmt.Sprintf("connectPad THT fallback: nearest layer '%s' dist=%.3f", bestLayer.Name, bestDist))
-					conns = append(conns, problem.NewConnection(bestLayer, bestPt))
+					c := problem.NewConnection(bestLayer, bestPt)
+					c.Kind = kind
+					conns = append(conns, c)
 				}
 			}
 			d.Info(fmt.Sprintf("connectPad THT: %d connections", len(conns)))
@@ -384,7 +396,9 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 				}
 			}
 			if bestLayer != nil {
-				return []*problem.Connection{problem.NewConnection(bestLayer, bestPt)}
+				c := problem.NewConnection(bestLayer, bestPt)
+				c.Kind = kind
+				return []*problem.Connection{c}
 			}
 			return nil
 		}
@@ -400,7 +414,9 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 		}
 		dist := math.Hypot(nearest.X-pt.X, nearest.Y-pt.Y)
 		d.Info(fmt.Sprintf("connectPad SMD: layer '%s' not contained, snapping nearest dist=%.3f", pad.Layer, dist))
-		return []*problem.Connection{problem.NewConnection(layer, nearest)}
+		c := problem.NewConnection(layer, nearest)
+		c.Kind = kind
+		return []*problem.Connection{c}
 	}
 
 	connKey := func(c *problem.Connection) string {
@@ -432,8 +448,14 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 
 	virtualGround := func() *problem.Connection {
 		d.Info("Using virtual ground reference (no GND pads found)")
-		return problem.NewConnection(nil, geometry.Point{})
+		c := problem.NewConnection(nil, geometry.Point{})
+		c.Kind = "gnd"
+		return c
 	}
+
+	connectSourcePad := func(pad Pad) []*problem.Connection { return connectPad(pad, "source") }
+	connectGndPad := func(pad Pad) []*problem.Connection { return connectPad(pad, "gnd") }
+	connectLoadPad := func(pad Pad) []*problem.Connection { return connectPad(pad, "load") }
 
 	// Match VS + CS by net
 	matchedLoads := make(map[string]*Load)
@@ -445,7 +467,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 	for i := range cfg.Sources {
 		src := &cfg.Sources[i]
 		d.Info(fmt.Sprintf("Source '%s': raw pads=%d gnd_pads=%d voltage=%.3f", src.Net, len(src.Pads), len(src.GndPads), src.Voltage))
-		pConns := connectSourcePads(src.Pads, connectPad)
+		pConns := connectSourcePads(src.Pads, connectSourcePad)
 		var gndPads []Pad
 		if len(src.GndPads) > 0 {
 			gndPads = src.GndPads
@@ -457,7 +479,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 			}
 			gndPads = limitGndPads(gndPads, src.Pads)
 		}
-		nConns := connectSourcePads(gndPads, connectPad)
+		nConns := connectSourcePads(gndPads, connectGndPad)
 		if len(nConns) == 0 {
 			nConns = []*problem.Connection{virtualGround()}
 		}
@@ -497,10 +519,10 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 		}
 
 		if load, ok := matchedLoads[src.Net]; ok {
-			fConns := connectSourcePads(load.Pads, connectPad)
+			fConns := connectSourcePads(load.Pads, connectLoadPad)
 			var tConns []*problem.Connection
 			if len(load.GndPads) > 0 {
-				tConns = connectSourcePads(load.GndPads, connectPad)
+				tConns = connectSourcePads(load.GndPads, connectGndPad)
 			} else {
 				var gndPads []Pad
 				for _, p := range cfg.Pads {
@@ -509,7 +531,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 					}
 				}
 				gndPads = limitGndPads(gndPads, load.Pads)
-				tConns = connectSourcePads(gndPads, connectPad)
+				tConns = connectSourcePads(gndPads, connectGndPad)
 			}
 			if len(fConns) > 0 {
 				csT := nConns[0]
@@ -567,10 +589,10 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 		if matchedNets[load.Net] {
 			continue
 		}
-		fConns := connectSourcePads(load.Pads, connectPad)
+		fConns := connectSourcePads(load.Pads, connectLoadPad)
 		var tConns []*problem.Connection
 		if len(load.GndPads) > 0 {
-			tConns = connectSourcePads(load.GndPads, connectPad)
+			tConns = connectSourcePads(load.GndPads, connectGndPad)
 		} else {
 			var gndPads []Pad
 			for _, p := range cfg.Pads {
@@ -579,7 +601,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 				}
 			}
 			gndPads = limitGndPads(gndPads, load.Pads)
-			tConns = connectSourcePads(gndPads, connectPad)
+			tConns = connectSourcePads(gndPads, connectGndPad)
 		}
 		if len(tConns) == 0 {
 			tConns = []*problem.Connection{virtualGround()}

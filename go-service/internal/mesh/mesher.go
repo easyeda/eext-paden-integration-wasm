@@ -32,11 +32,11 @@ func NewMesher(cfg Config) *Mesher {
 	return &Mesher{Config: cfg}
 }
 
-// PolygonToMesh triangulates a polygon with holes using a robust earcut-based
-// approach. It starts with earcut on the polygon rings, inserts seed points,
-// then subdivides large triangles by centroid until the maximum edge length is
-// below the configured threshold. This avoids the fragile pure-Go Delaunay
-// path which produced corrupt triangles near the boundary.
+// PolygonToMesh triangulates a polygon with holes using a boundary-conforming
+// earcut mesh followed by edge-split refinement and edge-flip quality
+// improvement. Unlike the previous Delaunay+centroid-filter path, this never
+// creates triangles that bridge concave boundaries or holes, so the rendered
+// copper fill exactly matches the polygon outline.
 func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh, error) {
 	if len(poly) == 0 || len(poly[0]) < 3 {
 		return NewMesh(), nil
@@ -47,32 +47,111 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 		maxSize = 1.2
 	}
 
-	// Simplify boundary to match Python's pre-processing and to avoid runaway
-	// subdivision on Gerber arc-approximated edges. Keep the tolerance small so
-	// the high-resolution circles/round caps from the geometry bridge survive.
-	simplTol := math.Max(0.002, maxSize*0.005)
+	// Very light simplification: remove only nearly duplicate points from the
+	// high-resolution Gerber arc approximation while preserving shape.
+	simplTol := math.Max(0.0005, maxSize*0.001)
 	poly = poly.Simplify(simplTol)
 	if len(poly) == 0 || len(poly[0]) < 3 {
 		return NewMesh(), nil
 	}
 
-	// Primary path: Python-style boundary densification + interior grid +
-	// unconstrained Delaunay triangulation, filtered by centroid containment.
-	// This produces quality meshes comparable to Python's _adaptive_triangulate.
-	if pts := m.generatePoints(poly, seedPoints); len(pts) >= 3 {
-		tris := delaunayTriangulate(pts)
-		tris = filterTrianglesInsidePolygon(pts, tris, poly)
-		tris = improveMesh(pts, tris, poly)
-		if len(tris) > 0 {
-			mesh := FromTriangleSoup(pts, tris)
-			if len(mesh.Vertices) > 0 {
-				return mesh, nil
+	// Primary path: boundary-conforming earcut.
+	tri, err := Earcut(poly)
+	if err != nil {
+		return nil, err
+	}
+	pts := append([]Point(nil), tri.Vertices...)
+	tris := append([][3]int(nil), tri.Triangles...)
+	tris = filterValidTriangles(pts, tris, poly)
+	if len(tris) == 0 {
+		return NewMesh(), nil
+	}
+
+	// Insert seed points (connection terminals) so boundary conditions are
+	// applied at exact locations.
+	for _, sp := range seedPoints {
+		if !pointInPolygon(sp, poly) {
+			continue
+		}
+		inserted := false
+		for ti := range tris {
+			t := tris[ti]
+			a, b, c := pts[t[0]], pts[t[1]], pts[t[2]]
+			if pointInTriangle(sp, a, b, c) {
+				insertPointInSoup(&pts, &tris, ti, sp)
+				inserted = true
+				break
+			}
+		}
+		if !inserted {
+			fmt.Printf("[PADEN mesh] seed point (%.4f,%.4f) not inserted\n", sp.X, sp.Y)
+		}
+	}
+
+	// Refine long edges by splitting them. This preserves boundaries because
+	// edges are only subdivided, never crossed.
+	const maxVerts = 12000
+	for iter := 0; iter < 30 && len(pts) < maxVerts; iter++ {
+		edgeMap := buildEdgeMap(tris)
+		var candidates [][2]int
+		for e, tis := range edgeMap {
+			if len(tis) == 0 {
+				continue
+			}
+			if edgeLen(pts, e[0], e[1]) > maxSize {
+				candidates = append(candidates, e)
+			}
+		}
+		if len(candidates) == 0 {
+			break
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			return edgeLen(pts, candidates[i][0], candidates[i][1]) > edgeLen(pts, candidates[j][0], candidates[j][1])
+		})
+		splitCount := 0
+		for _, e := range candidates {
+			if len(pts) >= maxVerts {
+				break
+			}
+			if edgeLen(pts, e[0], e[1]) <= maxSize {
+				continue
+			}
+			splitEdgeInSoup(&pts, &tris, edgeMap, e[0], e[1])
+			splitCount++
+		}
+		if splitCount == 0 {
+			break
+		}
+	}
+
+	// Improve element shape by flipping interior edges.
+	if m.Config.MinimumAngle > 0 && len(pts) < maxVerts {
+		minAngleRad := math.Pi * m.Config.MinimumAngle / 180.0
+		for iter := 0; iter < 10; iter++ {
+			edgeMap := buildEdgeMap(tris)
+			flipped := false
+			for e, tis := range edgeMap {
+				if len(tis) != 2 {
+					continue
+				}
+				if triMinAngle(pts, tris[tis[0]]) >= minAngleRad && triMinAngle(pts, tris[tis[1]]) >= minAngleRad {
+					continue
+				}
+				if tryFlipEdge(pts, &tris, edgeMap, e[0], e[1]) {
+					flipped = true
+				}
+			}
+			if !flipped {
+				break
 			}
 		}
 	}
 
-	// Fallback to earcut for polygons where Delaunay fails.
-	return EarcutFallback(poly)
+	tris = filterValidTriangles(pts, tris, poly)
+	if len(tris) == 0 {
+		return NewMesh(), nil
+	}
+	return FromTriangleSoup(pts, tris), nil
 }
 
 // generatePoints creates boundary + adaptive interior points.
@@ -554,6 +633,142 @@ func pointInTriangle(p, a, b, c Point) bool {
 func round(v float64, decimals int) float64 {
 	pow := math.Pow(10, float64(decimals))
 	return math.Round(v*pow) / pow
+}
+
+// buildEdgeMap maps each undirected edge to the indices of triangles that use it.
+func buildEdgeMap(tris [][3]int) map[[2]int][]int {
+	m := make(map[[2]int][]int, len(tris)*3)
+	for ti, t := range tris {
+		for k := 0; k < 3; k++ {
+			a, b := t[k], t[(k+1)%3]
+			if a > b {
+				a, b = b, a
+			}
+			m[[2]int{a, b}] = append(m[[2]int{a, b}], ti)
+		}
+	}
+	return m
+}
+
+func edgeLen(pts []Point, a, b int) float64 {
+	return math.Hypot(pts[b].X-pts[a].X, pts[b].Y-pts[a].Y)
+}
+
+// triangleEdgeInfo returns the third vertex of tri opposite the undirected
+// edge {a,b}, and whether the edge appears reversed (as b->a) in tri.
+func triangleEdgeInfo(tri [3]int, a, b int) (third int, reversed bool) {
+	for i, v := range tri {
+		if v == a {
+			next := tri[(i+1)%3]
+			if next == b {
+				return tri[(i+2)%3], false
+			}
+			prev := tri[(i+2)%3]
+			if prev == b {
+				return next, true
+			}
+		}
+	}
+	return -1, false
+}
+
+// splitEdgeInSoup subdivides the undirected edge {a,b} at its midpoint and
+// updates every triangle that uses that edge. The edgeMap is updated in place.
+func splitEdgeInSoup(pts *[]Point, tris *[][3]int, edgeMap map[[2]int][]int, a, b int) {
+	key := [2]int{a, b}
+	if a > b {
+		key = [2]int{b, a}
+	}
+	tis := edgeMap[key]
+	if len(tis) == 0 {
+		return
+	}
+	mid := Point{
+		X: ((*pts)[a].X + (*pts)[b].X) / 2,
+		Y: ((*pts)[a].Y + (*pts)[b].Y) / 2,
+	}
+	vi := len(*pts)
+	*pts = append(*pts, mid)
+
+	for _, ti := range tis {
+		tri := (*tris)[ti]
+		third, reversed := triangleEdgeInfo(tri, a, b)
+		if third < 0 {
+			continue
+		}
+		if !reversed {
+			// tri = (a,b,third) -> (a,mid,third) + (mid,b,third)
+			(*tris)[ti] = [3]int{a, vi, third}
+			*tris = append(*tris, [3]int{vi, b, third})
+		} else {
+			// tri = (b,a,third) -> (b,mid,third) + (mid,a,third)
+			(*tris)[ti] = [3]int{b, vi, third}
+			*tris = append(*tris, [3]int{vi, a, third})
+		}
+	}
+}
+
+// insertPointInSoup replaces triangle triIdx that contains p with three
+// triangles fanning out from p.
+func insertPointInSoup(pts *[]Point, tris *[][3]int, triIdx int, p Point) {
+	v0, v1, v2 := (*tris)[triIdx][0], (*tris)[triIdx][1], (*tris)[triIdx][2]
+	vi := len(*pts)
+	*pts = append(*pts, p)
+	(*tris)[triIdx] = [3]int{v0, v1, vi}
+	*tris = append(*tris, [3]int{v1, v2, vi})
+	*tris = append(*tris, [3]int{v2, v0, vi})
+}
+
+// tryFlipEdge flips the interior edge {a,b} if it improves the minimum angle
+// of the adjacent quadrilateral. It returns true if a flip occurred.
+func tryFlipEdge(pts []Point, tris *[][3]int, edgeMap map[[2]int][]int, a, b int) bool {
+	key := [2]int{a, b}
+	if a > b {
+		key = [2]int{b, a}
+	}
+	tis := edgeMap[key]
+	if len(tis) != 2 {
+		return false
+	}
+	t1, t2 := (*tris)[tis[0]], (*tris)[tis[1]]
+	c, rev1 := triangleEdgeInfo(t1, a, b)
+	d, rev2 := triangleEdgeInfo(t2, a, b)
+	if c < 0 || d < 0 || rev1 == rev2 {
+		return false
+	}
+
+	// The two triangles are (a,b,c) and (b,a,d) in some order.
+	// Flipping the diagonal from (a,b) to (c,d) requires a convex quadrilateral.
+	if !quadConvex(pts, a, b, c, d) {
+		return false
+	}
+
+	curMin := math.Min(triMinAngle(pts, t1), triMinAngle(pts, t2))
+	var n1, n2 [3]int
+	if !rev1 {
+		n1 = [3]int{c, a, d}
+		n2 = [3]int{c, d, b}
+	} else {
+		n1 = [3]int{c, b, d}
+		n2 = [3]int{c, d, a}
+	}
+	newMin := math.Min(triMinAngle(pts, n1), triMinAngle(pts, n2))
+	if newMin <= curMin+1e-6 {
+		return false
+	}
+
+	(*tris)[tis[0]] = n1
+	(*tris)[tis[1]] = n2
+	return true
+}
+
+// quadConvex reports whether the quadrilateral formed by the two triangles
+// sharing edge {a,b} is convex (the two opposite vertices lie on opposite
+// sides of the line through c and d).
+func quadConvex(pts []Point, a, b, c, d int) bool {
+	crossA := cross2(pts[c], pts[d], pts[a])
+	crossB := cross2(pts[c], pts[d], pts[b])
+	return crossA*crossB < 0
 }
 
 // filterValidTriangles drops degenerate or hole-spanning triangles.

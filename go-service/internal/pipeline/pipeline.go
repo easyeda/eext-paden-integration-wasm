@@ -137,6 +137,31 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 		d.Info("No board outline found")
 	}
 
+	// 2a. Subtract Gerber drill-file holes from every copper layer so the FEM
+	// mesh and copper preview accurately represent the drilled board.
+	drillHoles, err := geometry.ParseDrillHoles(gerberZip)
+	if err != nil {
+		d.Warn(fmt.Sprintf("Drill hole parsing failed: %v", err))
+	}
+	if len(drillHoles) > 0 {
+		d.Info(fmt.Sprintf("Subtracting %d drill-hole polygon(s) from all copper layers", len(drillHoles)))
+		for _, layer := range layers {
+			newShape, err := geometry.Difference(layer.Shape, drillHoles)
+			if err != nil {
+				d.Warn(fmt.Sprintf("Layer '%s': drill subtraction failed (%v), keeping original", layer.Name, err))
+				continue
+			}
+			if len(newShape) == 0 {
+				d.Warn(fmt.Sprintf("Layer '%s': empty after drill subtraction, keeping original", layer.Name))
+				continue
+			}
+			layer.Shape = newShape
+			for i := range layer.Shape {
+				layer.Shape[i].EnsureOrientation()
+			}
+		}
+	}
+
 	// 3. Coordinate transform
 	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, cfg, outline, d)
 	if transform != nil {

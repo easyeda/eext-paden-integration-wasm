@@ -77,6 +77,7 @@ type ConnectionPoint struct {
 	X        float64 `json:"x"`
 	Y        float64 `json:"y"`
 	IsSource bool    `json:"is_source"`
+	Kind     string  `json:"kind"`
 }
 
 // BoundaryPolygon describes layer boundary exterior and holes as [x,y] arrays
@@ -172,7 +173,12 @@ func serializeConnectionPoints(sol *solver.Solution, transform *[4]float64) map[
 		for _, conn := range net.Connections {
 			name := conn.Layer.Name
 			x, y := toEasyEDA(conn.Point.X, conn.Point.Y, transform)
-			out[name] = append(out[name], ConnectionPoint{X: x, Y: y, IsSource: net.HasSource})
+			out[name] = append(out[name], ConnectionPoint{
+				X:        x,
+				Y:        y,
+				IsSource: net.HasSource,
+				Kind:     conn.Kind,
+			})
 		}
 	}
 	return out

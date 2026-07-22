@@ -88,7 +88,7 @@
   <button id="btn-outline" title="轮廓 (O)">轮廓</button>
   <button id="btn-vias" title="过孔 (C)">过孔</button>
   <button id="btn-flow" title="电流流向 (F)">电流</button>
-  <select id="arrow-density" title="箭头密度 (D)" style="margin:0 4px">
+  <select id="arrow-density" title="箭头密度 (D)" style="margin:0 4px;display:none">
     <option value="0.25">稀疏</option>
     <option value="0.5">较疏</option>
     <option value="1" selected>标准</option>
@@ -375,7 +375,7 @@ function _log(tag, ...args) {
 let viewCX, viewCY, viewZoom;
 let isDrag = false, lastMX = 0, lastMY = 0;
 
-let showEdges = false, showOutline = false, showVias = false;
+let showEdges = false, showOutline = true, showVias = false;
 let showCurrentFlow = false;
 let currentViewMode = 'voltage'; // 'voltage' | 'power' | 'gnd_power' | 'copper_coverage'
 
@@ -924,8 +924,8 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   // === Build buffers that DON'T depend on connected mesh data (board, outline, disc, points) ===
   const lname = layerNamesList[li];
 
-  // Connection points (vias)
-  const cps = connectionPoints[lname] || [];
+  // Connection points: the 过孔 button should only show actual vias.
+  const cps = (connectionPoints[lname] || []).filter(cp => cp.kind === 'via');
   if (cps.length > 0) {
     const ptData = new Float32Array(cps.length * 5);
     for (let i = 0; i < cps.length; i++) {
@@ -1416,8 +1416,9 @@ function renderSingleLayer(li, mvp) {
   const gd = layerGL[li];
   if (!gd || (!gd.meshVBO && !gd.copperStencilVBO)) return;
 
-  // 0) Copper pour fill
-  if (gd.copperStencilVBO && gd.copperStencilFans && gd.boardQuadVBO) {
+  // 0) Copper pour fill - only for the currently selected layer so the back-side
+  // stencil does not clutter/obscure the layer being inspected.
+  if (li === currentLayerIdx && gd.copperStencilVBO && gd.copperStencilFans && gd.boardQuadVBO) {
     gl.enable(gl.STENCIL_TEST);
     gl.clearStencil(0);
     gl.clear(gl.STENCIL_BUFFER_BIT);
@@ -1984,7 +1985,11 @@ function setupUI() {
   document.getElementById('btn-flow').addEventListener('click', () => {
     showCurrentFlow = !showCurrentFlow;
     updateToggles();
-    // 显示/隐藏箭头大小控制
+    // 显示/隐藏箭头密度与大小控制
+    const densitySelect = document.getElementById('arrow-density');
+    if (densitySelect) {
+      densitySelect.style.display = showCurrentFlow ? 'inline-block' : 'none';
+    }
     const sizeControl = document.getElementById('arrow-size-control');
     if (sizeControl) {
       sizeControl.style.display = showCurrentFlow ? 'flex' : 'none';

@@ -5,65 +5,72 @@
 <title>PDN 分析配置</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; background: #f0f0f0; color: #222; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; background: #eef2f6; color: #1f2937; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
-  .main { display: flex; flex: 1; overflow: hidden; }
+  .main { display: flex; flex: 1; overflow: hidden; gap: 10px; padding: 10px; }
 
-  .left { width: 200px; min-width: 160px; border-right: 1px solid #bbb; display: flex; flex-direction: column; background: #fff; }
-  .left-title { padding: 6px 8px; font-size: 11px; font-weight: 600; color: #555; background: #f5f5f5; border-bottom: 1px solid #ddd; }
-  .net-list { flex: 1; overflow-y: auto; }
-  .net-item { padding: 5px 10px; cursor: pointer; font-size: 12px; border-bottom: 1px solid #f0f0f0; }
-  .net-item:hover { background: #e8f0fe; }
-  .net-item.selected { background: #1a73e8; color: #fff; }
+  .left { width: 220px; min-width: 180px; border: 1px solid #d1d5db; border-radius: 8px; display: flex; flex-direction: column; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.06); overflow: hidden; }
+  .left-title { padding: 10px 12px; font-size: 12px; font-weight: 700; color: #374151; background: #f9fafb; border-bottom: 1px solid #e5e7eb; letter-spacing: 0.3px; }
+  .net-list { flex: 1; overflow-y: auto; padding: 4px; }
+  .net-item { padding: 8px 10px; cursor: pointer; font-size: 12px; border-radius: 6px; margin-bottom: 3px; transition: background 0.15s; color: #374151; }
+  .net-item:hover { background: #eff6ff; }
+  .net-item.selected { background: #1a73e8; color: #fff; box-shadow: 0 1px 2px rgba(26,115,232,0.25); }
 
-  .right { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; }
-  .rail-header { padding: 8px 12px; background: #f5f5f5; border-bottom: 1px solid #ddd; display: flex; align-items: center; gap: 12px; }
-  .rail-header label { font-size: 12px; color: #555; }
-  .rail-header input { width: 80px; padding: 3px 6px; border: 1px solid #bbb; border-radius: 3px; font-size: 12px; }
-  .table-wrap { flex: 1; overflow-y: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th { background: #f5f5f5; padding: 5px 10px; text-align: left; border-bottom: 2px solid #ddd; font-weight: 600; color: #555; position: sticky; top: 0; }
-  td { padding: 5px 10px; border-bottom: 1px solid #f0f0f0; }
-  tr.selected-row td { background: #e8f0fe; }
-  tr:hover td { background: #f5f5f5; }
-  tr.selected-row:hover td { background: #d2e3fc; }
-  .role-source { color: #c0392b; font-weight: 600; }
-  .role-load { color: #2980b9; font-weight: 600; }
-  .table-actions { padding: 6px 10px; border-top: 1px solid #ddd; display: flex; gap: 6px; background: #f9f9f9; }
-  .btn-action { padding: 4px 12px; font-size: 12px; border: 1px solid #bbb; border-radius: 3px; cursor: pointer; background: #fff; }
-  .btn-action:hover { background: #e8e8e8; }
-  .btn-action:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-remove { color: #c0392b; border-color: #e0a0a0; }
-  .btn-remove:hover:not(:disabled) { background: #fdecea; }
+  .right { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; border: 1px solid #d1d5db; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  .rail-header { padding: 12px 14px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; gap: 14px; }
+  .rail-header label { font-size: 12px; color: #4b5563; font-weight: 500; }
+  .rail-header input, .rail-header select { padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; background: #fff; outline: none; transition: border-color 0.15s, box-shadow 0.15s; }
+  .rail-header input { width: 80px; }
+  .rail-header input:focus, .rail-header select:focus { border-color: #1a73e8; box-shadow: 0 0 0 3px rgba(26,115,232,0.12); }
+  .table-wrap { flex: 1; overflow-y: auto; padding: 0 10px; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+  th { background: #f9fafb; padding: 9px 12px; text-align: left; border-bottom: 2px solid #e5e7eb; font-weight: 600; color: #4b5563; position: sticky; top: 0; z-index: 1; }
+  td { padding: 8px 12px; border-bottom: 1px solid #f3f4f6; }
+  tr { transition: background 0.12s; }
+  tr.selected-row td { background: #eff6ff; }
+  tr:hover td { background: #f9fafb; }
+  tr.selected-row:hover td { background: #dbeafe; }
+  .role-source { color: #dc2626; font-weight: 600; }
+  .role-load { color: #2563eb; font-weight: 600; }
+  .table-actions { padding: 10px 14px; border-top: 1px solid #e5e7eb; display: flex; gap: 8px; background: #f9fafb; }
+  .btn-action { padding: 6px 14px; font-size: 12px; border: 1px solid #d1d5db; border-radius: 6px; cursor: pointer; background: #fff; color: #374151; font-weight: 500; transition: all 0.15s; }
+  .btn-action:hover:not(:disabled) { background: #f3f4f6; border-color: #9ca3af; }
+  .btn-action:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-remove { color: #dc2626; border-color: #fca5a5; }
+  .btn-remove:hover:not(:disabled) { background: #fef2f2; border-color: #f87171; }
 
-  .bottom { padding: 8px 12px; border-top: 1px solid #bbb; background: #f0f0f0; display: flex; align-items: center; gap: 16px; }
-  .bottom label { font-size: 12px; color: #555; }
-  .bottom input[type=number] { width: 60px; padding: 3px 6px; border: 1px solid #bbb; border-radius: 3px; font-size: 12px; }
-  .bottom-right { margin-left: auto; display: flex; gap: 8px; }
-  .btn-main { padding: 5px 16px; font-size: 13px; border-radius: 3px; border: 1px solid #bbb; cursor: pointer; }
-  .btn-run { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  .bottom { padding: 12px 14px; border-top: 1px solid #d1d5db; background: #fff; display: flex; align-items: center; gap: 18px; margin: 0 10px 10px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  .bottom label { font-size: 12px; color: #4b5563; font-weight: 500; }
+  .bottom input[type=number] { width: 64px; padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; background: #fff; outline: none; transition: border-color 0.15s, box-shadow 0.15s; }
+  .bottom input[type=number]:focus { border-color: #1a73e8; box-shadow: 0 0 0 3px rgba(26,115,232,0.12); }
+  .bottom-right { margin-left: auto; display: flex; gap: 10px; }
+  .btn-main { padding: 7px 18px; font-size: 13px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; font-weight: 500; transition: all 0.15s; }
+  .btn-run { background: #1a73e8; color: #fff; }
   .btn-run:hover:not(:disabled) { background: #1557b0; }
   .btn-run:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-close { background: #fff; }
-  .btn-close:hover { background: #e8e8e8; }
+  .btn-close { background: #f3f4f6; color: #374151; border-color: #d1d5db; }
+  .btn-close:hover { background: #e5e7eb; }
 
-  .overlay { display: none; position: fixed; inset: 0; background: transparent; z-index: 100; align-items: center; justify-content: center; pointer-events: none; }
-  .overlay.show { display: flex; }
-  .overlay-box { background: #fff; border-radius: 6px; padding: 18px; min-width: 460px; max-width: 580px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); pointer-events: auto; }
-  .overlay-box h3 { font-size: 14px; margin-bottom: 10px; }
-  .overlay-box select { width: 100%; padding: 5px; border: 1px solid #bbb; border-radius: 3px; font-size: 13px; margin-bottom: 8px; }
-  .overlay-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
-  .overlay-btns button { padding: 5px 16px; font-size: 12px; border: 1px solid #bbb; border-radius: 3px; cursor: pointer; background: #fff; }
+  .overlay { display: none; position: fixed; inset: 0; background: rgba(17,24,39,0.45); z-index: 100; align-items: center; justify-content: center; pointer-events: none; backdrop-filter: blur(2px); }
+  .overlay.show { display: flex; pointer-events: auto; }
+  .overlay-box { background: #fff; border-radius: 10px; padding: 22px; min-width: 480px; max-width: 600px; box-shadow: 0 20px 40px rgba(0,0,0,0.18); pointer-events: auto; }
+  .overlay-box h3 { font-size: 14px; margin-bottom: 14px; color: #111827; font-weight: 600; }
+  .overlay-box select { width: 100%; padding: 7px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; margin-bottom: 10px; background: #fff; outline: none; }
+  .overlay-box select:focus { border-color: #1a73e8; box-shadow: 0 0 0 3px rgba(26,115,232,0.12); }
+  .overlay-btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+  .overlay-btns button { padding: 6px 16px; font-size: 12px; border: 1px solid #d1d5db; border-radius: 6px; cursor: pointer; background: #fff; color: #374151; font-weight: 500; transition: all 0.15s; }
+  .overlay-btns button:hover { background: #f3f4f6; }
   .overlay-btns .btn-ok { background: #1a73e8; color: #fff; border-color: #1a73e8; }
   .overlay-btns .btn-ok:hover { background: #1557b0; }
-  .current-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; }
-  .current-row input { width: 70px; padding: 3px 6px; border: 1px solid #bbb; border-radius: 3px; }
+  .current-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 12px; }
+  .current-row input { width: 80px; padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 6px; outline: none; }
+  .current-row input:focus { border-color: #1a73e8; box-shadow: 0 0 0 3px rgba(26,115,232,0.12); }
 
-  .empty-hint { padding: 20px; text-align: center; color: #999; font-size: 12px; }
+  .empty-hint { padding: 28px; text-align: center; color: #9ca3af; font-size: 13px; }
 
-  .error-banner { display: none; padding: 8px 12px; background: #fdecea; color: #c0392b; font-size: 12px; line-height: 1.5; border-bottom: 1px solid #e0a0a0; cursor: pointer; }
+  .error-banner { display: none; padding: 10px 14px; background: #fef2f2; color: #b91c1c; font-size: 12px; line-height: 1.5; border-bottom: 1px solid #fecaca; cursor: pointer; }
   .error-banner.show { display: block; }
-  .error-banner:hover { background: #f8d0d0; }
+  .error-banner:hover { background: #fee2e2; }
 </style>
 </head>
 <body>
@@ -73,7 +80,7 @@
 <div class="main">
   <div class="left">
     <div class="left-title">电源网络</div>
-    <input type="text" id="net-search" placeholder="搜索网络..." style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;margin-bottom:6px;box-sizing:border-box" oninput="renderNetList()">
+    <input type="text" id="net-search" placeholder="搜索网络..." style="width:calc(100% - 8px);margin:8px 4px 6px;padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;outline:none;transition:border-color 0.15s,box-shadow 0.15s" oninput="renderNetList()" onfocus="this.style.borderColor='#1a73e8';this.style.boxShadow='0 0 0 3px rgba(26,115,232,0.12)'" onblur="this.style.borderColor='#d1d5db';this.style.boxShadow='none'">
     <div class="net-list" id="net-list"></div>
   </div>
   <div class="right">
@@ -104,11 +111,11 @@
 <div class="bottom">
   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
     <label>铜厚 (mm):</label>
-    <input type="number" id="cu-thickness" value="0.035" min="0.005" max="0.21" step="0.005" style="width:60px">
+    <input type="number" id="cu-thickness" value="0.035" min="0.005" max="0.21" step="0.005">
   </div>
   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
     <label title="允许温升 - 用于电流容量检查">温升 (°C):</label>
-    <input type="number" id="temp-rise" value="10" min="5" max="50" step="5" style="width:60px" title="允许温升 - 用于电流容量检查">
+    <input type="number" id="temp-rise" value="10" min="5" max="50" step="5" title="允许温升 - 用于电流容量检查">
   </div>
   <div class="bottom-right">
     <button class="btn-main btn-run" id="btn-run" onclick="runAnalysis()" disabled>开始分析</button>
@@ -120,7 +127,7 @@
 <div class="overlay" id="picker-overlay">
   <div class="overlay-box">
     <h3 id="picker-title">选择器件</h3>
-    <input type="text" id="picker-search" placeholder="搜索位号或器件名..." style="width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:4px;font-size:13px;margin-bottom:8px;box-sizing:border-box" oninput="filterPicker()">
+    <input type="text" id="picker-search" placeholder="搜索位号或器件名..." style="width:100%;padding:8px 11px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:10px;box-sizing:border-box;outline:none;transition:border-color 0.15s,box-shadow 0.15s" oninput="filterPicker()" onfocus="this.style.borderColor='#1a73e8';this.style.boxShadow='0 0 0 3px rgba(26,115,232,0.12)'" onblur="this.style.borderColor='#d1d5db';this.style.boxShadow='none'">
     <select id="picker-select" size="10" style="width:100%;height:260px"></select>
     <div class="current-row" id="picker-current-row" style="display:none">
       <label>电流 (A):</label>

@@ -78,6 +78,7 @@ type Connection struct {
 	Layer  *Layer
 	Point  geometry.Point
 	NodeID *NodeID
+	Kind   string // "via", "source", "load", "track", "gnd", "pad"
 }
 
 // NewConnection creates a connection with a fresh NodeID.

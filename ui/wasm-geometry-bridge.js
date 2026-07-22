@@ -643,6 +643,43 @@ function clipperOffsetOpen(polylines, delta) {
 	return fromClipperPaths(result);
 }
 
+function drillToPolygons(drillText) {
+	const parseFn = getParse();
+	const plotFn = getPlot();
+
+	// Same NBSP normalization as Gerber parsing.
+	drillText = (drillText ?? '').replace(/\xA0/g, ' ');
+	if (!parseFn || !plotFn) {
+		throw new Error('tracespace parser/plotter not available on window');
+	}
+	let tree;
+	try {
+		tree = parseFn(drillText);
+	}
+	catch (e) {
+		console.error('[geometry bridge] drill parse error:', e);
+		throw e;
+	}
+	let image;
+	try {
+		image = plotFn(tree);
+	}
+	catch (e) {
+		console.error('[geometry bridge] drill plot error:', e);
+		throw e;
+	}
+
+	const holes = [];
+	for (const child of image.children || []) {
+		if (child.type === 'imageShape') {
+			const polys = shapeToPolygons(child.shape);
+			holes.push(...polys);
+		}
+	}
+	console.warn('[geometry bridge] drill holes:', holes.length);
+	return holes;
+}
+
 function earcutTriangulate(polygon) {
 	const earcutFn = getEarcut();
 	if (!earcutFn) {
@@ -667,6 +704,7 @@ function earcutTriangulate(polygon) {
 window.padenGeometry = {
 	init: initClipper,
 	gerberToPolygons,
+	drillToPolygons,
 	clipperUnion,
 	clipperDifference,
 	clipperIntersect,

@@ -77,6 +77,62 @@ func GerberToPolygons(gerberText string) (MultiPolygon, error) {
 	return polygonsFromJS(result)
 }
 
+// DrillToPolygons converts a single Excellon drill file to hole polygons via JS.
+func DrillToPolygons(drillText string) (MultiPolygon, error) {
+	result, err := Call("drillToPolygons", drillText)
+	if err != nil {
+		return nil, err
+	}
+	return polygonsFromJS(result)
+}
+
+// ParseDrillHoles extracts plated/non-plated drill holes from all Excellon
+// drill files in the Gerber ZIP and returns them as a single MultiPolygon.
+func ParseDrillHoles(zipBytes []byte) (MultiPolygon, error) {
+	r := bytes.NewReader(zipBytes)
+	zr, err := zip.NewReader(r, int64(len(zipBytes)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open Gerber ZIP: %w", err)
+	}
+
+	var allHoles MultiPolygon
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if !isDrillFile(f.Name) {
+			continue
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return nil, fmt.Errorf("failed to open %s: %w", f.Name, err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", f.Name, err)
+		}
+
+		holes, err := DrillToPolygons(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse %s: %w", f.Name, err)
+		}
+		if len(holes) == 0 {
+			continue
+		}
+		fmt.Printf("[GerberZip] drill %s -> %d holes\n", f.Name, len(holes))
+		allHoles, err = Union(allHoles, holes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to union drill holes from %s: %w", f.Name, err)
+		}
+	}
+	if len(allHoles) > 0 {
+		fmt.Printf("[GerberZip] total drill holes: %d polygon(s)\n", len(allHoles))
+	}
+	return allHoles, nil
+}
+
 func isGerberFile(name string) bool {
 	return hasSuffix(name, ".gbr") || hasSuffix(name, ".ger") || hasSuffix(name, ".gtl") ||
 		hasSuffix(name, ".gbl") || hasSuffix(name, ".g1") || hasSuffix(name, ".g2") ||
@@ -85,6 +141,17 @@ func isGerberFile(name string) bool {
 		hasSuffix(name, ".gko") || hasSuffix(name, ".gbo") || hasSuffix(name, ".gto") ||
 		hasSuffix(name, ".gm1") || hasSuffix(name, ".gm2") || hasSuffix(name, ".gm3") ||
 		hasSuffix(name, ".gbp") || hasSuffix(name, ".gtp")
+}
+
+func isDrillFile(name string) bool {
+	ln := stringsToLower(name)
+	if hasSuffix(ln, ".drl") {
+		return true
+	}
+	if contains(ln, "drill") && (hasSuffix(ln, ".txt") || hasSuffix(ln, ".xln")) {
+		return true
+	}
+	return false
 }
 
 // isOutlineFile returns true for mechanical/outline layers that should not be
