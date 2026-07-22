@@ -1,5 +1,7 @@
 package geometry
 
+import "math"
+
 // Ring is a closed polygon ring. The first and last point are not required to
 // repeat, but callers may store them either way.
 type Ring []Point
@@ -53,6 +55,83 @@ func (r Ring) Area() float64 {
 // IsCCW reports whether the ring is counter-clockwise (positive area).
 func (r Ring) IsCCW() bool {
 	return r.Area() > 0
+}
+
+// Simplify reduces the number of vertices using the Douglas-Peucker algorithm.
+// Closed rings (first point repeated at the end) preserve their closure.
+func (r Ring) Simplify(tolerance float64) Ring {
+	n := len(r)
+	if n <= 2 {
+		return append(Ring(nil), r...)
+	}
+	closed := r[0] == r[n-1]
+	end := n - 1
+	if !closed {
+		end = n
+	}
+	indices := douglasPeucker(r, 0, end-1, tolerance)
+	out := make(Ring, 0, len(indices))
+	for _, i := range indices {
+		out = append(out, r[i])
+	}
+	if closed && (len(out) == 0 || out[0] != out[len(out)-1]) {
+		out = append(out, r[0])
+	}
+	return out
+}
+
+// Simplify applies Douglas-Peucker simplification to every ring.
+func (p Polygon) Simplify(tolerance float64) Polygon {
+	out := make(Polygon, len(p))
+	for i, ring := range p {
+		out[i] = ring.Simplify(tolerance)
+	}
+	return out
+}
+
+// Area returns the net area of the polygon (exterior minus holes).
+func (p Polygon) Area() float64 {
+	if len(p) == 0 {
+		return 0
+	}
+	area := math.Abs(p[0].Area())
+	for i := 1; i < len(p); i++ {
+		area -= math.Abs(p[i].Area())
+	}
+	return area
+}
+
+func douglasPeucker(pts Ring, start, end int, tol float64) []int {
+	if start > end {
+		return nil
+	}
+	if start == end {
+		return []int{start}
+	}
+	dmax := 0.0
+	index := start
+	for i := start + 1; i < end; i++ {
+		d := perpendicularDistance(pts[i], pts[start], pts[end])
+		if d > dmax {
+			index = i
+			dmax = d
+		}
+	}
+	if dmax > tol {
+		left := douglasPeucker(pts, start, index, tol)
+		right := douglasPeucker(pts, index, end, tol)
+		return append(left, right[1:]...)
+	}
+	return []int{start, end}
+}
+
+func perpendicularDistance(p, a, b Point) float64 {
+	if a == b {
+		return math.Hypot(p.X-a.X, p.Y-a.Y)
+	}
+	num := math.Abs((b.Y-a.Y)*p.X - (b.X-a.X)*p.Y + b.X*a.Y - b.Y*a.X)
+	den := math.Hypot(b.X-a.X, b.Y-a.Y)
+	return num / den
 }
 
 // Reverse reverses the ring in place.

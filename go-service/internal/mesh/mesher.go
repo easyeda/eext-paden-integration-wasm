@@ -47,101 +47,30 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 		maxSize = 1.2
 	}
 
-	// 1. Robust base triangulation from earcut.
-	tri, err := Earcut(poly)
-	if err != nil {
-		return nil, err
-	}
-	if len(tri.Triangles) == 0 {
+	// Simplify boundary to match Python's pre-processing and to avoid runaway
+	// subdivision on Gerber arc-approximated edges.
+	simplTol := math.Max(0.005, maxSize*0.02)
+	poly = poly.Simplify(simplTol)
+	if len(poly) == 0 || len(poly[0]) < 3 {
 		return NewMesh(), nil
 	}
 
-	points := append([]Point(nil), tri.Vertices...)
-	triangles := append([][3]int(nil), tri.Triangles...)
-
-	// 1a. Drop earcut triangles that are degenerate or have centroids outside the
-	// polygon. This prevents triangles spanning holes from corrupting the mesh.
-	triangles = filterValidTriangles(points, triangles, poly)
-	if len(triangles) == 0 {
-		return NewMesh(), nil
-	}
-
-	// 2. Insert seed points by splitting their containing triangles.
-	for _, seed := range seedPoints {
-		if !pointInPolygon(seed, poly) {
-			continue
-		}
-		for ti := 0; ti < len(triangles); ti++ {
-			t := triangles[ti]
-			if !pointInTriangle(seed, points[t[0]], points[t[1]], points[t[2]]) {
-				continue
+	// Primary path: Python-style boundary densification + interior grid +
+	// unconstrained Delaunay triangulation, filtered by centroid containment.
+	// This produces quality meshes comparable to Python's _adaptive_triangulate.
+	if pts := m.generatePoints(poly, seedPoints); len(pts) >= 3 {
+		tris := delaunayTriangulate(pts)
+		tris = filterTrianglesInsidePolygon(pts, tris, poly)
+		if len(tris) > 0 {
+			mesh := FromTriangleSoup(pts, tris)
+			if len(mesh.Vertices) > 0 {
+				return mesh, nil
 			}
-			idx := len(points)
-			points = append(points, seed)
-			triangles[ti] = [3]int{t[0], t[1], idx}
-			triangles = append(triangles, [3]int{t[1], t[2], idx})
-			triangles = append(triangles, [3]int{t[2], t[0], idx})
-			break
 		}
 	}
 
-	// 3. Subdivide large triangles by centroid until size criterion is met.
-	const maxVerts = 12000
-	for iter := 0; iter < 30; iter++ {
-		changed := false
-		n := len(triangles)
-		for ti := 0; ti < n; ti++ {
-			t := triangles[ti]
-			a, b, c := points[t[0]], points[t[1]], points[t[2]]
-			ab := math.Hypot(b.X-a.X, b.Y-a.Y)
-			bc := math.Hypot(c.X-b.X, c.Y-b.Y)
-			ca := math.Hypot(a.X-c.X, a.Y-c.Y)
-			if math.Max(ab, math.Max(bc, ca)) <= maxSize*1.5 {
-				continue
-			}
-			if len(points) >= maxVerts {
-				break
-			}
-			cen := Point{X: (a.X + b.X + c.X) / 3, Y: (a.Y + b.Y + c.Y) / 3}
-			if !pointInPolygon(cen, poly) {
-				continue
-			}
-			idx := len(points)
-			points = append(points, cen)
-			triangles[ti] = [3]int{t[0], t[1], idx}
-			triangles = append(triangles, [3]int{t[1], t[2], idx})
-			triangles = append(triangles, [3]int{t[2], t[0], idx})
-			changed = true
-		}
-		if !changed {
-			break
-		}
-	}
-
-	// 4. Drop degenerate triangles and validate remaining triangles.
-	var filtered [][3]int
-	outside := 0
-	for _, t := range triangles {
-		a, b, c := points[t[0]], points[t[1]], points[t[2]]
-		area := math.Abs((b.X-a.X)*(c.Y-a.Y) - (c.X-a.X)*(b.Y-a.Y))
-		if area <= 1e-12 {
-			continue
-		}
-		cen := Point{X: (a.X + b.X + c.X) / 3, Y: (a.Y + b.Y + c.Y) / 3}
-		if !pointInPolygon(cen, poly) {
-			outside++
-			continue
-		}
-		filtered = append(filtered, t)
-	}
-	if outside > 0 {
-		fmt.Printf("[PADEN mesh] WARNING: dropped %d/%d triangles outside polygon\n", outside, len(triangles))
-	}
-	if len(filtered) == 0 {
-		return NewMesh(), nil
-	}
-
-	return FromTriangleSoup(points, filtered), nil
+	// Fallback to earcut for polygons where Delaunay fails.
+	return EarcutFallback(poly)
 }
 
 // generatePoints creates boundary + adaptive interior points.
@@ -160,14 +89,17 @@ func (m *Mesher) generatePoints(poly geometry.Polygon, seedPoints []Point) []Poi
 	// Densify boundary
 	pts := make(map[[2]float64]bool)
 	addPoint := func(p Point) {
-		key := [2]float64{round(p.X, 4), round(p.Y, 4)}
+		key := [2]float64{round(p.X, 3), round(p.Y, 3)}
 		pts[key] = true
 	}
 
 	densifyRing := func(ring geometry.Ring) {
 		n := len(ring)
-		if ring[0] == ring[n-1] {
+		if n > 0 && ring[0] == ring[n-1] {
 			n--
+		}
+		if n < 2 {
+			return
 		}
 		for i := 0; i < n; i++ {
 			a := ring[i]

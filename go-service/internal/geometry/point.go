@@ -54,3 +54,8 @@ func (b Box) Width() float64 {
 func (b Box) Height() float64 {
 	return b.MaxY - b.MinY
 }
+
+// Area returns the box area.
+func (b Box) Area() float64 {
+	return b.Width() * b.Height()
+}

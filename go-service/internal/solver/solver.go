@@ -611,9 +611,9 @@ func initialMeshConfig(totalArea float64) mesh.Config {
 	// Adjust max size based on total copper area to keep vertex count under control.
 	if totalArea < 30000 {
 		// Medium boards: coarsen enough to keep the solve interactive in WASM
-		// without sacrificing too much accuracy.
+		// without sacrificing too much accuracy. Match Python reference cap of 2.0mm.
 		scale := math.Min(math.Sqrt(30000/math.Max(totalArea, 100)), 4.0)
-		cfg.MaximumSize = math.Min(cfg.MaximumSize*scale, 4.0)
+		cfg.MaximumSize = math.Min(cfg.MaximumSize*scale, 2.0)
 	} else {
 		// Large boards: coarsen mesh so memory does not explode.
 		scale := math.Min(math.Sqrt(totalArea/30000), 4.0)
