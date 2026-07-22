@@ -145,6 +145,40 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	inferPolygonNetsFromTracks(layers, cfg.Tracks, layerIDToName, transform)
 	logLayerPolygonSummary(layers, d)
 
+	// Merge polygons that share the same inferred net so electrically connected
+	// copper of the same net becomes one FEM mesh. This matches Python's
+	// shapely.unary_union post-processing, which joins touching/island polygons.
+	for _, layer := range layers {
+		groups := make(map[string]geometry.MultiPolygon)
+		for i, poly := range layer.Shape {
+			net := ""
+			if i < len(layer.NetLabels) {
+				net = layer.NetLabels[i]
+			}
+			groups[net] = append(groups[net], poly)
+		}
+		var merged geometry.MultiPolygon
+		var labels []string
+		for net, group := range groups {
+			if len(group) == 0 {
+				continue
+			}
+			if unioned, err := geometry.Union(group, nil); err == nil && len(unioned) > 0 {
+				for _, poly := range unioned {
+					merged = append(merged, poly)
+					labels = append(labels, net)
+				}
+			} else {
+				for _, poly := range group {
+					merged = append(merged, poly)
+					labels = append(labels, net)
+				}
+			}
+		}
+		layer.Shape = merged
+		layer.NetLabels = labels
+	}
+
 	// 5. Via specs
 	d.Info("Step 3: Via specs")
 	viaSpecs := extractViaSpecs(cfg.Vias, layerDict, transform)

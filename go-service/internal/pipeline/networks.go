@@ -168,6 +168,7 @@ func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerID
 }
 
 func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet string) (geometry.Point, bool) {
+	// Exact containment in a polygon of the requested net.
 	for i, poly := range layer.Shape {
 		if !polygonMatchesNet(layer, i, targetNet) {
 			continue
@@ -176,42 +177,53 @@ func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet 
 			return pt, true
 		}
 	}
-	// Find nearest point on polygon boundary. When a pad centre sits in a drilled
-	// hole of a large pour, the pour's hole boundary and the pad's annular ring
-	// can be equidistant. Prefer the smaller polygon (the actual pad copper) so
-	// the connection lands on the pad instead of the pour hole edge.
+
+	// Boundary search. Prefer polygons whose inferred net matches the pad net.
+	// If no such polygon exists, fall back to the nearest geometry of any net.
+	// This mirrors the Python reference, which uses shapely.nearest_points without
+	// net filtering and therefore connects THT pads in a pour hole to the pour.
 	type candidate struct {
 		pt   geometry.Point
 		dist float64
 		area float64
 	}
-	var candidates []candidate
-	minDist := math.Inf(1)
-	for i, poly := range layer.Shape {
-		if !polygonMatchesNet(layer, i, targetNet) {
-			continue
-		}
-		area := polygonArea(poly)
-		for _, ring := range poly {
-			for j := 0; j < len(ring); j++ {
-				a := ring[j]
-				b := ring[(j+1)%len(ring)]
-				np := nearestPointOnSegment(pt, a, b)
-				d := math.Hypot(np.X-pt.X, np.Y-pt.Y)
-				if d < minDist-1e-3 {
-					minDist = d
-					candidates = []candidate{{pt: np, dist: d, area: area}}
-				} else if d <= minDist+1e-3 {
-					candidates = append(candidates, candidate{pt: np, dist: d, area: area})
+	candidates := func(filterNet string) []candidate {
+		var out []candidate
+		minDist := math.Inf(1)
+		for i, poly := range layer.Shape {
+			if filterNet != "" && !polygonMatchesNet(layer, i, filterNet) {
+				continue
+			}
+			area := polygonArea(poly)
+			for _, ring := range poly {
+				for j := 0; j < len(ring); j++ {
+					a := ring[j]
+					b := ring[(j+1)%len(ring)]
+					np := nearestPointOnSegment(pt, a, b)
+					d := math.Hypot(np.X-pt.X, np.Y-pt.Y)
+					if d < minDist-1e-3 {
+						minDist = d
+						out = []candidate{{pt: np, dist: d, area: area}}
+					} else if d <= minDist+1e-3 {
+						out = append(out, candidate{pt: np, dist: d, area: area})
+					}
 				}
 			}
 		}
+		return out
 	}
-	if len(candidates) == 0 {
+
+	bestCandidates := candidates(targetNet)
+	if len(bestCandidates) == 0 && targetNet != "" {
+		bestCandidates = candidates("")
+	}
+	if len(bestCandidates) == 0 {
 		return pt, false
 	}
-	best := candidates[0]
-	for _, c := range candidates[1:] {
+	// When distances are nearly equal (e.g. pad annular ring vs. pour hole edge),
+	// prefer the smaller polygon so the connection lands on the pad copper.
+	best := bestCandidates[0]
+	for _, c := range bestCandidates[1:] {
 		if c.area < best.area {
 			best = c
 		}

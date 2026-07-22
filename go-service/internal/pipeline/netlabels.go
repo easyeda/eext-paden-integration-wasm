@@ -52,9 +52,21 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 				continue
 			}
 			if pi.tht {
-				// The pad centre is inside the drilled hole, so sample the annular ring
-				// to find the copper that actually belongs to this pad. Using the centre
-				// would label the wrong-net plane whose hole contains the pad.
+				// A THT pad sits in a drilled hole; the copper belonging to the pad is
+				// the annular ring on every layer it passes through. Label any polygon
+				// whose exterior ring contains the pad centre, even if the centre lies
+				// inside a hole of a large pour (the pour's annular ring still belongs
+				// to the pad net). Also sample the annular ring explicitly for robustness.
+				for polyIdx, poly := range l.Shape {
+					if len(poly) == 0 {
+						continue
+					}
+					if pointInRingMesh(pi.pt, poly[0]) {
+						if pi.net != "" {
+							votes[polyIdx][pi.net]++
+						}
+					}
+				}
 				probeRadius := pi.holeDiameter * 0.75
 				if probeRadius <= 0 {
 					probeRadius = 0.3
