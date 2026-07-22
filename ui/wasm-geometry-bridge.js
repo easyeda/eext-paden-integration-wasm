@@ -341,7 +341,7 @@ function imageGraphicToPolygons(graphic) {
 				continue;
 			const linePoly = [[pts]];
 			try {
-				polys.push(...clipperOffset(linePoly, graphic.width / 2));
+				polys.push(...clipperOffsetOpen(linePoly, graphic.width / 2));
 			}
 			catch {
 				// ignore single failed stroke
@@ -519,25 +519,28 @@ function clipperIntersect(a, b) {
 function clipperOffset(polygons, delta) {
 	ensureModule();
 	const paths = toClipperPaths(polygons);
-	// Tracks are open polylines and need rounded end-caps; closed rings (pads,
-	// polygons) should be treated as polygons so holes/islands are preserved.
-	let isClosed = true;
-	for (let i = 0; i < paths.size() && isClosed; i++) {
-		const path = paths.get(i);
-		const n = path.size();
-		if (n === 0)
-			continue;
-		const first = path.get(0);
-		const last = path.get(n - 1);
-		if (Math.hypot(first.x - last.x, first.y - last.y) > 1e-9)
-			isClosed = false;
-	}
-	const endType = isClosed ? clipperModule.EndType.Polygon : clipperModule.EndType.Round;
+	console.warn('[clipperOffset] input paths:', paths.size(), 'first path size:', paths.size() > 0 ? paths.get(0).size() : 0);
 	const result = clipperModule.InflatePathsD(
 		paths,
 		delta,
 		clipperModule.JoinType.Miter,
-		endType,
+		clipperModule.EndType.Polygon,
+		2,
+		CLIPPER_PRECISION,
+		0.25,
+	);
+	console.warn('[clipperOffset] result paths:', result.size(), 'first path size:', result.size() > 0 ? result.get(0).size() : 0);
+	return fromClipperPaths(result);
+}
+
+function clipperOffsetOpen(polylines, delta) {
+	ensureModule();
+	const paths = toClipperPaths(polylines);
+	const result = clipperModule.InflatePathsD(
+		paths,
+		delta,
+		clipperModule.JoinType.Round,
+		clipperModule.EndType.Round,
 		2,
 		CLIPPER_PRECISION,
 		0.25,
@@ -573,5 +576,6 @@ window.padenGeometry = {
 	clipperDifference,
 	clipperIntersect,
 	clipperOffset,
+	clipperOffsetOpen,
 	earcutTriangulate,
 };
