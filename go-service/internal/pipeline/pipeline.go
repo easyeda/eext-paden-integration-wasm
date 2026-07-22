@@ -105,6 +105,17 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 		} else {
 			layer.Shape = unioned
 		}
+		// Morphological close to weld sub-resolution gaps between touching copper
+		// islands. This mirrors Python's shapely buffer(1e-4).buffer(-1e-4) cleanup.
+		// Disabled for now: Clipper2's union already produces clean polygons with
+		// holes from tracespace's region output; closing here merged distinct nets.
+		// const closeDelta = 1e-4
+		// closed, err := geometry.Close(layer.Shape, closeDelta)
+		// if err == nil && len(closed) > 0 {
+		// 	layer.Shape = closed
+		// } else if err != nil {
+		// 	d.Warn(fmt.Sprintf("Layer '%s': morphological close failed (%v), using unioned geometry", layer.Name, err))
+		// }
 		for i := range layer.Shape {
 			layer.Shape[i].EnsureOrientation()
 		}

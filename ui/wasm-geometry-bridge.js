@@ -7,6 +7,7 @@
  *   - clipperDifference(subject, clip) -> polygons
  *   - clipperIntersect(a, b) -> polygons
  *   - clipperOffset(polygons, delta) -> polygons
+ *   - clipperMorphologicalClose(polygons, delta) -> polygons
  *   - earcutTriangulate(polygon) -> { vertices: Float64Array, triangles: Uint32Array }
  *
  * All polygons use the format:
@@ -82,6 +83,33 @@ function ringContainsPoint(ring, p) {
 	return inside;
 }
 
+function pointOnSegment(p, a, b, eps) {
+	const dx = b.x - a.x;
+	const dy = b.y - a.y;
+	const len2 = dx * dx + dy * dy;
+	if (len2 === 0)
+		return Math.hypot(p.x - a.x, p.y - a.y) <= eps;
+	let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+	if (t < 0)
+		t = 0;
+	else if (t > 1)
+		t = 1;
+	const projX = a.x + t * dx;
+	const projY = a.y + t * dy;
+	return Math.hypot(p.x - projX, p.y - projY) <= eps;
+}
+
+function pointInRingOrOnBoundary(ring, p, eps = 1e-6) {
+	if (ringContainsPoint(ring, p))
+		return true;
+	const n = ring.length;
+	for (let i = 0, j = n - 1; i < n; j = i, i++) {
+		if (pointOnSegment(p, ring[i], ring[j], eps))
+			return true;
+	}
+	return false;
+}
+
 function ringContainsRing(outer, inner) {
 	let minX = Infinity;
 	let minY = Infinity;
@@ -97,12 +125,13 @@ function ringContainsRing(outer, inner) {
 		if (p.y > maxY)
 			maxY = p.y;
 	}
+	const eps = 1e-6;
 	for (const p of inner) {
-		if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY)
+		if (p.x < minX - eps || p.x > maxX + eps || p.y < minY - eps || p.y > maxY + eps)
 			return false;
 	}
 	for (const p of inner) {
-		if (!ringContainsPoint(outer, p))
+		if (!pointInRingOrOnBoundary(outer, p, eps))
 			return false;
 	}
 	return true;
@@ -328,8 +357,17 @@ function imageGraphicToPolygons(graphic) {
 	}
 	else if (graphic.type === 'imageRegion') {
 		const pts = pathSegmentsToPoints(graphic.segments);
-		if (pts.length >= 3)
-			polys = [[pts]];
+		if (pts.length >= 3) {
+			// tracespace returns a region's outer boundary and holes as one long
+			// chain of segments that may self-intersect. Clipper2's UnionSelfD
+			// normalizes this into a clean polygon with holes.
+			try {
+				polys = clipperUnion([[pts]]);
+			}
+			catch {
+				polys = [[pts]];
+			}
+		}
 	}
 	else if (graphic.type === 'imagePath') {
 		// Stroke with width: convert to polygon by offsetting each connected
@@ -436,14 +474,20 @@ function gerberToPolygons(gerberText) {
 	all = flattenLayeredErasures(all);
 	console.warn('[geometry bridge] after erasure subtraction:', { totalPolygons: all.length });
 
-	// tracespace returns a flat list of single-ring polygons.  Re-group them
-	// into polygons with holes so the mesher treats clearances correctly.
+	// tracespace returns a flat list of single-ring polygons whose nesting may be
+	// ambiguous (holes touching their outer boundary). Use Clipper2's UnionSelfD
+	// to normalise winding and produce clean polygons with holes.
 	const rings = [];
 	for (const poly of all) {
 		for (const ring of poly)
 			rings.push(ring);
 	}
-	all = groupRingsIntoPolygons(rings);
+	try {
+		all = clipperUnion([rings]);
+	}
+	catch {
+		all = groupRingsIntoPolygons(rings);
+	}
 	console.warn('[geometry bridge] after hole grouping:', { totalPolygons: all.length, totalRings: rings.length });
 	for (let i = 0; i < all.length; i++) {
 		const poly = all[i];
@@ -518,19 +562,65 @@ function clipperIntersect(a, b) {
 
 function clipperOffset(polygons, delta) {
 	ensureModule();
-	const paths = toClipperPaths(polygons);
-	console.warn('[clipperOffset] input paths:', paths.size(), 'first path size:', paths.size() > 0 ? paths.get(0).size() : 0);
-	const result = clipperModule.InflatePathsD(
-		paths,
-		delta,
-		clipperModule.JoinType.Miter,
-		clipperModule.EndType.Polygon,
-		2,
-		CLIPPER_PRECISION,
-		0.25,
-	);
-	console.warn('[clipperOffset] result paths:', result.size(), 'first path size:', result.size() > 0 ? result.get(0).size() : 0);
-	return fromClipperPaths(result);
+	const module = clipperModule;
+	const expanded = new module.PathsD();
+	for (const poly of polygons) {
+		if (!poly || poly.length === 0)
+			continue;
+		// Offset the exterior ring outward (or inward if delta < 0).
+		const outerPath = module.MakePathD(poly[0].flatMap(p => [p.x, p.y]));
+		const outerPaths = new module.PathsD();
+		outerPaths.push_back(outerPath);
+		const expandedOuter = module.InflatePathsD(
+			outerPaths,
+			delta,
+			module.JoinType.Miter,
+			module.EndType.Polygon,
+			2,
+			CLIPPER_PRECISION,
+			0.25,
+		);
+		// Offset holes in the opposite direction so they shrink/grow consistently
+		// with the polygon boundary.
+		if (poly.length > 1) {
+			const holePaths = new module.PathsD();
+			for (let i = 1; i < poly.length; i++) {
+				const path = module.MakePathD(poly[i].flatMap(p => [p.x, p.y]));
+				holePaths.push_back(path);
+			}
+			const expandedHoles = module.InflatePathsD(
+				holePaths,
+				-delta,
+				module.JoinType.Miter,
+				module.EndType.Polygon,
+				2,
+				CLIPPER_PRECISION,
+				0.25,
+			);
+			if (expandedHoles.size() > 0) {
+				const diff = module.DifferenceD(
+					expandedOuter,
+					expandedHoles,
+					module.FillRule.NonZero,
+					CLIPPER_PRECISION,
+				);
+				for (let i = 0; i < diff.size(); i++)
+					expanded.push_back(diff.get(i));
+				continue;
+			}
+		}
+		for (let i = 0; i < expandedOuter.size(); i++)
+			expanded.push_back(expandedOuter.get(i));
+	}
+	return fromClipperPaths(expanded);
+}
+
+function clipperMorphologicalClose(polygons, delta) {
+	ensureModule();
+	if (delta <= 0)
+		return polygons;
+	const expanded = clipperOffset(polygons, delta);
+	return clipperOffset(expanded, -delta);
 }
 
 function clipperOffsetOpen(polylines, delta) {
@@ -576,6 +666,7 @@ window.padenGeometry = {
 	clipperDifference,
 	clipperIntersect,
 	clipperOffset,
+	clipperMorphologicalClose,
 	clipperOffsetOpen,
 	earcutTriangulate,
 };

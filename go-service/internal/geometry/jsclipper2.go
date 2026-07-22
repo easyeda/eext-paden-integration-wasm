@@ -46,3 +46,14 @@ func Offset(mp MultiPolygon, delta float64) (MultiPolygon, error) {
 	}
 	return polygonsFromJS(result)
 }
+
+// Close performs a morphological close on the polygons: inflate by delta,
+// union, then deflate by delta. This welds sub-resolution gaps between
+// touching copper islands without visibly changing the overall shape.
+func Close(mp MultiPolygon, delta float64) (MultiPolygon, error) {
+	result, err := Call("clipperMorphologicalClose", polygonsToJS(mp), delta)
+	if err != nil {
+		return nil, fmt.Errorf("clipper morphological close failed: %w", err)
+	}
+	return polygonsFromJS(result)
+}
