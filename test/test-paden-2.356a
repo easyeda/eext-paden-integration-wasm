@@ -1,0 +1,35 @@
+C  Project Name:测试电流仿真
+C  Board Name:Board1
+C  PCB Name:PCB1
+C  Date:2026/07/22
+C  Time:15:27:42
+C  --------------- Layer Stackup --------------------
+C  Top Layer
+C  Bottom Layer
+C  ------------- Replace The Group ------------------
+C  --------------------------------------------------
+P  JOB 
+P  CODE  UTF-8
+P  UNITS  CUST 0
+P  TITLE  
+P  NUM   1.0
+P  REV   A
+P  VER   IPC-D-356A
+327$1N2             C1    -2         PA01X 006138Y-005098X0585Y0680R000 S2
+327GND              C1    -1         PA01X 004884Y-005098X0585Y0680R000 S2
+317GND              H1    -1    D0394PA00X 001429Y-002848X0669Y0669R000 S0
+317VCC              H1    -2    D0394PA00X 002429Y-002848X0669Y         S0
+327VCC              R1    -1         PA01X 006435Y-001000X0827Y0945R000 S2
+327$1N2             R1    -2         PA01X 008365Y-001000X0827Y0945R000 S2
+327VCC              C2    -2         PA01X 003526Y-000700X0315Y0354R000 S2
+327GND              C2    -1         PA01X 002974Y-000700X0315Y0354R000 S2
+317VCC              D1    -1    D0394PA00X 008937Y-004550X0709Y         S0
+317GND              D1    -2    D0394PA00X 012363Y-004550X0709Y         S0
+317VCC              VIA   -     D0120PA00X 008100Y-003200X0240Y         S3
+378VCC            L02 X100 X8937Y-4550 X8100Y-3713  Y-3200
+378VCC            L01 X100 X2429Y-2848 X3526Y-1752  Y-700  X3826Y-1000  
+078 X6435  X8100Y-2665  Y-3200
+378$1N2           L01 X100 X8365Y-1000 X9250Y-1885  Y-3250  X7402Y-5098  
+078 X6138
+389BOARD_EDGE         X100Y100 X-100Y-6000 X16200  Y150  X-100  Y-6000
+999

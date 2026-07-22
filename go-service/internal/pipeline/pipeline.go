@@ -29,12 +29,26 @@ func (d *DiagCollector) Error(msg string) {
 }
 
 // Analyze runs the full PDN analysis pipeline.
-func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollector, error) {
+func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.Solution, *DiagCollector, error) {
 	d := &DiagCollector{}
 
 	var cfg Config
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return nil, d, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Parse authoritative IPC-D-356A netlist if provided.
+	var ipcNetlist *IPC356ANetlist
+	if ipc356aText != "" {
+		var err error
+		ipcNetlist, err = ParseIPC356A(ipc356aText)
+		if err != nil {
+			d.Warn(fmt.Sprintf("IPC-D-356A parse failed: %v", err))
+			ipcNetlist = nil
+		} else {
+			d.Info(fmt.Sprintf("IPC-D-356A netlist: %d pads, %d vias, %d traces, %d board edges",
+				len(ipcNetlist.Pads), len(ipcNetlist.Vias), len(ipcNetlist.Traces), len(ipcNetlist.BoardEdge)))
+		}
 	}
 
 	d.Info(fmt.Sprintf("project=%s, layers=%d, vias=%d, pads=%d, sources=%d, loads=%d",
@@ -177,8 +191,20 @@ func Analyze(gerberZip []byte, configJSON string) (*solver.Solution, *DiagCollec
 	for _, lc := range cfg.Layers {
 		layerIDToName[lc.LayerID] = lc.Name
 	}
-	inferPolygonNets(layers, cfg.Pads, transform, d)
-	inferPolygonNetsFromTracks(layers, cfg.Tracks, layerIDToName, transform)
+
+	if ipcNetlist != nil {
+		ensureNetLabels(layers)
+		sx, sy, ox, oy := alignIPC356AToGerber(ipcNetlist, outline)
+		d.Info(fmt.Sprintf("IPC-D-356A alignment: scale=(%.4f,%.4f), offset=(%.4f,%.4f)", sx, sy, ox, oy))
+		applyIPC356AOffset(ipcNetlist, ox, oy)
+		inferPolygonNetsFromIPC356A(layers, ipcNetlist, d)
+		// Fall back to pad/track inference only for polygons the netlist did not label.
+		inferPolygonNets(layers, cfg.Pads, transform, d, true)
+		inferPolygonNetsFromTracks(layers, cfg.Tracks, layerIDToName, transform)
+	} else {
+		inferPolygonNets(layers, cfg.Pads, transform, d, false)
+		inferPolygonNetsFromTracks(layers, cfg.Tracks, layerIDToName, transform)
+	}
 	logLayerPolygonSummary(layers, d)
 
 	// Merge polygons that share the same inferred net so electrically connected

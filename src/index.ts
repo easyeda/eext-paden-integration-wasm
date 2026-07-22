@@ -55,6 +55,7 @@ export async function runPdnAnalysis(): Promise<void> {
 
 			// Get Gerber file (required — no fallback to manual geometry extraction)
 			let gerberBlob: Blob | null = null;
+			let ipc356aText = '';
 			try {
 				const gerberFile = await eda.pcb_ManufactureData.getGerberFile();
 				if (!gerberFile) {
@@ -66,10 +67,23 @@ export async function runPdnAnalysis(): Promise<void> {
 				throw new Error(`无法获取 Gerber 文件，分析终止：${e}`);
 			}
 
+			// Get IPC-D-356A netlist if available; it provides authoritative
+			// net-to-position mapping and replaces pad-position heuristic inference.
+			try {
+				const ipcFile = await eda.pcb_ManufactureData.getIpcD356AFile();
+				if (ipcFile) {
+					ipc356aText = await ipcFile.text();
+					console.warn(`[PDN] IPC-D-356A netlist: ${ipc356aText.length} chars`);
+				}
+			}
+			catch (e) {
+				console.warn('[PDN] 无法获取 IPC-D-356A 网表，将使用焊盘位置推断：', e);
+			}
+
 			// Helper: run one analysis for a given config
 			const runAnalysis = async (runConfig: PdnConfig, runLabel: string) => {
 				const gerberConfig = converter.buildGerberConfig(easyedaData, runConfig);
-				const solution: any = await wasmClient.analyzeGerber(gerberBlob!, JSON.stringify(gerberConfig));
+				const solution: any = await wasmClient.analyzeGerber(gerberBlob!, JSON.stringify(gerberConfig), ipc356aText);
 				console.warn(`[PDN] Backend response: success=${solution?.success}, message=${solution?.message ?? '(none)'}, layer_solutions=${solution?.layer_solutions?.length}, has connection_points=${!!(solution as any)?.connection_points}`);
 
 				if (!solution || !solution.layer_solutions || solution.layer_solutions.length === 0) {

@@ -121,7 +121,7 @@ function gerberToUint8Array(rawBytes) {
 }
 
 async function handleAnalyze(msg) {
-	const { gerberBytes: rawBytes, configJson, replyTopic } = msg;
+	const { gerberBytes: rawBytes, configJson, ipc356aText, replyTopic } = msg;
 	let progressTimer = null;
 	try {
 		if (initError)
@@ -132,7 +132,7 @@ async function handleAnalyze(msg) {
 		}
 
 		const gerberBytes = gerberToUint8Array(rawBytes);
-		console.log('[WASM Worker] analyze start', replyTopic, 'bytes=', gerberBytes.length);
+		console.log('[WASM Worker] analyze start', replyTopic, 'bytes=', gerberBytes.length, 'ipc356a=', (ipc356aText || '').length);
 
 		// Heartbeat progress so the host UI knows the worker is still alive
 		// during long solves.
@@ -140,7 +140,7 @@ async function handleAnalyze(msg) {
 			globalThis.postMessage({ type: 'progress', progress: { alive: true } });
 		}, 1500);
 
-		const result = await globalThis.padne.analyzeGerber(gerberBytes, configJson);
+		const result = await globalThis.padne.analyzeGerber(gerberBytes, configJson, ipc356aText || '');
 		console.log('[WASM Worker] analyze done', replyTopic);
 		globalThis.postMessage({ type: 'analyze-result', replyTopic, result });
 	}

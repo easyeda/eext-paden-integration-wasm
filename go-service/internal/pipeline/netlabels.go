@@ -10,9 +10,18 @@ import (
 
 // inferPolygonNets labels every polygon in each layer with the net of the pads
 // that fall inside it. Empty label means the net could not be inferred.
-func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64, d *DiagCollector) {
-	for _, l := range layers {
-		l.NetLabels = make([]string, len(l.Shape))
+// If onlyEmpty is true, polygons that already have a net label are skipped.
+func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64, d *DiagCollector, onlyEmpty bool) {
+	if !onlyEmpty {
+		for _, l := range layers {
+			l.NetLabels = make([]string, len(l.Shape))
+		}
+	} else {
+		for _, l := range layers {
+			if len(l.NetLabels) != len(l.Shape) {
+				l.NetLabels = make([]string, len(l.Shape))
+			}
+		}
 	}
 	if len(pads) == 0 {
 		return
@@ -91,6 +100,9 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 			}
 		}
 		for i, v := range votes {
+			if onlyEmpty && l.NetLabels[i] != "" {
+				continue
+			}
 			bestNet := ""
 			bestCnt := 0
 			total := 0

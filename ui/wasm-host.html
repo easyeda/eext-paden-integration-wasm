@@ -194,12 +194,14 @@
           try {
             const rawBytes = msg.gerberBytes;
             const configJson = msg.configJson;
+            const ipc356aText = msg.ipc356aText ?? '';
 
             console.log('[WASM Host] analyze request received:', {
               rawType: typeof rawBytes,
               constructor: rawBytes?.constructor?.name,
               byteLength: rawBytes?.byteLength ?? rawBytes?.length ?? 'N/A',
               configLength: typeof configJson === 'string' ? configJson.length : 'N/A',
+              ipc356aLength: ipc356aText.length,
             });
 
             const gerberBytes = gerberToUint8Array(rawBytes);
@@ -209,6 +211,7 @@
               type: 'analyze',
               gerberBytes: gerberBuffer,
               configJson,
+              ipc356aText,
               replyTopic,
             }, [gerberBuffer]);
           }

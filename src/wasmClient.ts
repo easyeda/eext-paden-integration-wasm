@@ -86,7 +86,7 @@ export class PdnWasmClient {
 		});
 	}
 
-	async analyzeGerber(gerberBlob: Blob, configJson: string): Promise<SerializedSolution> {
+	async analyzeGerber(gerberBlob: Blob, configJson: string, ipc356aText?: string): Promise<SerializedSolution> {
 		await this.init();
 
 		const bytes = await gerberBlob.arrayBuffer();
@@ -143,6 +143,7 @@ export class PdnWasmClient {
 			eda.sys_MessageBus.publish(TOPIC_ANALYZE, {
 				gerberBytes: bytes,
 				configJson,
+				ipc356aText: ipc356aText ?? '',
 				replyTopic,
 			});
 		});

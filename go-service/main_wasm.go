@@ -43,7 +43,7 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 			}()
 
 			if len(args) < 2 {
-				reject.Invoke(js.Global().Get("Error").New("expected 2 arguments: gerberZip ArrayBuffer, configJson string"))
+				reject.Invoke(js.Global().Get("Error").New("expected 2+ arguments: gerberZip ArrayBuffer, configJson string [, ipc356aText string]"))
 				return
 			}
 
@@ -59,10 +59,14 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 			gerberBytes := make([]byte, gerberJs.Get("byteLength").Int())
 			js.CopyBytesToGo(gerberBytes, gerberJs)
 			configJson := args[1].String()
+			ipc356aText := ""
+			if len(args) >= 3 {
+				ipc356aText = args[2].String()
+			}
 
-			fmt.Printf("[PADEN WASM] analyzeGerber called: %d bytes, config length %d\n", len(gerberBytes), len(configJson))
+			fmt.Printf("[PADEN WASM] analyzeGerber called: %d bytes, config length %d, ipc356a length %d\n", len(gerberBytes), len(configJson), len(ipc356aText))
 
-			sol, d, err := pipeline.Analyze(gerberBytes, configJson)
+			sol, d, err := pipeline.Analyze(gerberBytes, configJson, ipc356aText)
 			if err != nil {
 				errResult := map[string]interface{}{
 					"success":     false,
