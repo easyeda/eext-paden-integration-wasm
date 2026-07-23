@@ -582,12 +582,13 @@ func inferPolygonNetsFromIPC356A(layers []*problem.Layer, netlist *IPC356ANetlis
 	// inside copper on the correct layer, so even labelling all layers is safe.
 	for _, pad := range netlist.Pads {
 		pt := geometry.Point{X: pad.X, Y: pad.Y}
-		indices := sideLayerIndices(pad.Side, sortedLayerNames)
-		if len(indices) == 0 {
-			indices = make([]int, len(layers))
-			for i := range layers {
-				indices[i] = i
-			}
+		// Check all layers and let polygon containment decide. This is robust
+		// against S1/S2 side-code convention differences between IPC-D-356A
+		// variants and avoids missing net labels when the pad physically sits
+		// on a layer whose index does not match the side code.
+		indices := make([]int, len(layers))
+		for i := range layers {
+			indices[i] = i
 		}
 		for _, li := range indices {
 			if pi := findSmallestContaining(li, pt); pi >= 0 {
@@ -608,6 +609,17 @@ func inferPolygonNetsFromIPC356A(layers []*problem.Layer, netlist *IPC356ANetlis
 						voteFor(li, pi, pad.Net)
 					}
 				}
+				// Also sample just outside the pad so the surrounding copper pour
+				// gets the net vote even after pad holes are punched and restored
+				// as separate polygons.
+				outerProbeRadius := outerR + 0.05
+				if outerProbeRadius > probeRadius {
+					for _, probe := range thtAnnularProbes(pt, outerProbeRadius) {
+						if pi := findSmallestContaining(li, probe); pi >= 0 {
+							voteFor(li, pi, pad.Net)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -626,6 +638,15 @@ func inferPolygonNetsFromIPC356A(layers []*problem.Layer, netlist *IPC356ANetlis
 			for _, probe := range thtAnnularProbes(pt, probeRadius) {
 				if pi := findSmallestContaining(li, probe); pi >= 0 {
 					voteFor(li, pi, via.Net)
+				}
+			}
+			// Outer probes to ensure the surrounding copper pour is labelled.
+			outerProbeRadius := outerR + 0.05
+			if outerProbeRadius > probeRadius {
+				for _, probe := range thtAnnularProbes(pt, outerProbeRadius) {
+					if pi := findSmallestContaining(li, probe); pi >= 0 {
+						voteFor(li, pi, via.Net)
+					}
 				}
 			}
 		}
@@ -838,6 +859,7 @@ func punchIPC356APadHoles(layers []*problem.Layer, netlist *IPC356ANetlist, d *D
 	type layerShape struct {
 		layerIdx int
 		shape    geometry.Polygon
+		net      string
 	}
 	var shapes []layerShape
 	for _, pad := range netlist.Pads {
@@ -853,7 +875,7 @@ func punchIPC356APadHoles(layers []*problem.Layer, netlist *IPC356ANetlist, d *D
 			continue
 		}
 		for _, li := range indices {
-			shapes = append(shapes, layerShape{layerIdx: li, shape: shape})
+			shapes = append(shapes, layerShape{layerIdx: li, shape: shape, net: pad.Net})
 		}
 	}
 	for _, via := range netlist.Vias {
@@ -866,7 +888,7 @@ func punchIPC356APadHoles(layers []*problem.Layer, netlist *IPC356ANetlist, d *D
 		}
 		shape := circlePolygon(via.X, via.Y, dia/2)
 		for li := range layers {
-			shapes = append(shapes, layerShape{layerIdx: li, shape: shape})
+			shapes = append(shapes, layerShape{layerIdx: li, shape: shape, net: via.Net})
 		}
 	}
 	if len(shapes) == 0 {
@@ -875,9 +897,11 @@ func punchIPC356APadHoles(layers []*problem.Layer, netlist *IPC356ANetlist, d *D
 
 	for li, layer := range layers {
 		var holes geometry.MultiPolygon
+		var holeNets []string
 		for _, s := range shapes {
 			if s.layerIdx == li {
 				holes = append(holes, s.shape)
+				holeNets = append(holeNets, s.net)
 			}
 		}
 		if len(holes) == 0 || len(layer.Shape) == 0 {
@@ -914,15 +938,30 @@ func punchIPC356APadHoles(layers []*problem.Layer, netlist *IPC356ANetlist, d *D
 		}
 
 		newShape := make(geometry.MultiPolygon, 0, len(layer.Shape)-1+len(punched)+len(holes))
+		newLabels := make([]string, 0, len(layer.NetLabels)-1+len(punched)+len(holes))
 		for i, poly := range layer.Shape {
 			if i == largestIdx {
 				continue
 			}
 			newShape = append(newShape, poly)
+			if i < len(layer.NetLabels) {
+				newLabels = append(newLabels, layer.NetLabels[i])
+			} else {
+				newLabels = append(newLabels, "")
+			}
+		}
+		largestNet := ""
+		if largestIdx < len(layer.NetLabels) {
+			largestNet = layer.NetLabels[largestIdx]
 		}
 		newShape = append(newShape, punched...)
+		for range punched {
+			newLabels = append(newLabels, largestNet)
+		}
 		newShape = append(newShape, holes...)
+		newLabels = append(newLabels, holeNets...)
 		layer.Shape = newShape
+		layer.NetLabels = newLabels
 		d.Info(fmt.Sprintf("Layer '%s': punched %d IPC356A pad/via hole(s) -> %d polygon(s)", layer.Name, len(holes), len(newShape)))
 	}
 }

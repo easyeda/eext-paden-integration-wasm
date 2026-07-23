@@ -75,10 +75,11 @@ func ResetNodeIDCounter() {
 
 // Connection represents a connection between an internal node and a point on a copper layer.
 type Connection struct {
-	Layer  *Layer
-	Point  geometry.Point
-	NodeID *NodeID
-	Kind   string // "via", "source", "load", "track", "gnd", "pad"
+	Layer     *Layer
+	Point     geometry.Point
+	NodeID    *NodeID
+	Kind      string  // "via", "source", "load", "track", "gnd", "pad"
+	Diameter  float64 // outer diameter, only used for via rendering
 }
 
 // NewConnection creates a connection with a fresh NodeID.

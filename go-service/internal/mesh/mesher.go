@@ -799,8 +799,13 @@ func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Poly
 	// seed points from polluting the mesh.
 	box := poly.Bounds()
 	charLen := math.Hypot(box.MaxX-box.MinX, box.MaxY-box.MinY)
-	minArea := math.Max(1e-12, charLen*charLen*1e-8)
-	minEdge := charLen * 1e-4 // minimum edge length (reject triangles with any edge shorter)
+	// Tighten thresholds relative to the previous version.  The absolute floors
+	// keep small-but-real features (fine tracks/pads) while rejecting the
+	// degenerate spike triangles that appear near inserted seed points.
+	minArea := math.Max(1e-10, charLen*charLen*5e-8)
+	minEdge := math.Max(1e-3, charLen*1e-4) // minimum edge length
+	minAngle := 1.0 * math.Pi / 180.0       // reject needle-like spike triangles
+	maxAspect := 50.0                       // reject extremely elongated triangles
 
 	var filtered [][3]int
 	dropped := 0
@@ -823,6 +828,17 @@ func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Poly
 		}
 		cen := Point{X: (a.X + b.X + c.X) / 3, Y: (a.Y + b.Y + c.Y) / 3}
 		if !pointInPolygon(cen, poly) {
+			dropped++
+			continue
+		}
+		// Reject needle-like triangles (spikes) by minimum angle and aspect ratio.
+		minE := math.Min(ab, math.Min(bc, ca))
+		maxE := math.Max(ab, math.Max(bc, ca))
+		if maxE/minE > maxAspect {
+			dropped++
+			continue
+		}
+		if triMinAngle(points, t) < minAngle {
 			dropped++
 			continue
 		}

@@ -64,7 +64,8 @@
   .colorbar canvas { border: 1px solid #30363d; border-radius: 3px; }
   .cb-labels { display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; font-family: monospace; color: #8b949e; padding: 2px 0; }
 
-  .info-panel { position: absolute; left: 12px; bottom: 12px; background: rgba(13,17,23,0.88); border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; font-size: 11px; font-family: monospace; line-height: 1.6; color: #c9d1d9; pointer-events: none; max-width: 280px; }
+  .info-panel { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); background: rgba(13,17,23,0.88); border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-family: monospace; line-height: 1.5; color: #c9d1d9; pointer-events: none; max-width: 92%; display: flex; flex-direction: column; gap: 2px; }
+  .info-row { display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap; }
   .info-panel .label { color: #8b949e; }
   .info-panel .value { color: #f0f6fc; font-weight: 600; }
   .info-panel .warn { color: #f0883e; }
@@ -104,6 +105,7 @@
   <button id="btn-copper" title="铜箔覆盖视图 (M)">铜箔</button>
   <div class="sep"></div>
   <button id="btn-diag" title="诊断日志">诊断</button>
+  <button id="btn-copyimg" title="复制当前视图图片">复制图片</button>
   <button id="btn-warn" title="电流容量警告" style="display:none"><span class="warn-icon">⚠</span></button>
   <button id="btn-reset" title="重置视图 (R)">重置</button>
   <span class="spacer"></span>
@@ -299,12 +301,13 @@ void main(){
 const VS_POINT = `
 attribute vec2 a_pos;
 attribute vec3 a_col;
+attribute float a_dia;
 uniform mat4 u_mvp;
-uniform float u_size;
+uniform float u_worldToPx;
 varying vec3 v_col;
 void main(){
   gl_Position = u_mvp * vec4(a_pos, 0.0, 1.0);
-  gl_PointSize = u_size;
+  gl_PointSize = max(3.0, a_dia / u_worldToPx);
   v_col = a_col;
 }`;
 
@@ -476,7 +479,7 @@ function updateCmapTexture() {
 }
 function initGL() {
   canvas = document.getElementById('gl-canvas');
-  gl = canvas.getContext('webgl', { antialias: true, alpha: false, stencil: true });
+  gl = canvas.getContext('webgl', { antialias: true, alpha: false, stencil: true, preserveDrawingBuffer: true });
   if (!gl) { document.getElementById('loading').textContent = 'WebGL not supported'; return false; }
 
   ext32bit = gl.getExtension('OES_element_index_uint');
@@ -492,8 +495,8 @@ function initGL() {
   lineProg.a = getAttribs(lineProg.prog, ['a_pos']);
 
   pointProg = { prog: linkProgram(VS_POINT, FS_POINT) };
-  pointProg.u = getUniforms(pointProg.prog, ['u_mvp','u_size']);
-  pointProg.a = getAttribs(pointProg.prog, ['a_pos','a_col']);
+  pointProg.u = getUniforms(pointProg.prog, ['u_mvp','u_worldToPx']);
+  pointProg.a = getAttribs(pointProg.prog, ['a_pos','a_col','a_dia']);
 
   cmapTex = gl.createTexture();
   updateCmapTexture();
@@ -554,6 +557,13 @@ function loadResult(idx) {
   }
   // 保存提取器诊断日志
   dataFlowLog = entry.extractorDiagnostics || [];
+  if (dataFlowLog.length > 0) {
+    console.log('[Results] extractorDiagnostics:\n' + dataFlowLog.join('\n'));
+  }
+  const backendDiags = resultData.diagnostics || [];
+  if (backendDiags.length > 0) {
+    console.log('[Results] backendDiagnostics:\n' + backendDiags.join('\n'));
+  }
 
   _log('loadResult', 'entry keys=' + Object.keys(entry).join(','));
   _log('loadResult', 'entry.currentWarnings=' + (entry.currentWarnings?.length || 0));
@@ -886,6 +896,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     }
     if (mVMin === Infinity) { mVMin = 0; mVMax = 1; }
     meshVoltageRanges.push({ vMin: mVMin, vMax: mVMax, start: vBase, count: n });
+    console.log('[Results] buildLayerBuffers layer=' + li + ' mesh=' + mi + ': vRange=[' + mVMin.toFixed(6) + ', ' + mVMax.toFixed(6) + '], verts=' + n + ', tris=' + mTris.length);
     // Power density: may be per-face or per-vertex
     const pdBase = powerDensities.length;
     const pd = m.powerDensities || [];
@@ -929,12 +940,13 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   // Connection points: the 过孔 button should only show actual vias.
   const cps = (connectionPoints[lname] || []).filter(cp => cp.kind === 'via');
   if (cps.length > 0) {
-    const ptData = new Float32Array(cps.length * 5);
+    const ptData = new Float32Array(cps.length * 6);
     for (let i = 0; i < cps.length; i++) {
       const cp = cps[i];
-      const col = cp.is_source ? [1.0, 0.2, 0.2] : [0.5, 0.5, 0.5];
-      ptData[i*5] = cp.x; ptData[i*5+1] = cp.y;
-      ptData[i*5+2] = col[0]; ptData[i*5+3] = col[1]; ptData[i*5+4] = col[2];
+      const col = cp.is_source ? [1.0, 0.2, 0.2] : [0.2, 1.0, 0.4];
+      ptData[i*6] = cp.x; ptData[i*6+1] = cp.y;
+      ptData[i*6+2] = col[0]; ptData[i*6+3] = col[1]; ptData[i*6+4] = col[2];
+      ptData[i*6+5] = cp.diameter || 0.5;
     }
     glData.pointVBO = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, glData.pointVBO);
@@ -1068,6 +1080,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   // 根据是否是"全部"视图选择归一化方式
   const isAllNetworksView = isShowingAllNetworks();
   glData.vMin = globalVMin; glData.vMax = globalVMax;
+  console.log('[Results] globalVRange=[' + globalVMin.toFixed(6) + ', ' + globalVMax.toFixed(6) + '], vccVoltage=' + vccVoltage.toFixed(4) + ', isAllNetworks=' + isAllNetworksView);
   glData.srcVoltage = srcVoltage; glData.loadVoltage = loadVoltage;
 
   const verts = new Float32Array(positions.length / 2 * 3);
@@ -1468,6 +1481,7 @@ function renderSingleLayer(li, mvp) {
   }
 
   // 1) Mesh triangles — per-mesh rendering with VCC/GND colormaps
+  console.log('[Results] mesh render check: meshVBO=' + !!gd.meshVBO + ', prog=' + !!meshProg.prog + ', perMeshIdxRanges=' + (gd.perMeshIdxRanges ? gd.perMeshIdxRanges.length : 'null') + ', meshIsGnd=' + JSON.stringify(gd.meshIsGnd));
   if (gd.meshVBO && meshProg.prog && gd.perMeshIdxRanges) {
     gl.useProgram(meshProg.prog);
     gl.uniformMatrix4fv(meshProg.u.u_mvp, false, mvp);
@@ -1538,6 +1552,7 @@ function renderSingleLayer(li, mvp) {
     }
 
     gl.disableVertexAttribArray(meshProg.a.a_val);
+
   }
 
   // 1.5) Disconnected meshes — render with the same color as the copper
@@ -1583,19 +1598,21 @@ function renderSingleLayer(li, mvp) {
   if (showVias && gd.pointVBO) {
     gl.useProgram(pointProg.prog);
     gl.uniformMatrix4fv(pointProg.u.u_mvp, false, mvp);
-    const pcbSize = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
-    const dpr = window.devicePixelRatio || 1;
-    const ptSize = Math.max(8, pcbSize * viewZoom * dpr * 0.006);
-    gl.uniform1f(pointProg.u.u_size, ptSize);
+    // Vertical world height = 2 / viewZoom; canvas.height pixels cover it.
+    const worldToPx = 2 / (viewZoom * canvas.height);
+    gl.uniform1f(pointProg.u.u_worldToPx, worldToPx);
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.pointVBO);
-    const ptStride = 5 * 4;
+    const ptStride = 6 * 4;
     gl.enableVertexAttribArray(pointProg.a.a_pos);
     gl.vertexAttribPointer(pointProg.a.a_pos, 2, gl.FLOAT, false, ptStride, 0);
     gl.enableVertexAttribArray(pointProg.a.a_col);
     gl.vertexAttribPointer(pointProg.a.a_col, 3, gl.FLOAT, false, ptStride, 8);
+    gl.enableVertexAttribArray(pointProg.a.a_dia);
+    gl.vertexAttribPointer(pointProg.a.a_dia, 1, gl.FLOAT, false, ptStride, 20);
     gl.drawArrays(gl.POINTS, 0, gd.pointCount);
     gl.disableVertexAttribArray(pointProg.a.a_pos);
     gl.disableVertexAttribArray(pointProg.a.a_col);
+    gl.disableVertexAttribArray(pointProg.a.a_dia);
   }
 
   // 5) Current flow arrows
@@ -2158,97 +2175,87 @@ function updateInfoPanel() {
   const ls = resultData.layerSolutions[currentLayerIdx];
   if (!ls) { panel.style.display = 'none'; return; }
 
-  // In copper_coverage mode, show simplified info
-  if (currentViewMode === 'copper_coverage') {
-    const gd = layerGL[currentLayerIdx];
-    let totalVerts = 0, totalTris = 0;
-    for (const m of ls.meshes) {
-      totalVerts += m.vertices.length;
-      totalTris += m.triangles.length;
-    }
-    let html = `<span class="label">模式:</span> <span class="value">铜箔覆盖视图</span><br>`;
-    html += `<span class="label">层:</span> <span class="value">${layerNamesList[currentLayerIdx]}</span><br>`;
-    html += `<span class="label">网格:</span> <span class="value">${totalVerts} 顶点, ${totalTris} 三角形</span><br>`;
-    html += `<span class="label" style="color:#f0883e">热力图区域</span> <span class="value">VCC网络(电压分布)</span><br>`;
-    html += `<span class="label" style="color:#9b8db3">紫色区域</span> <span class="value">GND网络(有电流)</span><br>`;
-    html += `<span class="label" style="color:#8b949e">灰色区域</span> <span class="value">无电流铜箔</span>`;
-    panel.innerHTML = html;
-    panel.style.display = '';
-    return;
-  }
-
-  let totalVerts = 0, totalTris = 0, minV = Infinity, maxV = -Infinity;
-  let minPD = Infinity, maxPD = -Infinity;
-  // Use global voltage range across ALL layers for consistent display
-  for (let ali = 0; ali < resultData.layerSolutions.length; ali++) {
-    for (const m of resultData.layerSolutions[ali].meshes) {
-      for (const p of m.potentials) {
-        if (p != null && isFinite(p)) { if (p < minV) minV = p; if (p > maxV) maxV = p; }
-      }
-    }
-  }
-  for (let mi = 0; mi < ls.meshes.length; mi++) {
-    const m = ls.meshes[mi];
+  const layerName = layerNamesList[currentLayerIdx];
+  let totalVerts = 0, totalTris = 0;
+  for (const m of ls.meshes) {
     totalVerts += m.vertices.length;
     totalTris += m.triangles.length;
-    for (const p of (m.powerDensities || [])) {
-      if (p != null && isFinite(p)) { if (p < minPD) minPD = p; if (p > maxPD) maxPD = p; }
-    }
-  }
-  if (minV === Infinity) { minV = 0; maxV = 0; }
-  if (minPD === Infinity) { minPD = 0; maxPD = 0; }
-
-  // Look up actual voltages at source/load pad positions for the current layer
-  const currentLayerName = layerNamesList[currentLayerIdx];
-  let sourceVoltage = null, loadVoltage = null;
-  for (const ni of networkInfoData) {
-    const srcOnLayer = ni.sourcePads.filter(p => !p.layer || p.layer === currentLayerName);
-    const loadOnLayer = ni.loadPads.filter(p => !p.layer || p.layer === currentLayerName);
-    let srcSum = 0, srcCnt = 0, loadSum = 0, loadCnt = 0;
-    for (const p of srcOnLayer) {
-      const v = pickValueAtLayer(p.x, p.y, currentLayerIdx);
-      if (v != null && isFinite(v)) { srcSum += v; srcCnt++; }
-    }
-    for (const p of loadOnLayer) {
-      const v = pickValueAtLayer(p.x, p.y, currentLayerIdx);
-      if (v != null && isFinite(v)) { loadSum += v; loadCnt++; }
-    }
-    if (srcCnt > 0) sourceVoltage = srcSum / srcCnt;
-    if (loadCnt > 0) loadVoltage = loadSum / loadCnt;
   }
 
+  const makeItem = (label, value, cls='value') => `<span class="label">${label}:</span> <span class="${cls}">${value}</span>`;
+  let row1 = '';
+  let row2 = '';
 
-  const gd = layerGL[currentLayerIdx];
-
-  const info = resultData.solverInfo;
-  let html = `<span class="label">层:</span> <span class="value">${layerNamesList[currentLayerIdx]}</span><br>`;
-  html += `<span class="label">网格:</span> <span class="value">${totalVerts} 顶点, ${totalTris} 三角形</span><br>`;
-  if (currentViewMode === 'power') {
+  if (currentViewMode === 'copper_coverage') {
+    row1 = `${makeItem('层', layerName)} ${makeItem('网格', `${totalVerts}V/${totalTris}T`)} ${makeItem('模式', '铜箔覆盖')}`;
+    row2 = '<span style="color:#f0883e">VCC网络</span> <span style="color:#9b8db3">GND网络</span> <span style="color:#8b949e">无电流铜箔</span>';
+  } else if (currentViewMode === 'power') {
+    let minPD = Infinity, maxPD = -Infinity;
+    for (let mi = 0; mi < ls.meshes.length; mi++) {
+      for (const p of (ls.meshes[mi].powerDensities || [])) {
+        if (p != null && isFinite(p)) { if (p < minPD) minPD = p; if (p > maxPD) maxPD = p; }
+      }
+    }
+    if (minPD === Infinity) { minPD = 0; maxPD = 0; }
     const pdRangeStr = maxPD > 0
-      ? `${minPD.toExponential(2)} ~ ${maxPD.toExponential(2)} W/mm² (log)`
+      ? `${minPD.toExponential(2)} ~ ${maxPD.toExponential(2)} W/mm²`
       : '无功率密度数据';
-    html += `<span class="label">功率密度:</span> <span class="value">${pdRangeStr}</span><br>`;
+    row1 = `${makeItem('层', layerName)} ${makeItem('网格', `${totalVerts}V/${totalTris}T`)} ${makeItem('功率密度', pdRangeStr)}`;
+    row2 = groundCurrentHtml();
   } else {
-    html += `<span class="label">电源电压:</span> <span class="value">${vccVoltage.toFixed(2)} V</span><br>`;
-    html += `<span class="label">全局电压范围:</span> <span class="value">${minV.toFixed(4)} ~ ${maxV.toFixed(4)} V</span><br>`;
-    if (sourceVoltage != null) {
-      html += `<span class="label">本层源端:</span> <span class="value">${sourceVoltage.toFixed(4)} V</span><br>`;
+    let minV = Infinity, maxV = -Infinity;
+    for (let ali = 0; ali < resultData.layerSolutions.length; ali++) {
+      for (const m of resultData.layerSolutions[ali].meshes) {
+        for (const p of m.potentials) {
+          if (p != null && isFinite(p)) { if (p < minV) minV = p; if (p > maxV) maxV = p; }
+        }
+      }
     }
+    if (minV === Infinity) { minV = 0; maxV = 0; }
+
+    // Source/load voltages at this layer
+    const currentLayerName = layerName;
+    let sourceVoltage = null, loadVoltage = null;
+    for (const ni of networkInfoData) {
+      const srcOnLayer = ni.sourcePads.filter(p => !p.layer || p.layer === currentLayerName);
+      const loadOnLayer = ni.loadPads.filter(p => !p.layer || p.layer === currentLayerName);
+      let srcSum = 0, srcCnt = 0, loadSum = 0, loadCnt = 0;
+      for (const p of srcOnLayer) {
+        const v = pickValueAtLayer(p.x, p.y, currentLayerIdx);
+        if (v != null && isFinite(v)) { srcSum += v; srcCnt++; }
+      }
+      for (const p of loadOnLayer) {
+        const v = pickValueAtLayer(p.x, p.y, currentLayerIdx);
+        if (v != null && isFinite(v)) { loadSum += v; loadCnt++; }
+      }
+      if (srcCnt > 0) sourceVoltage = srcSum / srcCnt;
+      if (loadCnt > 0) loadVoltage = loadSum / loadCnt;
+    }
+
+    row1 = `${makeItem('层', layerName)} ${makeItem('网格', `${totalVerts}V/${totalTris}T`)} ${makeItem('全局电压', `${minV.toFixed(4)} ~ ${maxV.toFixed(4)} V`)} ${makeItem('电源', `${vccVoltage.toFixed(2)} V`)}`;
+    let parts = [];
+    if (sourceVoltage != null) parts.push(makeItem('源端', `${sourceVoltage.toFixed(4)} V`));
     if (loadVoltage != null) {
-      html += `<span class="label">本层负载:</span> <span class="value">${loadVoltage.toFixed(4)} V</span><br>`;
+      parts.push(makeItem('负载', `${loadVoltage.toFixed(4)} V`));
       const effectiveSource = sourceVoltage != null ? sourceVoltage : vccVoltage;
       const drop = effectiveSource - loadVoltage;
-      html += `<span class="label">压降:</span> <span class="value${drop > 0.1 ? ' warn' : ''}">${drop.toFixed(4)} V (${(drop / effectiveSource * 100).toFixed(2)}%)</span>`;
+      const warnCls = drop > 0.1 ? 'value warn' : 'value';
+      parts.push(makeItem('压降', `${drop.toFixed(4)} V (${(drop / effectiveSource * 100).toFixed(2)}%)`, warnCls));
     }
+    row2 = parts.length ? parts.join(' ') : groundCurrentHtml();
   }
-  if (info) {
-    const gniVal = info.groundNodeCurrent;
-    const gniStr = gniVal != null ? gniVal.toFixed(6) : 'N/A';
-    const gniClass = gniVal != null && Math.abs(gniVal) > 0.001 ? 'warn' : '';
-    html += `<br><span class="label">地电流:</span> <span class="value ${gniClass}">${gniStr} A</span>`;
-  }
-  panel.innerHTML = html;
+
+  panel.innerHTML = `<div class="info-row">${row1}</div><div class="info-row">${row2}</div>`;
   panel.style.display = '';
+}
+
+function groundCurrentHtml() {
+  const info = resultData.solverInfo;
+  if (!info) return '';
+  const gniVal = info.groundNodeCurrent;
+  const gniStr = gniVal != null ? gniVal.toFixed(6) : 'N/A';
+  const gniClass = gniVal != null && Math.abs(gniVal) > 0.001 ? 'value warn' : 'value';
+  return `<span class="label">地电流:</span> <span class="${gniClass}">${gniStr} A</span>`;
 }
 
 function drawColorbar() {
@@ -2711,7 +2718,36 @@ try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) +
   // Expose for the inline onclick handler in the diagnostic dialog.
   window.copyDiag = copyDiag;
 
+  async function copyImage() {
+    if (!canvas || !gl) {
+      console.warn('[Results] copyImage: WebGL not ready');
+      return;
+    }
+    render();
+    const btn = document.getElementById('btn-copyimg');
+    const origText = btn.textContent;
+    try {
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob((b) => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/png');
+      });
+      if (navigator.clipboard && navigator.clipboard.write) {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '已复制';
+      } else {
+        // Fallback: open image in new window
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        btn.textContent = '已打开';
+      }
+    } catch (e) {
+      console.error('[Results] copyImage failed', e);
+      btn.textContent = '失败';
+    }
+    setTimeout(() => { btn.textContent = origText; }, 1500);
+  }
+
   document.getElementById('btn-diag').addEventListener('click', showDiag);
+  document.getElementById('btn-copyimg').addEventListener('click', copyImage);
 })();
 </script>
 </body>

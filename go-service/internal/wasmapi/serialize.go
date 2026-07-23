@@ -78,6 +78,7 @@ type ConnectionPoint struct {
 	Y        float64 `json:"y"`
 	IsSource bool    `json:"is_source"`
 	Kind     string  `json:"kind"`
+	Diameter float64 `json:"diameter"`
 }
 
 // BoundaryPolygon describes layer boundary exterior and holes as [x,y] arrays
@@ -178,6 +179,7 @@ func serializeConnectionPoints(sol *solver.Solution, transform *[4]float64) map[
 				Y:        y,
 				IsSource: net.HasSource,
 				Kind:     conn.Kind,
+				Diameter: conn.Diameter,
 			})
 		}
 	}

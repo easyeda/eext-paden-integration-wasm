@@ -23,6 +23,7 @@ type Via struct {
 	X            float64  `json:"x"`
 	Y            float64  `json:"y"`
 	HoleDiameter float64  `json:"hole_diameter"`
+	Diameter     float64  `json:"diameter"`
 	LayerNames   []string `json:"layer_names"`
 	Net          string   `json:"net"`
 	ViaType      string   `json:"via_type"`

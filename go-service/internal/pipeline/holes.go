@@ -29,12 +29,28 @@ func subtractTHTPadHoles(layers []*problem.Layer, pads []Pad, transform *[4]floa
 	}
 	holeMP := geometry.MultiPolygon(holes)
 	for _, layer := range layers {
-		clipped, err := geometry.Difference(layer.Shape, holeMP)
-		if err != nil || len(clipped) == 0 {
-			d.Warn(fmt.Sprintf("Layer '%s': hole subtraction failed, keeping original", layer.Name))
+		newShape := make(geometry.MultiPolygon, 0, len(layer.Shape))
+		newLabels := make([]string, 0, len(layer.Shape))
+		for i, poly := range layer.Shape {
+			clipped, err := geometry.Difference(geometry.MultiPolygon{poly}, holeMP)
+			if err != nil || len(clipped) == 0 {
+				continue
+			}
+			label := ""
+			if i < len(layer.NetLabels) {
+				label = layer.NetLabels[i]
+			}
+			newShape = append(newShape, clipped...)
+			for range clipped {
+				newLabels = append(newLabels, label)
+			}
+		}
+		if len(newShape) == 0 {
+			d.Warn(fmt.Sprintf("Layer '%s': hole subtraction removed all copper", layer.Name))
 			continue
 		}
-		layer.Shape = clipped
+		layer.Shape = newShape
+		layer.NetLabels = newLabels
 	}
 }
 
@@ -73,13 +89,29 @@ func punchViaHoles(layers []*problem.Layer, specs []viaSpec, d *DiagCollector) {
 		if err != nil || len(merged) == 0 {
 			merged = holes
 		}
-		punched, err := geometry.Difference(layer.Shape, merged)
-		if err != nil || len(punched) == 0 {
-			d.Warn(fmt.Sprintf("Layer '%s': via hole punch failed, keeping original", layer.Name))
+		newShape := make(geometry.MultiPolygon, 0, len(layer.Shape))
+		newLabels := make([]string, 0, len(layer.Shape))
+		for i, poly := range layer.Shape {
+			punched, err := geometry.Difference(geometry.MultiPolygon{poly}, merged)
+			if err != nil || len(punched) == 0 {
+				continue
+			}
+			label := ""
+			if i < len(layer.NetLabels) {
+				label = layer.NetLabels[i]
+			}
+			newShape = append(newShape, punched...)
+			for range punched {
+				newLabels = append(newLabels, label)
+			}
+		}
+		if len(newShape) == 0 {
+			d.Warn(fmt.Sprintf("Layer '%s': via hole punch removed all copper", layer.Name))
 			continue
 		}
-		layer.Shape = punched
-		d.Info(fmt.Sprintf("Layer '%s': punched %d via hole(s) -> %d polygon(s)", layer.Name, len(holes), len(punched)))
+		layer.Shape = newShape
+		layer.NetLabels = newLabels
+		d.Info(fmt.Sprintf("Layer '%s': punched %d via hole(s) -> %d polygon(s)", layer.Name, len(holes), len(newShape)))
 	}
 }
 
@@ -115,4 +147,35 @@ func removeTinyPolygons(mp geometry.MultiPolygon, minArea float64) geometry.Mult
 		}
 	}
 	return out
+}
+
+// removeTinyPolygonsWithLabels is the label-preserving variant of
+// removeTinyPolygons. It removes polygons below the area threshold and keeps
+// the NetLabels array aligned with the surviving polygons.
+func removeTinyPolygonsWithLabels(mp geometry.MultiPolygon, labels []string, minArea float64) (geometry.MultiPolygon, []string) {
+	if len(mp) == 0 {
+		return mp, labels
+	}
+	out := make(geometry.MultiPolygon, 0, len(mp))
+	outLabels := make([]string, 0, len(mp))
+	for i, poly := range mp {
+		area := 0.0
+		for j, ring := range poly {
+			a := math.Abs(ring.Area())
+			if j == 0 {
+				area += a
+			} else {
+				area -= a
+			}
+		}
+		if area >= minArea {
+			out = append(out, poly)
+			label := ""
+			if i < len(labels) {
+				label = labels[i]
+			}
+			outLabels = append(outLabels, label)
+		}
+	}
+	return out, outLabels
 }

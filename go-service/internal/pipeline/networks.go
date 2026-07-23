@@ -13,6 +13,7 @@ import (
 type viaSpec struct {
 	Point         geometry.Point
 	DrillDiameter float64
+	Diameter      float64
 	LayerNames    []string
 	Net           string
 	ViaType       string
@@ -38,6 +39,7 @@ func extractViaSpecs(vias []Via, layerDict map[string]*problem.Layer, transform 
 		specs = append(specs, viaSpec{
 			Point:         geometry.Point{X: x, Y: y},
 			DrillDiameter: v.HoleDiameter,
+			Diameter:      v.Diameter,
 			LayerNames:    validLayers,
 			Net:           v.Net,
 			ViaType:       v.ViaType,
@@ -55,12 +57,103 @@ func viaResistance(drillDiameter, length, platingThickness, conductivity float64
 	return length / (conductivity * math.Pi * (outerR*outerR - innerR*innerR))
 }
 
-func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stackup []float64, selectedNets map[string]bool, d *DiagCollector) []*problem.Network {
+// inferViaNet resolves a via with an empty or unselected net.  It prefers the
+// configured ground net / selected source nets, and falls back to the most
+// common polygon label around the via location so that vias whose net property
+// was lost in the frontend export still connect the correct layers.
+func inferViaNet(spec viaSpec, layerDict map[string]*problem.Layer, allowedNets map[string]bool) string {
+	if spec.Net != "" && allowedNets[spec.Net] {
+		return spec.Net
+	}
+
+	votes := make(map[string]int)
+	collectVotes := func(pt geometry.Point) {
+		for _, name := range spec.LayerNames {
+			layer := layerDict[name]
+			if layer == nil {
+				continue
+			}
+			for i, poly := range layer.Shape {
+				if pointInPolygonMesh(pt, poly) {
+					net := ""
+					if i < len(layer.NetLabels) {
+						net = layer.NetLabels[i]
+					}
+					if net != "" {
+						votes[net]++
+					}
+				}
+			}
+		}
+	}
+
+	collectVotes(spec.Point)
+	// Vias sit in drilled holes; the surrounding copper belongs to the via net.
+	// Sample around the hole at the annular-ring midpoint to catch the correct
+	// polygon even when the via centre is empty.
+	outerR := math.Max(spec.Diameter/2, spec.DrillDiameter/2)
+	probeR := spec.DrillDiameter/2 + (outerR-spec.DrillDiameter/2)*0.5
+	if probeR <= 0 {
+		probeR = 0.3
+	}
+	for i := 0; i < 8; i++ {
+		a := 2 * math.Pi * float64(i) / 8
+		collectVotes(geometry.Point{X: spec.Point.X + probeR*math.Cos(a), Y: spec.Point.Y + probeR*math.Sin(a)})
+	}
+
+	// If the via already had a net, only keep it when it is in the allowed set.
+	if spec.Net != "" {
+		return ""
+	}
+
+	bestNet := ""
+	bestCnt := 0
+	for net, cnt := range votes {
+		if cnt > bestCnt || (cnt == bestCnt && allowedNets[net] && !allowedNets[bestNet]) {
+			bestCnt = cnt
+			bestNet = net
+		}
+	}
+	if bestNet != "" && allowedNets[bestNet] {
+		return bestNet
+	}
+	return ""
+}
+
+func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stackup []float64, cfg Config, d *DiagCollector) []*problem.Network {
+	allowedNets := make(map[string]bool)
+	for _, src := range cfg.Sources {
+		allowedNets[src.Net] = true
+		if src.GndNet != "" {
+			allowedNets[src.GndNet] = true
+		}
+		for _, p := range src.GndPads {
+			allowedNets[p.Net] = true
+		}
+	}
+	for _, ld := range cfg.Loads {
+		if ld.GndNet != "" {
+			allowedNets[ld.GndNet] = true
+		}
+		for _, p := range ld.GndPads {
+			allowedNets[p.Net] = true
+		}
+	}
+	if cfg.GndNet != "" {
+		allowedNets[cfg.GndNet] = true
+	}
+
 	var networks []*problem.Network
 	for _, spec := range specs {
-		if spec.Net != "" && !selectedNets[spec.Net] {
+		net := inferViaNet(spec, layerDict, allowedNets)
+		if net == "" {
+			d.Info(fmt.Sprintf("Via (%.3f,%.3f): skipped (net='%s', not in selected/ground nets)", spec.Point.X, spec.Point.Y, spec.Net))
 			continue
 		}
+		if net != spec.Net {
+			d.Info(fmt.Sprintf("Via (%.3f,%.3f): inferred net '%s' from geometry (original='%s')", spec.Point.X, spec.Point.Y, net, spec.Net))
+		}
+
 		var viaLayers []struct {
 			idx   int
 			layer *problem.Layer
@@ -91,17 +184,22 @@ func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stac
 			length := (thicknessA + thicknessB) / 2
 			res := viaResistance(spec.DrillDiameter, length, 0.025, 5.95e4)
 
-			nearestA, okA := findNearestPointOnLayer(spec.Point, a.layer, spec.Net)
-			nearestB, okB := findNearestPointOnLayer(spec.Point, b.layer, spec.Net)
+			// Verify that each layer has nearby copper of the via net, but keep
+			// the connection at the original via centre so the preview shows the
+			// via in the correct location (even when the centre falls in an
+			// anti-pad hole and the solver snaps to the nearest mesh vertex).
+			_, okA := findNearestPointOnLayer(spec.Point, a.layer, net)
+			_, okB := findNearestPointOnLayer(spec.Point, b.layer, net)
 			if !okA || !okB {
+				d.Info(fmt.Sprintf("Via '%s' (%.3f,%.3f): no '%s' copper on layer pair '%s'/'%s'", net, spec.Point.X, spec.Point.Y, net, a.layer.Name, b.layer.Name))
 				continue
 			}
 
-			connA := problem.NewConnection(a.layer, nearestA)
+			connA := problem.NewConnection(a.layer, spec.Point)
 			connA.Kind = "via"
-			connB := problem.NewConnection(b.layer, nearestB)
+			connB := problem.NewConnection(b.layer, spec.Point)
 			connB.Kind = "via"
-			net, err := problem.NewNetwork(
+			vn, err := problem.NewNetwork(
 				[]*problem.Connection{connA, connB},
 				[]problem.LumpedElement{
 					&problem.Resistor{A: connA.NodeID, B: connB.NodeID, Resistance: res},
@@ -111,7 +209,11 @@ func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stac
 				d.Warn(fmt.Sprintf("Via network error: %v", err))
 				continue
 			}
-			networks = append(networks, net)
+			// Preserve the via outer diameter so the results viewer can draw it
+			// at the correct size.
+			connA.Diameter = spec.Diameter
+			connB.Diameter = spec.Diameter
+			networks = append(networks, vn)
 		}
 	}
 	return networks
@@ -295,7 +397,6 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 
 	connectPad := func(pad Pad, kind string) []*problem.Connection {
 		pt := transformPt(pad.X, pad.Y)
-		d.Info(fmt.Sprintf("connectPad: pad layer='%s' isTHT=%v kind='%s' pt=%.3f,%.3f", pad.Layer, pad.IsTHT, kind, pt.X, pt.Y))
 
 		tryConnect := func(l *problem.Layer, p geometry.Point) *problem.Connection {
 			// Prefer exact containment; if just outside, snap to nearest boundary point.
@@ -367,19 +468,17 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 					}
 				}
 				if bestLayer != nil {
-					d.Info(fmt.Sprintf("connectPad THT fallback: nearest layer '%s' dist=%.3f", bestLayer.Name, bestDist))
+					d.Warn(fmt.Sprintf("Pad '%s' on '%s' snapped %.3f mm to nearest '%s' copper", pad.Net, bestLayer.Name, bestDist, pad.Net))
 					c := problem.NewConnection(bestLayer, bestPt)
 					c.Kind = kind
 					conns = append(conns, c)
 				}
 			}
-			d.Info(fmt.Sprintf("connectPad THT: %d connections", len(conns)))
 			return conns
 		}
 
 		layer := layerDict[pad.Layer]
 		if layer == nil {
-			d.Info(fmt.Sprintf("connectPad SMD: layer '%s' not found in layerDict, falling back to nearest layer", pad.Layer))
 			var bestLayer *problem.Layer
 			var bestPt geometry.Point
 			bestDist := math.Inf(1)
@@ -403,17 +502,12 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 			return nil
 		}
 		if c := tryConnect(layer, pt); c != nil {
-			nearest, _ := findNearestPointOnLayer(pt, layer, pad.Net)
-			d.Info(fmt.Sprintf("connectPad SMD: layer '%s' connected nearest=%.3f,%.3f", pad.Layer, nearest.X, nearest.Y))
 			return []*problem.Connection{c}
 		}
 		nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net)
 		if !ok {
-			d.Info(fmt.Sprintf("connectPad SMD: layer '%s' has no geometry", pad.Layer))
 			return nil
 		}
-		dist := math.Hypot(nearest.X-pt.X, nearest.Y-pt.Y)
-		d.Info(fmt.Sprintf("connectPad SMD: layer '%s' not contained, snapping nearest dist=%.3f", pad.Layer, dist))
 		c := problem.NewConnection(layer, nearest)
 		c.Kind = kind
 		return []*problem.Connection{c}

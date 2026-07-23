@@ -248,7 +248,9 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	// threshold small enough that real small pads/traces (>= ~0.01 mm^2) survive.
 	for _, layer := range layers {
 		before := len(layer.Shape)
-		layer.Shape = removeTinyPolygons(layer.Shape, 1e-3)
+		newShape, newLabels := removeTinyPolygonsWithLabels(layer.Shape, layer.NetLabels, 1e-3)
+		layer.Shape = newShape
+		layer.NetLabels = newLabels
 		if removed := before - len(layer.Shape); removed > 0 {
 			d.Info(fmt.Sprintf("Layer '%s': removed %d tiny polygon(s)", layer.Name, removed))
 		}
@@ -269,8 +271,7 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 
 	// 6. Via networks
 	d.Info("Step 4: Via resistor networks")
-	selectedNets := selectedNetworks(cfg.Sources)
-	viaNetworks := buildViaNetworks(viaSpecs, layerDict, stackup, selectedNets, d)
+	viaNetworks := buildViaNetworks(viaSpecs, layerDict, stackup, cfg, d)
 	d.Info(fmt.Sprintf("Via networks: %d", len(viaNetworks)))
 
 	// 7. User networks
@@ -670,10 +671,3 @@ func buildStackup(thickness map[string]float64, layers []*problem.Layer) []float
 	return stackup
 }
 
-func selectedNetworks(sources []Source) map[string]bool {
-	nets := make(map[string]bool)
-	for _, src := range sources {
-		nets[src.Net] = true
-	}
-	return nets
-}
