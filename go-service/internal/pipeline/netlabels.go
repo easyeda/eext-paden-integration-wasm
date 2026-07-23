@@ -62,29 +62,23 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 			}
 			if pi.tht {
 				// A THT pad sits in a drilled hole; the copper belonging to the pad is
-				// the annular ring on every layer it passes through. Label any polygon
-				// whose exterior ring contains the pad centre, even if the centre lies
-				// inside a hole of a large pour (the pour's annular ring still belongs
-				// to the pad net). Also sample the annular ring explicitly for robustness.
-				for polyIdx, poly := range l.Shape {
-					if len(poly) == 0 {
-						continue
-					}
-					if pointInRingMesh(pi.pt, poly[0]) {
-						if pi.net != "" {
-							votes[polyIdx][pi.net]++
-						}
-					}
+				// the annular ring on every layer it passes through. Do NOT vote based
+				// on the pad centre being inside a polygon exterior — that would wrongly
+				// label a large copper pour with the pad's net when the pad is isolated
+				// by an anti-pad. Instead sample the annular ring at several radii to
+				// catch both small rings and rings connected to a pour via thermal
+				// relief.
+				radii := []float64{pi.holeDiameter * 0.55, pi.holeDiameter * 0.7, pi.holeDiameter * 0.85}
+				if pi.holeDiameter <= 0 {
+					radii = []float64{0.2, 0.35, 0.5}
 				}
-				probeRadius := pi.holeDiameter * 0.75
-				if probeRadius <= 0 {
-					probeRadius = 0.3
-				}
-				for _, probe := range thtAnnularProbes(pi.pt, probeRadius) {
-					for polyIdx, poly := range l.Shape {
-						if pointInPolygonMesh(probe, poly) {
-							if pi.net != "" {
-								votes[polyIdx][pi.net]++
+				for _, radius := range radii {
+					for _, probe := range thtAnnularProbes(pi.pt, radius) {
+						for polyIdx, poly := range l.Shape {
+							if pointInPolygonMesh(probe, poly) {
+								if pi.net != "" {
+									votes[polyIdx][pi.net]++
+								}
 							}
 						}
 					}

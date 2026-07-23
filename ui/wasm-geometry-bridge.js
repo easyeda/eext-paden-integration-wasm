@@ -660,6 +660,7 @@ function drillToPolygons(drillText) {
 		console.error('[geometry bridge] drill parse error:', e);
 		throw e;
 	}
+	console.warn('[geometry bridge] drill parsed tree:', { type: tree?.type, filetype: tree?.filetype, childrenCount: tree?.children?.length });
 	let image;
 	try {
 		image = plotFn(tree);
@@ -668,13 +669,13 @@ function drillToPolygons(drillText) {
 		console.error('[geometry bridge] drill plot error:', e);
 		throw e;
 	}
+	console.warn('[geometry bridge] drill plotted image:', { type: image?.type, units: image?.units, size: image?.size, childrenCount: image?.children?.length });
 
 	const holes = [];
 	for (const child of image.children || []) {
-		if (child.type === 'imageShape') {
-			const polys = shapeToPolygons(child.shape);
-			holes.push(...polys);
-		}
+		const childPolys = imageGraphicToPolygons(child);
+		console.warn('[geometry bridge] drill image child:', { type: child?.type, shapeType: child?.shape?.type, polarity: child?.polarity, polygons: childPolys.length });
+		holes.push(...childPolys);
 	}
 	console.warn('[geometry bridge] drill holes:', holes.length);
 	return holes;

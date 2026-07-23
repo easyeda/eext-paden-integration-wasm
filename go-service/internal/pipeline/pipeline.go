@@ -160,16 +160,32 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	if len(drillHoles) > 0 {
 		d.Info(fmt.Sprintf("Subtracting %d drill-hole polygon(s) from all copper layers", len(drillHoles)))
 		for _, layer := range layers {
-			newShape, err := geometry.Difference(layer.Shape, drillHoles)
-			if err != nil {
-				d.Warn(fmt.Sprintf("Layer '%s': drill subtraction failed (%v), keeping original", layer.Name, err))
-				continue
+			newShape := make(geometry.MultiPolygon, 0, len(layer.Shape))
+			newLabels := make([]string, 0, len(layer.Shape))
+			for i, poly := range layer.Shape {
+				punched, err := geometry.Difference(geometry.MultiPolygon{poly}, drillHoles)
+				if err != nil {
+					d.Warn(fmt.Sprintf("Layer '%s': drill subtraction failed (%v), keeping original", layer.Name, err))
+					continue
+				}
+				if len(punched) == 0 {
+					continue
+				}
+				label := ""
+				if i < len(layer.NetLabels) {
+					label = layer.NetLabels[i]
+				}
+				newShape = append(newShape, punched...)
+				for range punched {
+					newLabels = append(newLabels, label)
+				}
 			}
 			if len(newShape) == 0 {
 				d.Warn(fmt.Sprintf("Layer '%s': empty after drill subtraction, keeping original", layer.Name))
 				continue
 			}
 			layer.Shape = newShape
+			layer.NetLabels = newLabels
 			for i := range layer.Shape {
 				layer.Shape[i].EnsureOrientation()
 			}

@@ -96,6 +96,7 @@ func ParseDrillHoles(zipBytes []byte) (MultiPolygon, error) {
 	}
 
 	var allHoles MultiPolygon
+	var checked int
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
@@ -103,6 +104,7 @@ func ParseDrillHoles(zipBytes []byte) (MultiPolygon, error) {
 		if !isDrillFile(f.Name) {
 			continue
 		}
+		checked++
 
 		rc, err := f.Open()
 		if err != nil {
@@ -119,6 +121,7 @@ func ParseDrillHoles(zipBytes []byte) (MultiPolygon, error) {
 			return nil, fmt.Errorf("failed to parse %s: %w", f.Name, err)
 		}
 		if len(holes) == 0 {
+			fmt.Printf("[GerberZip] drill %s parsed but produced 0 holes\n", f.Name)
 			continue
 		}
 		fmt.Printf("[GerberZip] drill %s -> %d holes\n", f.Name, len(holes))
@@ -126,6 +129,9 @@ func ParseDrillHoles(zipBytes []byte) (MultiPolygon, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to union drill holes from %s: %w", f.Name, err)
 		}
+	}
+	if checked == 0 {
+		fmt.Printf("[GerberZip] no drill files found in ZIP\n")
 	}
 	if len(allHoles) > 0 {
 		fmt.Printf("[GerberZip] total drill holes: %d polygon(s)\n", len(allHoles))
@@ -145,11 +151,13 @@ func isGerberFile(name string) bool {
 
 func isDrillFile(name string) bool {
 	ln := stringsToLower(name)
-	if hasSuffix(ln, ".drl") {
+	if hasSuffix(ln, ".drl") || hasSuffix(ln, ".drd") || hasSuffix(ln, ".tap") {
 		return true
 	}
-	if contains(ln, "drill") && (hasSuffix(ln, ".txt") || hasSuffix(ln, ".xln")) {
-		return true
+	if hasSuffix(ln, ".txt") || hasSuffix(ln, ".xln") {
+		if contains(ln, "drill") || contains(ln, "hole") || contains(ln, "npth") || contains(ln, "plated") {
+			return true
+		}
 	}
 	return false
 }

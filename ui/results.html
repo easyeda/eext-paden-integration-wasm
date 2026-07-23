@@ -106,7 +106,7 @@
   <div class="sep"></div>
   <button id="btn-diag" title="诊断日志">诊断</button>
   <button id="btn-copyimg" title="复制当前视图图片">复制图片</button>
-  <button id="btn-warn" title="电流容量警告" style="display:none"><span class="warn-icon">⚠</span></button>
+  <button id="btn-warn" title="电流容量警告" style="display:none">警告</button>
   <button id="btn-reset" title="重置视图 (R)">重置</button>
   <span class="spacer"></span>
   <button id="btn-reanalyze" style="background:#238636;border-color:#238636;color:#fff" onclick="reanalyze()">重新分析</button>
@@ -2070,6 +2070,7 @@ function setupUI() {
   }
 
   document.getElementById('st-layer').textContent = '层: ' + layerNamesList[currentLayerIdx];
+  updateToggles();
   updateInfoPanel();
 }
 
@@ -2718,6 +2719,35 @@ try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) +
   // Expose for the inline onclick handler in the diagnostic dialog.
   window.copyDiag = copyDiag;
 
+  function worldToScreen(x, y) {
+    const aspect = canvas.width / canvas.height;
+    const clipX = (x - viewCX) * viewZoom / aspect;
+    const clipY = (y - viewCY) * viewZoom;
+    return {
+      x: (clipX + 1) / 2 * canvas.width,
+      y: (1 - clipY) / 2 * canvas.height
+    };
+  }
+
+  function computeBoardBounds() {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const lname in layerBoundaries) {
+      for (const poly of layerBoundaries[lname] || []) {
+        const ext = poly.exterior;
+        if (!ext || !Array.isArray(ext)) continue;
+        for (const pt of ext) {
+          const x = vx(pt), y = vy(pt);
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (minX === Infinity) return null;
+    return { minX, minY, maxX, maxY };
+  }
+
   async function copyImage() {
     if (!canvas || !gl) {
       console.warn('[Results] copyImage: WebGL not ready');
@@ -2727,8 +2757,27 @@ try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) +
     const btn = document.getElementById('btn-copyimg');
     const origText = btn.textContent;
     try {
+      let sourceCanvas = canvas;
+      let cropX = 0, cropY = 0, cropW = canvas.width, cropH = canvas.height;
+      const boardBounds = computeBoardBounds();
+      if (boardBounds) {
+        const p0 = worldToScreen(boardBounds.minX, boardBounds.minY);
+        const p1 = worldToScreen(boardBounds.maxX, boardBounds.maxY);
+        cropX = Math.max(0, Math.floor(Math.min(p0.x, p1.x)));
+        cropY = Math.max(0, Math.floor(Math.min(p0.y, p1.y)));
+        cropW = Math.min(canvas.width - cropX, Math.ceil(Math.max(p0.x, p1.x) - cropX));
+        cropH = Math.min(canvas.height - cropY, Math.ceil(Math.max(p0.y, p1.y) - cropY));
+        if (cropW > 0 && cropH > 0) {
+          const tmp = document.createElement('canvas');
+          tmp.width = cropW;
+          tmp.height = cropH;
+          const ctx = tmp.getContext('2d');
+          ctx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+          sourceCanvas = tmp;
+        }
+      }
       const blob = await new Promise((resolve, reject) => {
-        canvas.toBlob((b) => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/png');
+        sourceCanvas.toBlob((b) => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/png');
       });
       if (navigator.clipboard && navigator.clipboard.write) {
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
