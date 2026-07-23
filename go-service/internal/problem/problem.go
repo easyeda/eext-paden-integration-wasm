@@ -13,6 +13,10 @@ type Layer struct {
 	NetLabels   []string // inferred net for each polygon in Shape; empty = unknown
 	Name        string
 	Conductance float64  // Siemens = conductivity [S/mm] * thickness [mm]
+	// Reflected is true when the original Gerber file was exported mirrored
+	// (e.g. a bottom copper layer viewed from the bottom side). The pipeline
+	// will un-mirror it to board coordinates before net inference.
+	Reflected   bool
 }
 
 // Bounds returns the bounding box of all polygons in the layer.

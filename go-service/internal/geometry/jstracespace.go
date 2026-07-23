@@ -11,9 +11,10 @@ import (
 
 // GerberLayer holds polygons parsed from a single Gerber file.
 type GerberLayer struct {
-	Name     string
-	Filename string
-	Polygons MultiPolygon
+	Name      string
+	Filename  string
+	Polygons  MultiPolygon
+	Reflected bool // true if Gerber header says the layer is mirrored
 }
 
 // ParseGerberZip extracts each Gerber file from the ZIP and converts it to
@@ -50,7 +51,7 @@ func ParseGerberZip(zipBytes []byte, layerNames []string) (map[string]GerberLaye
 			return nil, fmt.Errorf("failed to parse %s: %w", f.Name, err)
 		}
 
-		layerName := matchLayerName(f.Name, layerNames)
+		layerName := MatchLayerName(f.Name, layerNames)
 		// Outline / mechanical layers should never masquerade as copper layers.
 		// Keep them under their filename so extractBoardOutline can find them.
 		if isOutlineFile(nameLower) && layerName != baseNameNoExt(f.Name) {
@@ -59,9 +60,10 @@ func ParseGerberZip(zipBytes []byte, layerNames []string) (map[string]GerberLaye
 		}
 		fmt.Printf("[GerberZip] %s -> layer '%s' (%d polygons)\n", f.Name, layerName, len(polygons))
 		layers[layerName] = GerberLayer{
-			Name:     layerName,
-			Filename: f.Name,
-			Polygons: polygons,
+			Name:      layerName,
+			Filename:  f.Name,
+			Polygons:  polygons,
+			Reflected: isGerberReflected(string(data)),
 		}
 	}
 
@@ -164,6 +166,13 @@ func isDrillFile(name string) bool {
 
 // isOutlineFile returns true for mechanical/outline layers that should not be
 // treated as signal/plane copper layers.
+func isGerberReflected(text string) bool {
+	ln := stringsToLower(text)
+	// EasyEDA Pro gerber comments look like:
+	//   G04 Scale: 100 percent, Rotated: No, Reflected: No*
+	return contains(ln, "reflected: yes") || contains(ln, "reflected:yes")
+}
+
 func isOutlineFile(name string) bool {
 	checks := []string{"outline", "edge", "board", "profile", "gko", "gml", "gm1", "gm2", "gm3", "gm4", "gm5"}
 	for _, c := range checks {
@@ -185,7 +194,7 @@ func baseNameNoExt(filename string) string {
 	return base
 }
 
-func matchLayerName(filename string, layerNames []string) string {
+func MatchLayerName(filename string, layerNames []string) string {
 	base := filename
 	if idx := lastIndex(base, "/"); idx >= 0 {
 		base = base[idx+1:]
@@ -198,6 +207,15 @@ func matchLayerName(filename string, layerNames []string) string {
 	// Prefer an exact match with configured layer names.
 	for _, name := range layerNames {
 		if name == baseNoExt || name == base {
+			return name
+		}
+	}
+
+	// Substring match: e.g. "Gerber_TopLayer.GTL" -> "TopLayer" when the
+	// configured layer name appears inside the filename base.
+	lowerBase := stringsToLower(baseNoExt)
+	for _, name := range layerNames {
+		if contains(lowerBase, stringsToLower(name)) {
 			return name
 		}
 	}

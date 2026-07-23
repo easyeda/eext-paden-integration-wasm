@@ -73,9 +73,9 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	for _, lc := range cfg.Layers {
 		gl, ok := parsed[lc.Name]
 		if !ok {
-			// Try matching by normalized name
+			// Try matching by normalized name.
 			for _, candidate := range parsed {
-				if matchLayerName(lc.Name, candidate.Filename) {
+				if geometry.MatchLayerName(candidate.Filename, []string{lc.Name}) == lc.Name {
 					gl = candidate
 					d.Info(fmt.Sprintf("Layer '%s' matched file '%s'", lc.Name, candidate.Filename))
 					break
@@ -93,6 +93,7 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 			Shape:       gl.Polygons,
 			Name:        lc.Name,
 			Conductance: lc.EffectiveConductance(),
+			Reflected:   gl.Reflected,
 		}
 		layers = append(layers, layer)
 		d.Info(fmt.Sprintf("Layer '%s': %d polygons from Gerber", lc.Name, len(gl.Polygons)))
@@ -101,6 +102,10 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	if len(layers) == 0 {
 		return nil, d, fmt.Errorf("no valid copper layers from Gerber")
 	}
+
+	// Extract the board outline early; its centre is the reference for un-mirroring
+	// any reflected Gerber layers (common for bottom copper in some exports).
+	outline, outlineName := extractBoardOutline(parsed)
 
 	// Clean each layer: normalize ring orientations first, then union overlapping
 	// dark polygons. Clipper2 is sensitive to winding direction, so orient before
@@ -141,9 +146,11 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 		layerDict[l.Name] = l
 	}
 
-	// 2. Extract board outline and clip
+	// 1b. Un-mirror any reflected layers so IPC-D-356A / config coordinates align.
+	unmirrorReflectedLayers(layers, outline, d)
+
+	// 2. Board outline clipping
 	d.Info("Step 2: Board outline clipping")
-	outline, outlineName := extractBoardOutline(parsed)
 	if outline != nil {
 		d.Info(fmt.Sprintf("Using outline layer '%s' with %d polygon(s)", outlineName, len(outline)))
 		clipLayersWithOutline(layers, outline, d)
@@ -495,6 +502,72 @@ func layerArea(mp geometry.MultiPolygon) float64 {
 		area += polygonSignedArea(poly)
 	}
 	return math.Abs(area)
+}
+
+// unmirrorReflectedLayers flips layers whose Gerber header says they are
+// mirrored (typically bottom copper viewed from the bottom side) back to board
+// coordinates. This lets IPC-D-356A netlist points and EasyEDA pad coordinates
+// align with the bottom Gerber.
+func unmirrorReflectedLayers(layers []*problem.Layer, outline geometry.MultiPolygon, d *DiagCollector) {
+	cx, cy := boardCenter(layers, outline)
+	for _, layer := range layers {
+		if !layer.Reflected {
+			continue
+		}
+		layer.Shape = mirrorMultiPolygonX(layer.Shape, cx)
+		for i := range layer.Shape {
+			layer.Shape[i].EnsureOrientation()
+		}
+		layer.Reflected = false
+		b := layer.Bounds()
+		d.Info(fmt.Sprintf("Layer '%s': un-mirrored about (%.2f,%.2f); bounds=[%.2f,%.2f]x[%.2f,%.2f]",
+			layer.Name, cx, cy, b.MinX, b.MaxX, b.MinY, b.MaxY))
+	}
+}
+
+// boardCenter returns a stable pivot for mirroring. Prefer the board outline
+// centre; fall back to the centre of all layer bounds.
+func boardCenter(layers []*problem.Layer, outline geometry.MultiPolygon) (float64, float64) {
+	if len(outline) > 0 {
+		b := outline.Bounds()
+		return (b.MinX + b.MaxX) / 2, (b.MinY + b.MaxY) / 2
+	}
+	if len(layers) == 0 {
+		return 0, 0
+	}
+	b := layers[0].Bounds()
+	for i := 1; i < len(layers); i++ {
+		bi := layers[i].Bounds()
+		if bi.MinX < b.MinX {
+			b.MinX = bi.MinX
+		}
+		if bi.MinY < b.MinY {
+			b.MinY = bi.MinY
+		}
+		if bi.MaxX > b.MaxX {
+			b.MaxX = bi.MaxX
+		}
+		if bi.MaxY > b.MaxY {
+			b.MaxY = bi.MaxY
+		}
+	}
+	return (b.MinX + b.MaxX) / 2, (b.MinY + b.MaxY) / 2
+}
+
+func mirrorMultiPolygonX(mp geometry.MultiPolygon, cx float64) geometry.MultiPolygon {
+	out := make(geometry.MultiPolygon, len(mp))
+	for i, poly := range mp {
+		p := make(geometry.Polygon, len(poly))
+		for j, ring := range poly {
+			r := make(geometry.Ring, len(ring))
+			for k, pt := range ring {
+				r[k] = geometry.Point{X: 2*cx - pt.X, Y: pt.Y}
+			}
+			p[j] = r
+		}
+		out[i] = p
+	}
+	return out
 }
 
 func polygonSignedArea(poly geometry.Polygon) float64 {
