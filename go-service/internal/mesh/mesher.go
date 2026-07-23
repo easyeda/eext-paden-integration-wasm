@@ -69,8 +69,8 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 
 	// Insert seed points (connection terminals) so boundary conditions are
 	// applied at exact locations. Reject seed points that are too close to
-	// existing vertices — they create degenerate fan triangles.
-	minSeedDist := maxSize * 0.02
+	// existing vertices or edges — they create degenerate fan triangles.
+	minSeedDist := math.Max(math.Min(maxSize*0.04, 0.08), 0.02)
 	for _, sp := range seedPoints {
 		if !pointInPolygon(sp, poly) {
 			continue
@@ -80,11 +80,16 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 			t := tris[ti]
 			a, b, c := pts[t[0]], pts[t[1]], pts[t[2]]
 			if pointInTriangle(sp, a, b, c) {
-				// Skip if seed is too close to any vertex — the fan triangles
-				// would be degenerate spikes.
+				// Skip if seed is too close to any vertex or edge — the fan
+				// triangles would be degenerate spikes. The solver will snap the
+				// connection to the nearest mesh vertex instead.
 				if distTo(sp, a) < minSeedDist || distTo(sp, b) < minSeedDist || distTo(sp, c) < minSeedDist {
-					fmt.Printf("[PADEN mesh] seed point (%.4f,%.4f) too close to vertex, skipped\n", sp.X, sp.Y)
 					inserted = true // treated as inserted so no warning is logged
+					break
+				}
+				dEdge := math.Min(math.Min(distToSegment(sp, a, b), distToSegment(sp, b, c)), distToSegment(sp, c, a))
+				if dEdge < minSeedDist {
+					inserted = true
 					break
 				}
 				insertPointInSoup(&pts, &tris, ti, sp)
@@ -667,6 +672,22 @@ func distTo(a, b Point) float64 {
 	return math.Hypot(b.X-a.X, b.Y-a.Y)
 }
 
+func distToSegment(p, a, b Point) float64 {
+	dx := b.X - a.X
+	dy := b.Y - a.Y
+	if dx == 0 && dy == 0 {
+		return math.Hypot(p.X-a.X, p.Y-a.Y)
+	}
+	t := ((p.X-a.X)*dx + (p.Y-a.Y)*dy) / (dx*dx + dy*dy)
+	if t < 0 {
+		return math.Hypot(p.X-a.X, p.Y-a.Y)
+	}
+	if t > 1 {
+		return math.Hypot(p.X-b.X, p.Y-b.Y)
+	}
+	return math.Hypot(p.X-(a.X+t*dx), p.Y-(a.Y+t*dy))
+}
+
 // triangleEdgeInfo returns the third vertex of tri opposite the undirected
 // edge {a,b}, and whether the edge appears reversed (as b->a) in tri.
 func triangleEdgeInfo(tri [3]int, a, b int) (third int, reversed bool) {
@@ -795,17 +816,20 @@ func quadConvex(pts []Point, a, b, c, d int) bool {
 // filterValidTriangles drops degenerate or hole-spanning triangles.
 func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Polygon) [][3]int {
 	// Compute a characteristic scale from the polygon to set a relative
-	// minimum-area threshold. This prevents degenerate spike triangles near
-	// seed points from polluting the mesh.
+	// minimum-area threshold. Cap the scale so very large boards do not
+	// over-filter small-but-real copper features.
 	box := poly.Bounds()
 	charLen := math.Hypot(box.MaxX-box.MinX, box.MaxY-box.MinY)
+	if charLen > 200 {
+		charLen = 200
+	}
 	// Tighten thresholds relative to the previous version.  The absolute floors
 	// keep small-but-real features (fine tracks/pads) while rejecting the
 	// degenerate spike triangles that appear near inserted seed points.
-	minArea := math.Max(1e-10, charLen*charLen*5e-8)
-	minEdge := math.Max(1e-3, charLen*1e-4) // minimum edge length
-	minAngle := 1.0 * math.Pi / 180.0       // reject needle-like spike triangles
-	maxAspect := 50.0                       // reject extremely elongated triangles
+	minArea := math.Max(1e-9, charLen*charLen*1e-7)
+	minEdge := math.Max(2e-3, charLen*5e-5) // minimum edge length
+	minAngle := 2.0 * math.Pi / 180.0       // reject needle-like spike triangles
+	maxAspect := 25.0                       // reject extremely elongated triangles
 
 	var filtered [][3]int
 	dropped := 0
