@@ -68,7 +68,9 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 	}
 
 	// Insert seed points (connection terminals) so boundary conditions are
-	// applied at exact locations.
+	// applied at exact locations. Reject seed points that are too close to
+	// existing vertices — they create degenerate fan triangles.
+	minSeedDist := maxSize * 0.02
 	for _, sp := range seedPoints {
 		if !pointInPolygon(sp, poly) {
 			continue
@@ -78,6 +80,13 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 			t := tris[ti]
 			a, b, c := pts[t[0]], pts[t[1]], pts[t[2]]
 			if pointInTriangle(sp, a, b, c) {
+				// Skip if seed is too close to any vertex — the fan triangles
+				// would be degenerate spikes.
+				if distTo(sp, a) < minSeedDist || distTo(sp, b) < minSeedDist || distTo(sp, c) < minSeedDist {
+					fmt.Printf("[PADEN mesh] seed point (%.4f,%.4f) too close to vertex, skipped\n", sp.X, sp.Y)
+					inserted = true // treated as inserted so no warning is logged
+					break
+				}
 				insertPointInSoup(&pts, &tris, ti, sp)
 				inserted = true
 				break
@@ -137,7 +146,7 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 				if triMinAngle(pts, tris[tis[0]]) >= minAngleRad && triMinAngle(pts, tris[tis[1]]) >= minAngleRad {
 					continue
 				}
-				if tryFlipEdge(pts, &tris, edgeMap, e[0], e[1]) {
+				if tryFlipEdge(pts, &tris, edgeMap, e[0], e[1], poly) {
 					flipped = true
 				}
 			}
@@ -654,6 +663,10 @@ func edgeLen(pts []Point, a, b int) float64 {
 	return math.Hypot(pts[b].X-pts[a].X, pts[b].Y-pts[a].Y)
 }
 
+func distTo(a, b Point) float64 {
+	return math.Hypot(b.X-a.X, b.Y-a.Y)
+}
+
 // triangleEdgeInfo returns the third vertex of tri opposite the undirected
 // edge {a,b}, and whether the edge appears reversed (as b->a) in tri.
 func triangleEdgeInfo(tri [3]int, a, b int) (third int, reversed bool) {
@@ -721,7 +734,7 @@ func insertPointInSoup(pts *[]Point, tris *[][3]int, triIdx int, p Point) {
 
 // tryFlipEdge flips the interior edge {a,b} if it improves the minimum angle
 // of the adjacent quadrilateral. It returns true if a flip occurred.
-func tryFlipEdge(pts []Point, tris *[][3]int, edgeMap map[[2]int][]int, a, b int) bool {
+func tryFlipEdge(pts []Point, tris *[][3]int, edgeMap map[[2]int][]int, a, b int, poly geometry.Polygon) bool {
 	key := [2]int{a, b}
 	if a > b {
 		key = [2]int{b, a}
@@ -752,6 +765,14 @@ func tryFlipEdge(pts []Point, tris *[][3]int, edgeMap map[[2]int][]int, a, b int
 		n1 = [3]int{c, b, d}
 		n2 = [3]int{c, d, a}
 	}
+
+	// Validate centroid containment before accepting the flip.
+	cen1 := Point{X: (pts[n1[0]].X + pts[n1[1]].X + pts[n1[2]].X) / 3, Y: (pts[n1[0]].Y + pts[n1[1]].Y + pts[n1[2]].Y) / 3}
+	cen2 := Point{X: (pts[n2[0]].X + pts[n2[1]].X + pts[n2[2]].X) / 3, Y: (pts[n2[0]].Y + pts[n2[1]].Y + pts[n2[2]].Y) / 3}
+	if !pointInPolygon(cen1, poly) || !pointInPolygon(cen2, poly) {
+		return false
+	}
+
 	newMin := math.Min(triMinAngle(pts, n1), triMinAngle(pts, n2))
 	if newMin <= curMin+1e-6 {
 		return false
@@ -773,12 +794,30 @@ func quadConvex(pts []Point, a, b, c, d int) bool {
 
 // filterValidTriangles drops degenerate or hole-spanning triangles.
 func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Polygon) [][3]int {
+	// Compute a characteristic scale from the polygon to set a relative
+	// minimum-area threshold. This prevents degenerate spike triangles near
+	// seed points from polluting the mesh.
+	box := poly.Bounds()
+	charLen := math.Hypot(box.MaxX-box.MinX, box.MaxY-box.MinY)
+	minArea := math.Max(1e-12, charLen*charLen*1e-8)
+	minEdge := charLen * 1e-4 // minimum edge length (reject triangles with any edge shorter)
+
 	var filtered [][3]int
 	dropped := 0
 	for _, t := range triangles {
 		a, b, c := points[t[0]], points[t[1]], points[t[2]]
+		ab := math.Hypot(b.X-a.X, b.Y-a.Y)
+		bc := math.Hypot(c.X-b.X, c.Y-b.Y)
+		ca := math.Hypot(a.X-c.X, a.Y-c.Y)
+
+		// Drop if any edge is shorter than the minimum (produces spike triangles).
+		if ab < minEdge || bc < minEdge || ca < minEdge {
+			dropped++
+			continue
+		}
+
 		area := math.Abs((b.X-a.X)*(c.Y-a.Y) - (c.X-a.X)*(b.Y-a.Y))
-		if area <= 1e-12 {
+		if area <= minArea {
 			dropped++
 			continue
 		}
@@ -790,7 +829,7 @@ func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Poly
 		filtered = append(filtered, t)
 	}
 	if dropped > 0 {
-		fmt.Printf("[PADEN mesh] dropped %d/%d invalid earcut triangles\n", dropped, len(triangles))
+		fmt.Printf("[PADEN mesh] dropped %d/%d invalid triangles\n", dropped, len(triangles))
 	}
 	return filtered
 }
