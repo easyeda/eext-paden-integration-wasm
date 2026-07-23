@@ -155,7 +155,9 @@
 // PLASMA colormap (from matplotlib, 256 samples)
 // ============================================================
 const PLASMA=[
-[0.050383,0.029803,0.527975],[0.063536,0.028426,0.533124],[0.075353,0.027206,0.538007],
+// First entry replaced with copper-context fill color so GND (0V) mesh
+// triangles blend seamlessly with the stencil-fill background.
+[0.22,0.32,0.25],[0.063536,0.028426,0.533124],[0.075353,0.027206,0.538007],
 [0.086222,0.026125,0.542658],[0.096379,0.025165,0.547103],[0.10598,0.024309,0.551368],
 [0.115124,0.023556,0.555468],[0.123903,0.022878,0.559423],[0.132381,0.022258,0.56325],
 [0.140603,0.021687,0.566959],[0.148607,0.021154,0.570562],[0.156421,0.020651,0.574065],
@@ -1538,11 +1540,13 @@ function renderSingleLayer(li, mvp) {
     gl.disableVertexAttribArray(meshProg.a.a_val);
   }
 
-  // 1.5) Disconnected meshes
+  // 1.5) Disconnected meshes — render with the same color as the copper
+  // context fill so they blend seamlessly. These are small copper polygons
+  // isolated during same-net union, with no solver data.
   if (gd.discVBO && gd.discIBO) {
     gl.useProgram(lineProg.prog);
     gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
-    gl.uniform4f(lineProg.u.u_color, 0.18, 0.30, 0.20, 1.0);
+    gl.uniform4f(lineProg.u.u_color, 0.22, 0.32, 0.25, 1.0); // Same as context fill
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.discVBO);
     gl.enableVertexAttribArray(lineProg.a.a_pos);
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
