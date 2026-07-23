@@ -24,7 +24,7 @@ All TypeScript/build commands run from the repo root:
 | `npm run compile` | Compile `src/index.ts` into `dist/index.js` via esbuild. |
 | `npm run lint` | Run ESLint with `@antfu/eslint-config`. |
 | `npm run fix` | Run ESLint with `--fix`. |
-| `npm run build:wasm-host-bridge` | Bundle `ui/wasm-geometry-bridge.js` into `dist/`. |
+| `npm run build:geometry-bridge` | Bundle `ui/wasm-geometry-bridge.js` into `dist/`. |
 | `npm run build:wasm` | Compile `go-service/main_wasm.go` to `dist/paden.wasm`. |
 | `npm run build:wasm:dev` | Compile WASM without `-s -w` for debugging (larger file). |
 | `npm run build` | Full release build: compile TypeScript → build bridge → build WASM → copy assets → package `.eext` into `build/dist/`. |
