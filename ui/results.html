@@ -615,6 +615,23 @@ function loadResult(idx) {
     _log('loadResult', 'FAIL: no vertex bounds (all meshes empty?)');
     return false;
   }
+  _log('loadResult', 'mesh bounds X=[' + bx0.toFixed(2) + ',' + bx1.toFixed(2) + '] Y=[' + by0.toFixed(2) + ',' + by1.toFixed(2) + ']');
+
+  // Include polygon boundary extents so the view always zooms to the full board
+  // outline, not just the solved FEM region. The mesh covers only the VCC/GND
+  // copper polygons; without the layer boundaries the view would crop to a
+  // portrait sliver whenever the dense copper sits in a vertical strip.
+  for (const lname in layerBoundaries) {
+    for (const poly of layerBoundaries[lname] || []) {
+      const ext = poly.exterior;
+      if (!ext || !Array.isArray(ext)) continue;
+      for (const pt of ext) {
+        const x = vx(pt), y = vy(pt);
+        if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
+        if (y < by0) by0 = y; if (y > by1) by1 = y;
+      }
+    }
+  }
   _log('loadResult', 'bounds X=[' + bx0.toFixed(2) + ',' + bx1.toFixed(2) + '] Y=[' + by0.toFixed(2) + ',' + by1.toFixed(2) + ']');
   bounds = { minX: bx0, maxX: bx1, minY: by0, maxY: by1 };
 
@@ -977,29 +994,47 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     glData.outlineCount = outlineVerts.length / 4;
   }
 
-  // Board copper fill: stencil-based polygon fill for copper pour shapes.
-  // Exterior fans increment the stencil, hole fans decrement it, so overlapping
-  // exteriors union correctly and holes are carved out.
-  const boardStencilVerts = [];
-  const boardStencilFans = [];
+  // Board copper fill: direct triangle fill using pre-triangulated boundaries.
+  // Falls back to TRIANGLE_FAN only if the backend did not supply triangles.
+  const boardFillVerts = [];
+  const boardFillIdx = [];
+  const boardFillFans = [];
   for (const poly of polys) {
+    const hasTris = poly.triangles && poly.triangles.length > 0 && poly.vertices && poly.vertices.length > 0;
+    if (hasTris) {
+      const base = boardFillVerts.length / 2;
+      for (const pt of poly.vertices) boardFillVerts.push(pt[0], pt[1]);
+      for (const tri of poly.triangles) {
+        if (tri.length >= 3) boardFillIdx.push(base + tri[0], base + tri[1], base + tri[2]);
+      }
+      continue;
+    }
     const ext = poly.exterior;
     if (!ext || ext.length < 3) continue;
-    const off = boardStencilVerts.length / 2;
-    for (const pt of ext) boardStencilVerts.push(pt[0], pt[1]);
-    boardStencilFans.push({ offset: off, count: ext.length, isHole: false });
+    const off = boardFillVerts.length / 2;
+    for (const pt of ext) boardFillVerts.push(pt[0], pt[1]);
+    boardFillFans.push({ offset: off, count: ext.length, isHole: false });
     for (const hole of (poly.holes || [])) {
       if (hole.length < 3) continue;
-      const hOff = boardStencilVerts.length / 2;
-      for (const pt of hole) boardStencilVerts.push(pt[0], pt[1]);
-      boardStencilFans.push({ offset: hOff, count: hole.length, isHole: true });
+      const hOff = boardFillVerts.length / 2;
+      for (const pt of hole) boardFillVerts.push(pt[0], pt[1]);
+      boardFillFans.push({ offset: hOff, count: hole.length, isHole: true });
     }
   }
-  if (boardStencilVerts.length > 0) {
-    glData.copperStencilVBO = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, glData.copperStencilVBO);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(boardStencilVerts), gl.STATIC_DRAW);
-    glData.copperStencilFans = boardStencilFans;
+  if (boardFillVerts.length > 0) {
+    glData.boardFillVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glData.boardFillVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(boardFillVerts), gl.STATIC_DRAW);
+    if (boardFillIdx.length > 0) {
+      const need32 = boardFillIdx.length >= 65536 && ext32bit;
+      glData.boardFillIBO = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glData.boardFillIBO);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, need32 ? new Uint32Array(boardFillIdx) : new Uint16Array(boardFillIdx), gl.STATIC_DRAW);
+      glData.boardFillIdxType = need32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+      glData.boardFillTriCount = boardFillIdx.length;
+    } else {
+      glData.boardFillFans = boardFillFans;
+    }
   }
   // Bounding box quad for stencil fill
   const bMargin = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) * 0.05;
@@ -1044,7 +1079,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
 
   // === Early return if no connected mesh data ===
   if (positions.length === 0) {
-    console.log('[Results] Layer', li, ': no connected mesh, board fill =', !!glData.copperStencilVBO, 'disc =', !!glData.discVBO);
+    console.log('[Results] Layer', li, ': no connected mesh, board fill =', !!glData.boardFillVBO, 'disc =', !!glData.discVBO);
     return glData;
   }
 
@@ -1201,7 +1236,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     glData.edgeCount = edgeVerts.length / 4;
   }
 
-  console.log('[Results] Layer', li, ': mesh OK, board =', !!glData.copperStencilVBO, 'fans =', glData.copperStencilFans?.length, 'disc =', !!glData.discVBO);
+  console.log('[Results] Layer', li, ': mesh OK, board =', !!glData.boardFillVBO, 'tris =', glData.boardFillTriCount, 'fans =', glData.boardFillFans?.length, 'disc =', !!glData.discVBO);
 
   // === Current flow arrows (按网格显示) ===
   const arrowVerts = [];
@@ -1429,55 +1464,34 @@ function render() {
 
 function renderSingleLayer(li, mvp) {
   const gd = layerGL[li];
-  if (!gd || (!gd.meshVBO && !gd.copperStencilVBO)) return;
+  if (!gd || (!gd.meshVBO && !gd.boardFillVBO)) return;
 
   // 0) Copper pour fill - only for the currently selected layer so the back-side
-  // stencil does not clutter/obscure the layer being inspected.
-  if (li === currentLayerIdx && gd.copperStencilVBO && gd.copperStencilFans && gd.boardQuadVBO) {
-    gl.enable(gl.STENCIL_TEST);
-    gl.clearStencil(0);
-    gl.clear(gl.STENCIL_BUFFER_BIT);
-
-    gl.stencilFunc(gl.ALWAYS, 0, 0xFF);
-    gl.colorMask(false, false, false, false);
-
+  // fill does not clutter/obscure the layer being inspected.
+  if (li === currentLayerIdx && gd.boardFillVBO) {
     gl.useProgram(lineProg.prog);
     gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gd.copperStencilVBO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gd.boardFillVBO);
     gl.enableVertexAttribArray(lineProg.a.a_pos);
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
 
-    // Exterior fans increment the stencil.
-    gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
-    for (const fan of gd.copperStencilFans) {
-      if (!fan.isHole) {
-        gl.drawArrays(gl.TRIANGLE_FAN, fan.offset, fan.count);
-      }
-    }
-    // Hole fans decrement the stencil.
-    gl.stencilOp(gl.KEEP, gl.KEEP, gl.DECR);
-    for (const fan of gd.copperStencilFans) {
-      if (fan.isHole) {
-        gl.drawArrays(gl.TRIANGLE_FAN, fan.offset, fan.count);
-      }
-    }
-
-    gl.colorMask(true, true, true, true);
-    gl.stencilFunc(gl.NOTEQUAL, 0, 0xFF);
-    gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
-    // In copper_coverage mode, use cold gray for areas without current
     if (currentViewMode === 'copper_coverage') {
       gl.uniform4f(lineProg.u.u_color, 0.15, 0.18, 0.22, 1.0); // Cold gray
     } else {
       gl.uniform4f(lineProg.u.u_color, 0.22, 0.32, 0.25, 1.0); // Light green context
     }
-    gl.bindBuffer(gl.ARRAY_BUFFER, gd.boardQuadVBO);
-    gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.boardQuadIBO);
-    gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+
+    if (gd.boardFillIBO && gd.boardFillTriCount > 0) {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.boardFillIBO);
+      gl.drawElements(gl.TRIANGLES, gd.boardFillTriCount, gd.boardFillIdxType, 0);
+    } else if (gd.boardFillFans) {
+      // Legacy fallback for polygons without pre-computed triangles.
+      for (const fan of gd.boardFillFans) {
+        gl.drawArrays(gl.TRIANGLE_FAN, fan.offset, fan.count);
+      }
+    }
 
     gl.disableVertexAttribArray(lineProg.a.a_pos);
-    gl.disable(gl.STENCIL_TEST);
   }
 
   // 1) Mesh triangles — per-mesh rendering with VCC/GND colormaps

@@ -211,11 +211,10 @@ func MatchLayerName(filename string, layerNames []string) string {
 		}
 	}
 
-	// Substring match: e.g. "Gerber_TopLayer.GTL" -> "TopLayer" when the
-	// configured layer name appears inside the filename base.
-	lowerBase := stringsToLower(baseNoExt)
+	// Fuzzy match: handles EasyEDA "Gerber_TopLayer.GTL" vs "Top Layer",
+	// KiCad "F.Cu.gbr" vs "Top Layer", and similar variants across tools.
 	for _, name := range layerNames {
-		if contains(lowerBase, stringsToLower(name)) {
+		if FuzzyMatchLayer(name, filename) {
 			return name
 		}
 	}

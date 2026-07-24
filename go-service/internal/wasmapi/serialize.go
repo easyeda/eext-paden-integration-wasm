@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/mesh"
 	"github.com/easyeda/eext-paden-integration/go-service/internal/pipeline"
 	"github.com/easyeda/eext-paden-integration/go-service/internal/problem"
 	"github.com/easyeda/eext-paden-integration/go-service/internal/solver"
@@ -82,10 +83,14 @@ type ConnectionPoint struct {
 }
 
 // BoundaryPolygon describes layer boundary exterior and holes as [x,y] arrays
-// so the JS renderer can consume them directly.
+// so the JS renderer can consume them directly. Vertices/Triangles provide a
+// pre-triangulated fill so the frontend does not need to fan-fill concave
+// polygons.
 type BoundaryPolygon struct {
-	Exterior [][]float64   `json:"exterior"`
-	Holes    [][][]float64 `json:"holes"`
+	Exterior  [][]float64   `json:"exterior"`
+	Holes     [][][]float64 `json:"holes"`
+	Vertices  [][]float64   `json:"vertices"`
+	Triangles [][]int       `json:"triangles"`
 }
 
 // SerializeSolution converts a solver.Solution to JSON bytes.
@@ -99,7 +104,7 @@ func SerializeSolution(sol *solver.Solution) ([]byte, error) {
 		Success:          true,
 		Message:          "求解完成",
 		LayerSolutions:   serializeLayerSolutions(sol, extras.Transform),
-		SolverInfo:       &SolverInfoOutput{GroundNodeCurrent: sol.SolverInfo.GroundNodeCurrent, ResidualNorm: sol.SolverInfo.ResidualNorm},
+		SolverInfo:       &SolverInfoOutput{GroundNodeCurrent: sanitizeFloat(sol.SolverInfo.GroundNodeCurrent), ResidualNorm: sanitizeFloat(sol.SolverInfo.ResidualNorm)},
 		ConnectionPoints: serializeConnectionPoints(sol, extras.Transform),
 		LayerBoundaries:  serializeLayerBoundaries(sol, extras.Transform),
 		Diagnostics:      extras.Diagnostics.Lines,
@@ -143,9 +148,9 @@ func serializeLayerSolutions(sol *solver.Solution, transform *[4]float64) []Laye
 			lso.Meshes = append(lso.Meshes, MeshOutput{
 				Vertices:         vertices,
 				Triangles:        triangles,
-				Potentials:       pot,
-				PowerDensities:   pd,
-				CurrentDensities: cd,
+				Potentials:       sanitizeFloats(pot),
+				PowerDensities:   sanitizeFloats(pd),
+				CurrentDensities: sanitizeFloatsVec(cd),
 			})
 		}
 		for _, dcm := range ls.DisconnectedCompact {
@@ -172,8 +177,18 @@ func serializeConnectionPoints(sol *solver.Solution, transform *[4]float64) map[
 	out := make(map[string][]ConnectionPoint)
 	for _, net := range sol.Problem.Networks {
 		for _, conn := range net.Connections {
+			// Virtual-ground connections carry a nil Layer (no physical PCB
+			// anchor). They participate in the MNA stamping but have no
+			// viewer-relevant coordinates, so skip them.
+			if conn.Layer == nil {
+				continue
+			}
 			name := conn.Layer.Name
-			x, y := toEasyEDA(conn.Point.X, conn.Point.Y, transform)
+			displayPt := conn.Point
+			if conn.DisplayPoint != nil {
+				displayPt = *conn.DisplayPoint
+			}
+			x, y := toEasyEDA(displayPt.X, displayPt.Y, transform)
 			out[name] = append(out[name], ConnectionPoint{
 				X:        x,
 				Y:        y,
@@ -186,6 +201,43 @@ func serializeConnectionPoints(sol *solver.Solution, transform *[4]float64) map[
 	return out
 }
 
+// sanitizeFloat replaces NaN/Inf with 0 so JSON marshalling does not fail.
+// The frontend treats non-finite values as "no data" anyway.
+func sanitizeFloat(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
+}
+
+func sanitizeFloats(arr []float64) []float64 {
+	for i, v := range arr {
+		arr[i] = sanitizeFloat(v)
+	}
+	return arr
+}
+
+func sanitizeFloatsVec(arr [][]float64) [][]float64 {
+	for i, v := range arr {
+		arr[i] = sanitizeFloats(v)
+	}
+	return arr
+}
+
+func sanitizePointSlice(pts [][]float64) [][]float64 {
+	for i, p := range pts {
+		pts[i] = sanitizeFloats(p)
+	}
+	return pts
+}
+
+func sanitizeHoles(holes [][][]float64) [][][]float64 {
+	for i, h := range holes {
+		holes[i] = sanitizePointSlice(h)
+	}
+	return holes
+}
+
 func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[string][]BoundaryPolygon {
 	out := make(map[string][]BoundaryPolygon)
 	for i, layer := range sol.Problem.Layers {
@@ -196,10 +248,29 @@ func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[s
 		for _, poly := range sol.Problem.Layers[i].Shape {
 			exterior := toPointSlice(poly[0], transform)
 			var holes [][][]float64
+			flatVerts := make([][]float64, 0, len(exterior))
+			flatVerts = append(flatVerts, exterior...)
 			for hi := 1; hi < len(poly); hi++ {
-				holes = append(holes, toPointSlice(poly[hi], transform))
+				hole := toPointSlice(poly[hi], transform)
+				holes = append(holes, hole)
+				flatVerts = append(flatVerts, hole...)
 			}
-			polys = append(polys, BoundaryPolygon{Exterior: exterior, Holes: holes})
+			var tris [][]int
+			if tri, err := mesh.Earcut(poly); err == nil {
+				tris = make([][]int, len(tri.Triangles))
+				for i, t := range tri.Triangles {
+					tris[i] = []int{t[0], t[1], t[2]}
+				}
+			}
+			// Defensive sanitization: toEasyEDA can propagate any Inf/NaN present
+			// in the source polygons (e.g. mirror-induced empty rings); the JSON
+			// marshal will reject those otherwise.
+			polys = append(polys, BoundaryPolygon{
+				Exterior:  sanitizePointSlice(exterior),
+				Holes:     sanitizeHoles(holes),
+				Vertices:  sanitizePointSlice(flatVerts),
+				Triangles: tris,
+			})
 		}
 		out[layer.Name] = polys
 	}
@@ -324,7 +395,13 @@ func checkCurrentCapacities(sol *solver.Solution, cfg pipeline.Config) []Current
 				traceWidth = 0.2
 			}
 			maxCurrent := widthToCurrent(traceWidth*mmToMil, cuOz, cfg.TempRise, layerType)
-			utilization := current / maxCurrent
+			// widthToCurrent can legitimately return 0 when tempRise is 0 or the
+			// trace is so thin the formula underflows; treat that as "no limit
+			// known" rather than letting utilization blow up to +Inf.
+			var utilization float64
+			if maxCurrent > 0 {
+				utilization = current / maxCurrent
+			}
 			isExceeded := utilization > 1.0
 			if !isExceeded && utilization <= 0.8 {
 				continue
@@ -340,13 +417,13 @@ func checkCurrentCapacities(sol *solver.Solution, cfg pipeline.Config) []Current
 			warnings = append(warnings, CurrentCheckOutput{
 				NetworkName:       netName,
 				LayerName:         layer.Name,
-				CalculatedCurrent: current,
-				MaxAllowedCurrent: maxCurrent,
-				Utilization:       utilization,
+				CalculatedCurrent: sanitizeFloat(current),
+				MaxAllowedCurrent: sanitizeFloat(maxCurrent),
+				Utilization:       sanitizeFloat(utilization),
 				IsExceeded:        isExceeded,
-				TraceWidthMm:      traceWidth,
-				CopperOz:          cuOz,
-				TempRise:          cfg.TempRise,
+				TraceWidthMm:      sanitizeFloat(traceWidth),
+				CopperOz:          sanitizeFloat(cuOz),
+				TempRise:          sanitizeFloat(cfg.TempRise),
 				Message:           msg,
 			})
 		}

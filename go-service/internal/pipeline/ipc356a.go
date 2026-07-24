@@ -62,12 +62,52 @@ type IPC356ATrace struct {
 	hasLastY     bool
 }
 
-// ipc356aUnitToMm converts EasyEDA IPC-D-356A units to millimetres.
-const ipc356aUnitToMm = 0.00254
+// ipc356aUnitFactorDefault is the conversion from EasyEDA IPC-D-356A units
+// to millimetres when no P UNITS directive is present (assumes CUST 0).
+const ipc356aUnitFactorDefault = 0.00254
+
+// parseIPC356APUnits scans the header for `P UNITS CUST N` and returns the
+// corresponding conversion factor from IPC units to millimetres. Supported
+// values: CUST 0 -> 0.00254 (0.0001 inch), CUST 1 -> 0.001 (1 micron).
+// Unknown values fall back to the default with a warning.
+func parseIPC356APUnits(text string) (float64, string) {
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r\n")
+		if len(line) < 3 || line[:3] != "P  " {
+			continue
+		}
+		fields := wsRe.Split(strings.TrimSpace(line[3:]), -1)
+		if len(fields) < 3 {
+			continue
+		}
+		if strings.ToUpper(fields[0]) != "UNITS" {
+			continue
+		}
+		if strings.ToUpper(fields[1]) != "CUST" {
+			continue
+		}
+		n, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		switch n {
+		case 0:
+			return 0.00254, "CUST 0 (0.0001 inch)"
+		case 1:
+			return 0.001, "CUST 1 (metric)"
+		default:
+			return ipc356aUnitFactorDefault, fmt.Sprintf("CUST %d (unsupported, falling back to CUST 0)", n)
+		}
+	}
+	return ipc356aUnitFactorDefault, "default (no P UNITS directive)"
+}
 
 // ParseIPC356A parses an IPC-D-356A text file.
 func ParseIPC356A(text string) (*IPC356ANetlist, error) {
 	nl := &IPC356ANetlist{}
+
+	unitToMm, unitsTag := parseIPC356APUnits(text)
 
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	var lastTrace *IPC356ATrace
@@ -87,12 +127,12 @@ func ParseIPC356A(text string) (*IPC356ANetlist, error) {
 		case "P  ":
 			// parameters, not needed for net matching
 		case "327":
-			pad, err := parseIPC356APad(line)
+			pad, err := parseIPC356APad(line, unitToMm)
 			if err == nil {
 				nl.Pads = append(nl.Pads, pad)
 			}
 		case "317":
-			pad, via, err := parseIPC356A317(line)
+			pad, via, err := parseIPC356A317(line, unitToMm)
 			if err == nil {
 				if via != nil {
 					nl.Vias = append(nl.Vias, *via)
@@ -101,7 +141,7 @@ func ParseIPC356A(text string) (*IPC356ANetlist, error) {
 				}
 			}
 		case "378":
-			trace, err := parseIPC356ATrace(line)
+			trace, err := parseIPC356ATrace(line, unitToMm)
 			if err == nil {
 				nl.Traces = append(nl.Traces, trace)
 				lastTrace = &nl.Traces[len(nl.Traces)-1]
@@ -110,14 +150,14 @@ func ParseIPC356A(text string) (*IPC356ANetlist, error) {
 			if lastTrace == nil {
 				continue
 			}
-			pts, lx, ly, hx, hy, err := extractIPC356APathWithStart(line[3:], lastTrace.lastX, lastTrace.lastY, lastTrace.hasLastX, lastTrace.hasLastY)
+			pts, lx, ly, hx, hy, err := extractIPC356APathWithStart(line[3:], lastTrace.lastX, lastTrace.lastY, lastTrace.hasLastX, lastTrace.hasLastY, unitToMm)
 			if err == nil {
 				lastTrace.Vertices = append(lastTrace.Vertices, pts...)
 				lastTrace.lastX, lastTrace.lastY = lx, ly
 				lastTrace.hasLastX, lastTrace.hasLastY = hx, hy
 			}
 		case "389":
-			pts, err := parseIPC356AVertices(line[3:])
+			pts, err := parseIPC356AVertices(line[3:], unitToMm)
 			if err == nil {
 				nl.BoardEdge = append(nl.BoardEdge, pts...)
 			}
@@ -129,6 +169,7 @@ func ParseIPC356A(text string) (*IPC356ANetlist, error) {
 	if len(nl.Pads) == 0 && len(nl.Vias) == 0 && len(nl.Traces) == 0 {
 		return nil, fmt.Errorf("no usable netlist entries found")
 	}
+	_ = unitsTag
 	return nl, nil
 }
 
@@ -146,7 +187,7 @@ func parseIPC356AComment(line string, nl *IPC356ANetlist) {
 
 var wsRe = regexp.MustCompile(`\s+`)
 
-func parseIPC356APad(line string) (IPC356APad, error) {
+func parseIPC356APad(line string, unitToMm float64) (IPC356APad, error) {
 	// 327NET REFDES PIN SHAPE_TOKEN X..Y..X..Y..R... S#
 	parts := wsRe.Split(strings.TrimSpace(line[3:]), -1)
 	if len(parts) < 4 {
@@ -174,15 +215,15 @@ func parseIPC356APad(line string) (IPC356APad, error) {
 
 	x, y, w, h, rot, err := parseIPC356AXYXYR(body)
 	if err != nil {
-		return IPC356APad{}, err
+		return pad, err
 	}
-	pad.X, pad.Y = x*ipc356aUnitToMm, y*ipc356aUnitToMm
-	pad.Width, pad.Height = w*ipc356aUnitToMm, h*ipc356aUnitToMm
+	pad.X, pad.Y = x*unitToMm, y*unitToMm
+	pad.Width, pad.Height = w*unitToMm, h*unitToMm
 	pad.Rotation = rot
 	return pad, nil
 }
 
-func parseIPC356A317(line string) (IPC356APad, *IPC356AVia, error) {
+func parseIPC356A317(line string, unitToMm float64) (IPC356APad, *IPC356AVia, error) {
 	parts := wsRe.Split(strings.TrimSpace(line[3:]), -1)
 	if len(parts) < 5 {
 		return IPC356APad{}, nil, fmt.Errorf("short 317 record")
@@ -231,10 +272,10 @@ func parseIPC356A317(line string) (IPC356APad, *IPC356AVia, error) {
 		via := IPC356AVia{
 			Net:      net,
 			RefDes:   ref,
-			X:        x * ipc356aUnitToMm,
-			Y:        y * ipc356aUnitToMm,
-			DrillDia: drill * ipc356aUnitToMm,
-			OuterDia: w * ipc356aUnitToMm,
+			X:        x * unitToMm,
+			Y:        y * unitToMm,
+			DrillDia: drill * unitToMm,
+			OuterDia: w * unitToMm,
 			Side:     side,
 		}
 		return IPC356APad{}, &via, nil
@@ -245,11 +286,11 @@ func parseIPC356A317(line string) (IPC356APad, *IPC356AVia, error) {
 		RefDes:   ref,
 		Pin:      pin,
 		Shape:    diaToken,
-		X:        x * ipc356aUnitToMm,
-		Y:        y * ipc356aUnitToMm,
-		Width:    w * ipc356aUnitToMm,
-		Height:   h * ipc356aUnitToMm,
-		DrillDia: drill * ipc356aUnitToMm,
+		X:        x * unitToMm,
+		Y:        y * unitToMm,
+		Width:    w * unitToMm,
+		Height:   h * unitToMm,
+		DrillDia: drill * unitToMm,
 		Rotation: rot,
 		Side:     side,
 		IsTHT:    side == "S0" || side == "S3",
@@ -260,83 +301,117 @@ func parseIPC356A317(line string) (IPC356APad, *IPC356AVia, error) {
 // parseIPC356AXYXYR parses a string like "006138Y-005098X0585Y0680R000" or
 // "002429Y-002848X0669Y" into x, y, width, height, rotation.
 //
-// EasyEDA's IPC-D-356A export puts the X prefix inside the shape token
-// (e.g. "PA01X" or "D0394PA00X"), so the coordinate body begins with the
-// center X value directly followed by Y. We therefore treat a leading
-// signed integer (without an X prefix) as the center X coordinate.
+// IPC-D-356A coordinate bodies use value-then-suffix emission: each number is
+// followed by its own X/Y/R suffix. EasyEDA's 327/317 records emit the values
+// in the order: center Y, center X, width X, height Y, rotation R. When the
+// height equals the width the trailing Y suffix may be omitted (e.g.
+// "0669R000"), in which case the rotation suffix immediately follows the
+// implicit Y value.
 func parseIPC356AXYXYR(s string) (x, y, w, h, rot float64, err error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, 0, 0, 0, 0, fmt.Errorf("empty coordinate body")
 	}
 
-	start := 0
-	// If the body starts with a digit or '-' it is the center X value.
-	if start < len(s) && (s[start] == '-' || (s[start] >= '0' && s[start] <= '9')) {
-		j := start
-		if s[j] == '-' {
-			j++
-		}
-		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
-			j++
-		}
-		if j > start {
-			if v, e := strconv.ParseFloat(s[start:j], 64); e == nil {
-				x = v
-			}
-			start = j
-		}
+	tokens, err := extractIPC356ASuffixCoords(s)
+	if err != nil {
+		return 0, 0, 0, 0, 0, err
 	}
-
-	remainder := s[start:]
-	xs := extractIPC356ANumbers(remainder, 'X')
-	ys := extractIPC356ANumbers(remainder, 'Y')
-	if len(ys) < 1 {
+	if len(tokens) < 2 {
 		return 0, 0, 0, 0, 0, fmt.Errorf("missing coordinates in %q", s)
 	}
 
-	if x == 0 && len(xs) >= 1 {
-		x = xs[0]
-	}
-	y = ys[0]
-	if len(xs) >= 1 {
-		if w == 0 {
-			w = xs[0]
+	// The first two explicit tokens are the center Y and center X in that
+	// order. The leading marker "X" carried by the shape token (e.g. "PA01X")
+	// is consumed by the caller before this function is invoked.
+	for _, tk := range tokens[:2] {
+		switch tk.suffix {
+		case 'Y':
+			if y == 0 {
+				y = tk.value
+			}
+		case 'X':
+			if x == 0 {
+				x = tk.value
+			}
 		}
 	}
-	if len(xs) >= 2 {
-		w = xs[1]
+	if y == 0 && x == 0 {
+		return 0, 0, 0, 0, 0, fmt.Errorf("missing center coordinates in %q", s)
 	}
-	if len(ys) >= 2 {
-		h = ys[1]
-	}
-	rot = 0
-	if i := strings.Index(s, "R"); i >= 0 && i+1 < len(s) {
-		rot, _ = strconv.ParseFloat(s[i+1:], 64)
+
+	// Subsequent tokens supply width/height/rotation.
+	for _, tk := range tokens[2:] {
+		switch tk.suffix {
+		case 'X':
+			if w == 0 {
+				w = tk.value
+			}
+		case 'Y':
+			if h == 0 {
+				h = tk.value
+			}
+		case 'R':
+			rot = tk.value
+		}
 	}
 	return x, y, w, h, rot, nil
 }
 
-func extractIPC356ANumbers(s string, prefix byte) []float64 {
-	var out []float64
-	for i := 0; i < len(s); i++ {
-		if s[i] == prefix {
-			j := i + 1
-			for j < len(s) && (s[j] == '-' || (s[j] >= '0' && s[j] <= '9')) {
-				j++
-			}
-			if j > i+1 {
-				if v, err := strconv.ParseFloat(s[i+1:j], 64); err == nil {
-					out = append(out, v)
-				}
-			}
-			i = j - 1
-		}
-	}
-	return out
+// ipc356aSuffixCoord represents a single coordinate token from a body string,
+// preserving the order in which they were emitted (the IPC body uses
+// value-then-suffix, so the first emitted token is always the first number).
+type ipc356aSuffixCoord struct {
+	suffix byte
+	value  float64
 }
 
-func parseIPC356ATrace(line string) (IPC356ATrace, error) {
+// extractIPC356ASuffixCoords parses a body like "006138Y-005098X0585Y0680R000"
+// or "006491Y-005098X0585Y0689" (height before rotation may omit the Y
+// suffix). The returned slice preserves emission order so callers can pair the
+// first Y with the first X (the center coordinates) and treat subsequent
+// tokens as width/height/rotation.
+func extractIPC356ASuffixCoords(s string) ([]ipc356aSuffixCoord, error) {
+	var out []ipc356aSuffixCoord
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if !(c == '-' || (c >= '0' && c <= '9')) {
+			i++
+			continue
+		}
+		j := i
+		if s[j] == '-' {
+			j++
+		}
+		hadDigits := false
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+			hadDigits = true
+		}
+		if !hadDigits {
+			i++
+			continue
+		}
+		v, err := strconv.ParseFloat(s[i:j], 64)
+		if err != nil {
+			return nil, err
+		}
+		suffix := byte(0)
+		if j < len(s) {
+			sj := s[j]
+			if sj == 'X' || sj == 'Y' || sj == 'R' {
+				suffix = sj
+				j++
+			}
+		}
+		out = append(out, ipc356aSuffixCoord{suffix: suffix, value: v})
+		i = j
+	}
+	return out, nil
+}
+
+func parseIPC356ATrace(line string, unitToMm float64) (IPC356ATrace, error) {
 	// 378NET LAYER WIDTH X..Y.. ...
 	parts := wsRe.Split(strings.TrimSpace(line[3:]), -1)
 	if len(parts) < 4 {
@@ -349,14 +424,14 @@ func parseIPC356ATrace(line string) (IPC356ATrace, error) {
 	for i := 2; i < len(parts); i++ {
 		p := parts[i]
 		if strings.HasPrefix(p, "X") {
-			trace.Width = parseIPC356ANum(p[1:]) * ipc356aUnitToMm
+			trace.Width = parseIPC356ANum(p[1:]) * unitToMm
 			bodyStart = i + 1
 			break
 		}
 	}
 
 	body := strings.Join(parts[bodyStart:], "")
-	pts, lx, ly, hx, hy, err := extractIPC356APathWithStart(body, 0, 0, false, false)
+	pts, lx, ly, hx, hy, err := extractIPC356APathWithStart(body, 0, 0, false, false, unitToMm)
 	if err != nil {
 		return IPC356ATrace{}, err
 	}
@@ -366,8 +441,8 @@ func parseIPC356ATrace(line string) (IPC356ATrace, error) {
 	return trace, nil
 }
 
-func parseIPC356AVertices(body string) ([]geometry.Point, error) {
-	pts, _, _, _, _, err := extractIPC356APathWithStart(body, 0, 0, false, false)
+func parseIPC356AVertices(body string, unitToMm float64) ([]geometry.Point, error) {
+	pts, _, _, _, _, err := extractIPC356APathWithStart(body, 0, 0, false, false, unitToMm)
 	return pts, err
 }
 
@@ -404,7 +479,7 @@ func extractIPC356ATokens(body string) []ipc356aCoordToken {
 // Y before the next X, it pairs with the carried Y. Likewise a Y without a
 // preceding X pairs with the carried X. The last coordinate state is returned
 // so 078 continuation lines can resume correctly.
-func extractIPC356APathWithStart(body string, lastX, lastY float64, hasX, hasY bool) ([]geometry.Point, float64, float64, bool, bool, error) {
+func extractIPC356APathWithStart(body string, lastX, lastY float64, hasX, hasY bool, unitToMm float64) ([]geometry.Point, float64, float64, bool, bool, error) {
 	tokens := extractIPC356ATokens(body)
 	if len(tokens) == 0 {
 		return nil, lastX, lastY, hasX, hasY, nil
@@ -423,7 +498,7 @@ func extractIPC356APathWithStart(body string, lastX, lastY float64, hasX, hasY b
 		if tk.typ == 'X' {
 			nextIsY := i+1 < len(tokens) && tokens[i+1].typ == 'Y'
 			if !nextIsY && hasY {
-				pts = append(pts, geometry.Point{X: tk.val * ipc356aUnitToMm, Y: lastY * ipc356aUnitToMm})
+				pts = append(pts, geometry.Point{X: tk.val * unitToMm, Y: lastY * unitToMm})
 				lastX = tk.val
 				hasX = true
 				hasY = false
@@ -433,7 +508,7 @@ func extractIPC356APathWithStart(body string, lastX, lastY float64, hasX, hasY b
 			}
 		} else {
 			if hasX {
-				pts = append(pts, geometry.Point{X: lastX * ipc356aUnitToMm, Y: tk.val * ipc356aUnitToMm})
+				pts = append(pts, geometry.Point{X: lastX * unitToMm, Y: tk.val * unitToMm})
 				lastY = tk.val
 				hasY = true
 				// Keep hasX true so repeated Y tokens share the same X.

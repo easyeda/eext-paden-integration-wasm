@@ -73,9 +73,9 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	for _, lc := range cfg.Layers {
 		gl, ok := parsed[lc.Name]
 		if !ok {
-			// Try matching by normalized name.
+			// Try matching by normalized name (handles "Top Layer" vs "Gerber_TopLayer.GTL").
 			for _, candidate := range parsed {
-				if geometry.MatchLayerName(candidate.Filename, []string{lc.Name}) == lc.Name {
+				if matchLayerName(lc.Name, candidate.Filename) {
 					gl = candidate
 					d.Info(fmt.Sprintf("Layer '%s' matched file '%s'", lc.Name, candidate.Filename))
 					break
@@ -376,16 +376,10 @@ type SolutionExtras struct {
 }
 
 func matchLayerName(layerName, filename string) bool {
-	ln := strings.ToLower(layerName)
-	fn := strings.ToLower(filename)
-	if strings.Contains(fn, ln) {
-		return true
-	}
-	lnNorm := normalizeName(ln)
-	fnNorm := normalizeName(fn)
-	return strings.Contains(fnNorm, lnNorm)
+	return geometry.FuzzyMatchLayer(layerName, filename)
 }
 
+// normalizeName is retained for other call sites that strip whitespace/separators.
 func normalizeName(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -586,8 +580,10 @@ func polygonSignedArea(poly geometry.Polygon) float64 {
 func logLayerPolygonSummary(layers []*problem.Layer, d *DiagCollector) {
 	for _, l := range layers {
 		b := l.Bounds()
-		d.Info(fmt.Sprintf("Layer '%s' summary: polygons=%d area=%.3f bounds=[%.2f,%.2f]x[%.2f,%.2f]",
-			l.Name, len(l.Shape), l.Area(), b.MinX, b.MaxX, b.MinY, b.MaxY))
+		summary := fmt.Sprintf("Layer '%s' summary: polygons=%d area=%.3f bounds=[%.2f,%.2f]x[%.2f,%.2f]",
+			l.Name, len(l.Shape), l.Area(), b.MinX, b.MaxX, b.MinY, b.MaxY)
+		d.Info(summary)
+		fmt.Printf("[LayerSummary] %s\n", summary)
 		for i, poly := range l.Shape {
 			pb := poly.Bounds()
 			label := ""
@@ -595,8 +591,10 @@ func logLayerPolygonSummary(layers []*problem.Layer, d *DiagCollector) {
 				label = l.NetLabels[i]
 			}
 			rings := len(poly)
-			d.Info(fmt.Sprintf("  poly[%d]: net='%s' rings=%d bounds=[%.2f,%.2f]x[%.2f,%.2f] area=%.3f",
-				i, label, rings, pb.MinX, pb.MaxX, pb.MinY, pb.MaxY, polygonSignedArea(poly)))
+			polyLog := fmt.Sprintf("  poly[%d]: net='%s' rings=%d bounds=[%.2f,%.2f]x[%.2f,%.2f] area=%.3f",
+				i, label, rings, pb.MinX, pb.MaxX, pb.MinY, pb.MaxY, polygonSignedArea(poly))
+			d.Info(polyLog)
+			fmt.Printf("[LayerSummary] %s\n", polyLog)
 		}
 	}
 }
@@ -622,24 +620,16 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Con
 		}
 	}
 
-	// Match the Python backend: same scale, same Y direction (both EasyEDA and
-	// pygerber/tracespace produce Y-down coordinates). Align centers to obtain
-	// the origin offset. Axis flipping was causing orientation mismatches and
-	// missed pad connections.
-	easyedaCx := (bounds.MinX + bounds.MaxX) / 2
-	easyedaCy := (bounds.MinY + bounds.MaxY) / 2
-	gerberCx := (allBounds.MinX + allBounds.MaxX) / 2
-	gerberCy := (allBounds.MinY + allBounds.MaxY) / 2
-	ox := gerberCx - easyedaCx
-	oy := gerberCy - easyedaCy
-
+	// EasyEDA PCB primitives, Gerber and IPC-D-356A exports use the same
+	// millimetre coordinate system. Aligning their unrelated bounding-box centres
+	// shifts pads and vias whenever the placed components are not board-centred.
 	d.Info(fmt.Sprintf("EasyEDA bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		bounds.MinX, bounds.MaxX, bounds.MinY, bounds.MaxY))
 	d.Info(fmt.Sprintf("Gerber bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		allBounds.MinX, allBounds.MaxX, allBounds.MinY, allBounds.MaxY))
-	d.Info(fmt.Sprintf("Transform: scale=(1.0000,1.0000), offset=(%.2f,%.2f)", ox, oy))
+	d.Info("Transform: shared EasyEDA/Gerber coordinates, using identity")
 
-	return &[4]float64{1, 1, ox, oy}
+	return &[4]float64{1, 1, 0, 0}
 }
 
 type orientPoint struct {
@@ -759,4 +749,3 @@ func buildStackup(thickness map[string]float64, layers []*problem.Layer) []float
 	}
 	return stackup
 }
-

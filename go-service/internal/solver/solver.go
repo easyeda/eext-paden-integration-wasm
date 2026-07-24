@@ -4,6 +4,7 @@ package solver
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -62,12 +63,21 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	// Generate meshes with iterative coarsening until the vertex budget is met.
 	totalArea := totalCopperArea(layerGeoms)
 	cfg := initialMeshConfig(totalArea)
-	const maxMeshVerts = 15000
+	const (
+		maxMeshVerts    = 15000
+		maxMeshAttempts = 10
+	)
 	var meshes []*mesh.Mesh
 	var meshToLayer []int
 	var meshToGeom [][2]int
 	totalMeshVerts := 0
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; attempt < maxMeshAttempts; attempt++ {
+		if attempt > 0 {
+			meshes = nil
+			meshToLayer = nil
+			meshToGeom = nil
+			runtime.GC()
+		}
 		meshes, meshToLayer, meshToGeom = generateMeshes(prob, layerGeoms, connected, cfg)
 		totalMeshVerts = 0
 		for _, m := range meshes {
@@ -77,10 +87,7 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 		if totalMeshVerts <= maxMeshVerts || totalMeshVerts == 0 {
 			break
 		}
-		ratio := math.Sqrt(float64(totalMeshVerts) / float64(maxMeshVerts))
-		cfg.MaximumSize *= math.Min(ratio*1.2, 2.0)
-		cfg.MaximumSize = math.Min(cfg.MaximumSize, 12.0)
-		cfg.MinimumAngle = math.Max(cfg.MinimumAngle-3.0, 10.0)
+		cfg = coarsenMeshConfig(cfg, totalMeshVerts, maxMeshVerts)
 		fmt.Printf("[PADEN solver] mesh too large, coarsening: maxSize=%.3f minAngle=%.1f\n", cfg.MaximumSize, cfg.MinimumAngle)
 	}
 	if len(meshes) == 0 {
@@ -156,7 +163,7 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	triplets := stampLaplacian(meshes, meshToLayer, prob, vindex, globalToNew)
 	rhs := make([]float64, M)
 	for _, net := range filteredNetworks {
-		stampResistors(net, nodeIndexer, triplets)
+		triplets = stampResistors(net, nodeIndexer, triplets)
 		stampCurrentSources(net, nodeIndexer, rhs)
 	}
 	A := NewCSRFromTriplets(M, triplets)
@@ -219,8 +226,12 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	tol := 1e-9 * math.Max(rhsNorm, 1.0)
 	dMin, dMax := math.Inf(1), math.Inf(-1)
 	for _, v := range Abc.Diagonal() {
-		if v < dMin { dMin = v }
-		if v > dMax { dMax = v }
+		if v < dMin {
+			dMin = v
+		}
+		if v > dMax {
+			dMax = v
+		}
 	}
 	fmt.Printf("[PADEN solver] starting CG for M=%d, maxIter=%d, knownAfterGround=%d, diag=[%.3e,%.3e], rhsNorm=%.3e, tol=%.3e\n",
 		M, maxIter, len(known), dMin, dMax, rhsNorm, tol)
@@ -623,6 +634,14 @@ func initialMeshConfig(totalArea float64) mesh.Config {
 	return cfg
 }
 
+func coarsenMeshConfig(cfg mesh.Config, vertexCount, maxVertices int) mesh.Config {
+	ratio := math.Sqrt(float64(vertexCount) / float64(maxVertices))
+	cfg.MaximumSize *= math.Min(ratio*1.2, 4.0)
+	cfg.MaximumSize = math.Min(cfg.MaximumSize, 50.0)
+	cfg.MinimumAngle = math.Max(cfg.MinimumAngle-3.0, 0)
+	return cfg
+}
+
 func generateMeshes(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool, cfg mesh.Config) ([]*mesh.Mesh, []int, [][2]int) {
 	fmt.Printf("[PADEN solver] total copper area=%.1f mm^2, max mesh size=%.3f mm\n", totalCopperArea(layerGeoms), cfg.MaximumSize)
 	mesher := mesh.NewMesher(cfg)
@@ -876,7 +895,7 @@ func cotanWeight(pi, pj, pk mesh.Point) float64 {
 	return math.Abs(vki.Dot(vkj)/cross) * 0.5
 }
 
-func stampResistors(net *problem.Network, ni *nodeIndexer, triplets []Triplet) {
+func stampResistors(net *problem.Network, ni *nodeIndexer, triplets []Triplet) []Triplet {
 	for _, elem := range net.Elements {
 		r, ok := elem.(*problem.Resistor)
 		if !ok {
@@ -895,6 +914,7 @@ func stampResistors(net *problem.Network, ni *nodeIndexer, triplets []Triplet) {
 			Triplet{Row: ib, Col: ia, Val: -g},
 		)
 	}
+	return triplets
 }
 
 func stampCurrentSources(net *problem.Network, ni *nodeIndexer, rhs []float64) {
@@ -1006,7 +1026,6 @@ func reduceDirichlet(A *CSRMatrix, b []float64, known map[int]float64, unknownId
 	return NewCSRFromTriplets(uCount, triplets), bNew, nil
 }
 
-
 func findBestGroundNode(prob *problem.Problem, ni *nodeIndexer) int {
 	maxVoltage := math.Inf(-1)
 	groundIdx := -1
@@ -1054,8 +1073,12 @@ func produceLayerSolutions(prob *problem.Problem, vindex *vertexIndexer, meshes 
 		vMin, vMax := math.Inf(1), math.Inf(-1)
 		for _, pots := range ls.Potentials {
 			for _, p := range pots {
-				if p < vMin { vMin = p }
-				if p > vMax { vMax = p }
+				if p < vMin {
+					vMin = p
+				}
+				if p > vMax {
+					vMax = p
+				}
 			}
 		}
 		for _, cm := range ls.CompactMeshes {

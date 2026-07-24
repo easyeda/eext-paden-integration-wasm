@@ -184,20 +184,20 @@ func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stac
 			length := (thicknessA + thicknessB) / 2
 			res := viaResistance(spec.DrillDiameter, length, 0.025, 5.95e4)
 
-			// Verify that each layer has nearby copper of the via net, but keep
-			// the connection at the original via centre so the preview shows the
-			// via in the correct location (even when the centre falls in an
-			// anti-pad hole and the solver snaps to the nearest mesh vertex).
-			_, okA := findNearestPointOnLayer(spec.Point, a.layer, net)
-			_, okB := findNearestPointOnLayer(spec.Point, b.layer, net)
+			// Snap electrical nodes to connected pours while rendering the via at its PCB coordinate.
+			nearestA, okA := findViaSnapPoint(spec.Point, a.layer, net)
+			nearestB, okB := findViaSnapPoint(spec.Point, b.layer, net)
 			if !okA || !okB {
 				d.Info(fmt.Sprintf("Via '%s' (%.3f,%.3f): no '%s' copper on layer pair '%s'/'%s'", net, spec.Point.X, spec.Point.Y, net, a.layer.Name, b.layer.Name))
 				continue
 			}
 
-			connA := problem.NewConnection(a.layer, spec.Point)
+			displayPoint := spec.Point
+			connA := problem.NewConnection(a.layer, nearestA)
+			connA.DisplayPoint = &displayPoint
 			connA.Kind = "via"
-			connB := problem.NewConnection(b.layer, spec.Point)
+			connB := problem.NewConnection(b.layer, nearestB)
+			connB.DisplayPoint = &displayPoint
 			connB.Kind = "via"
 			vn, err := problem.NewNetwork(
 				[]*problem.Connection{connA, connB},
@@ -273,6 +273,10 @@ func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerID
 	return networks
 }
 
+// Small same-net polygons around drills can be isolated annular rings rather than connected pours.
+const viaMinPolygonAreaMM2 = 1.0
+
+// findNearestPointOnLayer snaps a terminal to same-net copper, falling back to any net.
 func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet string) (geometry.Point, bool) {
 	// Exact containment in a polygon of the requested net.
 	for i, poly := range layer.Shape {
@@ -333,6 +337,44 @@ func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet 
 		if c.area < best.area {
 			best = c
 		}
+	}
+	return best.pt, true
+}
+
+// findViaSnapPoint skips isolated annular-ring polygons when snapping a via to its pour.
+func findViaSnapPoint(pt geometry.Point, layer *problem.Layer, targetNet string) (geometry.Point, bool) {
+	for i, poly := range layer.Shape {
+		if !polygonMatchesNet(layer, i, targetNet) || polygonArea(poly) < viaMinPolygonAreaMM2 {
+			continue
+		}
+		if pointInPolygonMesh(pt, poly) {
+			return pt, true
+		}
+	}
+
+	type candidate struct {
+		pt   geometry.Point
+		dist float64
+	}
+	best := candidate{dist: math.Inf(1)}
+	for i, poly := range layer.Shape {
+		if !polygonMatchesNet(layer, i, targetNet) || polygonArea(poly) < viaMinPolygonAreaMM2 {
+			continue
+		}
+		for _, ring := range poly {
+			for j := 0; j < len(ring); j++ {
+				a := ring[j]
+				b := ring[(j+1)%len(ring)]
+				np := nearestPointOnSegment(pt, a, b)
+				d := math.Hypot(np.X-pt.X, np.Y-pt.Y)
+				if d < best.dist {
+					best = candidate{pt: np, dist: d}
+				}
+			}
+		}
+	}
+	if math.IsInf(best.dist, 1) {
+		return pt, false
 	}
 	return best.pt, true
 }
