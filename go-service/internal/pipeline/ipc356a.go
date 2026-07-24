@@ -74,20 +74,20 @@ func parseIPC356APUnits(text string) (float64, string) {
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	for scanner.Scan() {
 		line := strings.TrimRight(scanner.Text(), "\r\n")
-		if len(line) < 3 || line[:3] != "P  " {
+		fields := wsRe.Split(strings.TrimSpace(line), -1)
+		if len(fields) < 4 {
 			continue
 		}
-		fields := wsRe.Split(strings.TrimSpace(line[3:]), -1)
-		if len(fields) < 3 {
+		if strings.ToUpper(fields[0]) != "P" {
 			continue
 		}
-		if strings.ToUpper(fields[0]) != "UNITS" {
+		if strings.ToUpper(fields[1]) != "UNITS" {
 			continue
 		}
-		if strings.ToUpper(fields[1]) != "CUST" {
+		if strings.ToUpper(fields[2]) != "CUST" {
 			continue
 		}
-		n, err := strconv.Atoi(fields[2])
+		n, err := strconv.Atoi(fields[3])
 		if err != nil {
 			continue
 		}
@@ -210,8 +210,9 @@ func parseIPC356APad(line string, unitToMm float64) (IPC356APad, error) {
 	pad.Side = side
 	pad.IsTHT = side == "S0" || side == "S3"
 
-	// Concatenate everything between shape and side into one string.
-	body := strings.Join(parts[shapeIdx+1:len(parts)-1], "")
+	// Include the shape token: its trailing character is the leading X prefix
+	// of the coordinate body (e.g. "PA01X" -> "X024257...").
+	body := strings.Join(parts[shapeIdx:len(parts)-1], "")
 
 	x, y, w, h, rot, err := parseIPC356AXYXYR(body)
 	if err != nil {
@@ -255,10 +256,12 @@ func parseIPC356A317(line string, unitToMm float64) (IPC356APad, *IPC356AVia, er
 		}
 	}
 
-	// The coordinate body immediately follows the D token. There is no separate
-	// shape token in EasyEDA's 317 records.
+	// The coordinate body immediately follows the D token. Include the D token
+	// itself: its trailing character is the leading X prefix of the coordinate
+	// body (e.g. "D1000PA00X" -> "X011491..."). The drill/access-code digits
+	// carry no X/Y/R prefix so they are ignored by the coordinate parser.
 	side := parts[len(parts)-1]
-	body := strings.Join(parts[diaIdx+1:len(parts)-1], "")
+	body := strings.Join(parts[diaIdx:len(parts)-1], "")
 	if body == "" {
 		return IPC356APad{}, nil, fmt.Errorf("empty coordinate body in 317 record")
 	}
@@ -298,117 +301,52 @@ func parseIPC356A317(line string, unitToMm float64) (IPC356APad, *IPC356AVia, er
 	return pad, nil, nil
 }
 
-// parseIPC356AXYXYR parses a string like "006138Y-005098X0585Y0680R000" or
-// "002429Y-002848X0669Y" into x, y, width, height, rotation.
-//
-// IPC-D-356A coordinate bodies use value-then-suffix emission: each number is
-// followed by its own X/Y/R suffix. EasyEDA's 327/317 records emit the values
-// in the order: center Y, center X, width X, height Y, rotation R. When the
-// height equals the width the trailing Y suffix may be omitted (e.g.
-// "0669R000"), in which case the rotation suffix immediately follows the
-// implicit Y value.
+// ipc356aPrefixRe matches IPC-D-356A prefix-notation coordinate fields such as
+// "X024257", "Y-005098", or "R270". The letter is the field type and the signed
+// integer is the value.
+var ipc356aPrefixRe = regexp.MustCompile(`([XYR])(-?\d+)`)
+
+// parseIPC356AXYXYR parses a coordinate body written in IPC-D-356A prefix
+// notation: X<centerX> Y<centerY> X<width> Y<height> R<rotation>. The first X
+// and Y are the pad centre; the second X and Y (when present) are the pad
+// dimensions. The leading X prefix is usually carried on the trailing character
+// of the shape/access token (e.g. "PA01X"), so callers must include that token
+// in the string they pass here. Whitespace and the access-code prefix are
+// ignored because only X/Y/R-prefixed integer runs are matched.
 func parseIPC356AXYXYR(s string) (x, y, w, h, rot float64, err error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, 0, 0, 0, 0, fmt.Errorf("empty coordinate body")
+	matches := ipc356aPrefixRe.FindAllStringSubmatch(s, -1)
+	if len(matches) == 0 {
+		return 0, 0, 0, 0, 0, fmt.Errorf("no coordinate fields in %q", s)
 	}
 
-	tokens, err := extractIPC356ASuffixCoords(s)
-	if err != nil {
-		return 0, 0, 0, 0, 0, err
-	}
-	if len(tokens) < 2 {
-		return 0, 0, 0, 0, 0, fmt.Errorf("missing coordinates in %q", s)
-	}
-
-	// The first two explicit tokens are the center Y and center X in that
-	// order. The leading marker "X" carried by the shape token (e.g. "PA01X")
-	// is consumed by the caller before this function is invoked.
-	for _, tk := range tokens[:2] {
-		switch tk.suffix {
-		case 'Y':
-			if y == 0 {
-				y = tk.value
-			}
-		case 'X':
-			if x == 0 {
-				x = tk.value
-			}
+	var xs, ys []float64
+	for _, m := range matches {
+		v, perr := strconv.ParseFloat(m[2], 64)
+		if perr != nil {
+			return 0, 0, 0, 0, 0, perr
+		}
+		switch m[1] {
+		case "X":
+			xs = append(xs, v)
+		case "Y":
+			ys = append(ys, v)
+		case "R":
+			rot = v
 		}
 	}
-	if y == 0 && x == 0 {
+	if len(xs) == 0 || len(ys) == 0 {
 		return 0, 0, 0, 0, 0, fmt.Errorf("missing center coordinates in %q", s)
 	}
 
-	// Subsequent tokens supply width/height/rotation.
-	for _, tk := range tokens[2:] {
-		switch tk.suffix {
-		case 'X':
-			if w == 0 {
-				w = tk.value
-			}
-		case 'Y':
-			if h == 0 {
-				h = tk.value
-			}
-		case 'R':
-			rot = tk.value
-		}
+	x = xs[0]
+	y = ys[0]
+	if len(xs) > 1 {
+		w = xs[1]
+	}
+	if len(ys) > 1 {
+		h = ys[1]
 	}
 	return x, y, w, h, rot, nil
-}
-
-// ipc356aSuffixCoord represents a single coordinate token from a body string,
-// preserving the order in which they were emitted (the IPC body uses
-// value-then-suffix, so the first emitted token is always the first number).
-type ipc356aSuffixCoord struct {
-	suffix byte
-	value  float64
-}
-
-// extractIPC356ASuffixCoords parses a body like "006138Y-005098X0585Y0680R000"
-// or "006491Y-005098X0585Y0689" (height before rotation may omit the Y
-// suffix). The returned slice preserves emission order so callers can pair the
-// first Y with the first X (the center coordinates) and treat subsequent
-// tokens as width/height/rotation.
-func extractIPC356ASuffixCoords(s string) ([]ipc356aSuffixCoord, error) {
-	var out []ipc356aSuffixCoord
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		if !(c == '-' || (c >= '0' && c <= '9')) {
-			i++
-			continue
-		}
-		j := i
-		if s[j] == '-' {
-			j++
-		}
-		hadDigits := false
-		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
-			j++
-			hadDigits = true
-		}
-		if !hadDigits {
-			i++
-			continue
-		}
-		v, err := strconv.ParseFloat(s[i:j], 64)
-		if err != nil {
-			return nil, err
-		}
-		suffix := byte(0)
-		if j < len(s) {
-			sj := s[j]
-			if sj == 'X' || sj == 'Y' || sj == 'R' {
-				suffix = sj
-				j++
-			}
-		}
-		out = append(out, ipc356aSuffixCoord{suffix: suffix, value: v})
-		i = j
-	}
-	return out, nil
 }
 
 func parseIPC356ATrace(line string, unitToMm float64) (IPC356ATrace, error) {

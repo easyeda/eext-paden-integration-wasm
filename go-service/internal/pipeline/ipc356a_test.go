@@ -31,8 +31,9 @@ func TestParseIPC356A(t *testing.T) {
 	// IPC CUST 0 conversion: 1 IPC unit = 0.00254 mm.
 	const cust0 = 0.00254
 
-	// C1 GND pad: raw "PA01X 004884Y-005098X0585Y0680R000"
-	// After fix: y center = 4884, x center = -5098 -> (-12.949, 12.405) mm.
+	// C1 GND pad: raw "PA01X 004884Y-005098X0585Y0680R000".
+	// IPC-D-356A prefix notation: X center = 4884, Y center = -5098
+	// -> (12.405, -12.949) mm at CUST 0.
 	var foundC1GND bool
 	for _, p := range nl.Pads {
 		if p.RefDes == "C1" && p.Pin == "-1" {
@@ -40,11 +41,11 @@ func TestParseIPC356A(t *testing.T) {
 			if p.Net != "GND" {
 				t.Errorf("C1-1 net=%s want GND", p.Net)
 			}
-			if diff(p.X, -5098*cust0) > 0.001 {
-				t.Errorf("C1-1 x=%f want ~-12.949", p.X)
+			if diff(p.X, 4884*cust0) > 0.001 {
+				t.Errorf("C1-1 x=%f want ~12.405", p.X)
 			}
-			if diff(p.Y, 4884*cust0) > 0.001 {
-				t.Errorf("C1-1 y=%f want ~12.405", p.Y)
+			if diff(p.Y, -5098*cust0) > 0.001 {
+				t.Errorf("C1-1 y=%f want ~-12.949", p.Y)
 			}
 		}
 	}
