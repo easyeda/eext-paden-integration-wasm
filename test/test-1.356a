@@ -1,0 +1,28 @@
+C  Project Name:测试电流仿真
+C  Board Name:
+C  PCB Name:PCB1_1
+C  Date:2026/07/24
+C  Time:12:42:13
+C  --------------- Layer Stackup --------------------
+C  Top Layer
+C  Bottom Layer
+C  ------------- Replace The Group ------------------
+C  --------------------------------------------------
+P  JOB 
+P  CODE  UTF-8
+P  UNITS  CUST 0
+P  TITLE  
+P  NUM   1.0
+P  REV   A
+P  VER   IPC-D-356A
+327$1N2             C1    -2         PA01X 006838Y-004998X0585Y0680R000 S2
+327GND              C1    -1         PA01X 005584Y-004998X0585Y0680R000 S2
+317GND              H1    -1    D0394PA00X 001429Y-002848X0669Y0669R000 S0
+317VCC              H1    -2    D0394PA00X 002429Y-002848X0669Y         S0
+327VCC              R1    -1         PA01X 003375Y-000898X0827Y0945R000 S2
+327$1N2             R1    -2         PA01X 005304Y-000898X0827Y0945R000 S2
+378VCC            L01 X100 X3375Y-898 Y-1902  X2429Y-2848
+378GND            L01 X100 X1429Y-2848 X3578Y-4998  X5584
+378$1N2           L01 X100 X5304Y-898 X6838Y-2432  Y-4998
+389BOARD_EDGE         X100Y100 X-100Y-6000 X8200  Y150  X-100  Y-6000
+999
