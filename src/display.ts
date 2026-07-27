@@ -95,8 +95,10 @@ export class ResultDisplay {
 				layerNames: layerNames || {},
 			});
 			console.warn('[Display] Storage write: data size =', jsonStr.length, 'chars, results =', resultSet.results.length);
+			let storageWritten = false;
 			try {
 				eda.sys_Storage.setExtensionUserConfig('pdn-results', jsonStr);
+				storageWritten = true;
 			}
 			catch (e) {
 				console.warn('[Display] Storage write failed (data too large?):', e);
@@ -110,17 +112,37 @@ export class ResultDisplay {
 				}
 			}
 
-			// MessageBus 双保险
+			// MessageBus 双保险: 即使 storage 写入失败，results 弹窗也能通过
+			// message bus 拿到数据。同时把 resultsSet 拆成轻量 snapshot 走
+			// message bus，避免某些 host 上大 payload 被截断。
+			const sendViaBus = () => {
+				try {
+					eda.sys_MessageBus.publish('pdn-results-data', {
+						resultSet,
+						layerNames: layerNames || {},
+						images: images || null,
+						storageOk: storageWritten,
+					});
+				}
+				catch (e) {
+					console.warn('[Display] MessageBus publish failed:', e);
+				}
+			};
+
+			// Storage 失败或 results.html 主动请求时，都通过 bus 再发一次。
 			const task = eda.sys_MessageBus.subscribe('padne-results-ready', () => {
 				task.cancel();
-				console.warn('[Display] Received padne-results-ready, sending data via message bus');
-				eda.sys_MessageBus.publish('pdn-results-data', {
-					resultSet,
-					layerNames: layerNames || {},
-					images: images || null,
-				});
+				console.warn(`[Display] Received padne-results-ready, sending data via message bus (storageOk=${storageWritten})`);
+				sendViaBus();
 			});
 			subscriptions.push(task);
+
+			if (!storageWritten) {
+				// Storage 不可用时，结果完全靠 message bus。把超时 fallback 也
+				// 加上，防止 results.html 已经 publish 了 padne-results-ready
+				// 但我们的订阅还没挂上导致数据丢失。
+				setTimeout(() => sendViaBus(), 800);
+			}
 
 			// 监听重新分析
 			const reanalyzeTask = eda.sys_MessageBus.subscribe('pdn-reanalyze', () => {

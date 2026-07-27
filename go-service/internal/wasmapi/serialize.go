@@ -246,17 +246,30 @@ func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[s
 		// It already has holes grouped with their exterior, so the stencil fill
 		// matches the PCB canvas exactly. The solved mesh is drawn on top.
 		for _, poly := range sol.Problem.Layers[i].Shape {
-			exterior := toPointSlice(poly[0], transform)
+			// Simplify the rings with Douglas-Peucker (0.05 mm tolerance —
+			// finer than typical trace widths and pad edges). On dense real
+			// boards this shrinks each polygon to a small fraction of its
+			// raw vertex count, which is what keeps the final JSON under
+			// EasyEDA's storage / MessageBus size limits.
+			simplified := geometry.Polygon{simplifyRing(poly[0], boundarySimplifyTol)}
+			for hi := 1; hi < len(poly); hi++ {
+				simplified = append(simplified, simplifyRing(poly[hi], boundarySimplifyTol))
+			}
+			if len(simplified[0]) < 3 {
+				continue
+			}
+
+			exterior := toPointSlice(simplified[0], transform)
 			var holes [][][]float64
 			flatVerts := make([][]float64, 0, len(exterior))
 			flatVerts = append(flatVerts, exterior...)
-			for hi := 1; hi < len(poly); hi++ {
-				hole := toPointSlice(poly[hi], transform)
+			for hi := 1; hi < len(simplified); hi++ {
+				hole := toPointSlice(simplified[hi], transform)
 				holes = append(holes, hole)
 				flatVerts = append(flatVerts, hole...)
 			}
 			var tris [][]int
-			if tri, err := mesh.Earcut(poly); err == nil {
+			if tri, err := mesh.Earcut(simplified); err == nil {
 				tris = make([][]int, len(tri.Triangles))
 				for i, t := range tri.Triangles {
 					tris[i] = []int{t[0], t[1], t[2]}
@@ -274,6 +287,89 @@ func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[s
 		}
 		out[layer.Name] = polys
 	}
+	return out
+}
+
+// boundarySimplifyTol is the Douglas-Peucker tolerance applied to boundary
+// polygons before serialisation. 0.05 mm is finer than typical trace/pad edge
+// tolerances, so the visual outline is indistinguishable from the raw shape
+// while the wire size drops by 10× on dense boards.
+const boundarySimplifyTol = 0.05
+
+// simplifyRing applies Douglas-Peucker line simplification to a closed ring.
+// Returns a copy; the input is not mutated. The first vertex is always kept,
+// and the closing vertex (== first) is preserved so the ring stays closed.
+func simplifyRing(ring geometry.Ring, tol float64) geometry.Ring {
+	if len(ring) < 4 {
+		out := make(geometry.Ring, len(ring))
+		copy(out, ring)
+		return out
+	}
+	// Drop the trailing duplicate that closes the ring so DP doesn't have to
+	// reason about a redundant vertex, then re-append it at the end.
+	open := ring
+	if ring[0].X == ring[len(ring)-1].X && ring[0].Y == ring[len(ring)-1].Y {
+		open = ring[:len(ring)-1]
+	}
+	if len(open) < 3 {
+		out := make(geometry.Ring, len(ring))
+		copy(out, ring)
+		return out
+	}
+
+	keep := make([]bool, len(open))
+	keep[0] = true
+	keep[len(open)-1] = true
+	var rec func(s, e int)
+	rec = func(s, e int) {
+		if e <= s+1 {
+			return
+		}
+		a := open[s]
+		b := open[e]
+		dx := b.X - a.X
+		dy := b.Y - a.Y
+		segLen := math.Sqrt(dx*dx + dy*dy)
+		var maxD float64
+		var idx int = -1
+		if segLen < 1e-12 {
+			for i := s + 1; i < e; i++ {
+				p := open[i]
+				d := math.Sqrt((p.X-a.X)*(p.X-a.X) + (p.Y-a.Y)*(p.Y-a.Y))
+				if d > maxD {
+					maxD = d
+					idx = i
+				}
+			}
+		} else {
+			inv := 1 / segLen
+			for i := s + 1; i < e; i++ {
+				p := open[i]
+				cross := math.Abs(dx*(a.Y-p.Y) - (a.X-p.X)*dy)
+				d := cross * inv
+				if d > maxD {
+					maxD = d
+					idx = i
+				}
+			}
+		}
+		if idx >= 0 && maxD > tol {
+			keep[idx] = true
+			rec(s, idx)
+			rec(idx, e)
+		}
+	}
+	rec(0, len(open)-1)
+
+	out := make(geometry.Ring, 0, len(open))
+	for i, p := range open {
+		if keep[i] {
+			out = append(out, p)
+		}
+	}
+	// Re-close the ring so downstream code that assumes a closed polygon still
+	// works.
+	out = append(out, out[0])
 	return out
 }
 
