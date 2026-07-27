@@ -40,11 +40,14 @@ export async function runPdnAnalysis(): Promise<void> {
 
 		let lastError = '';
 
+		let lastConfig: PdnConfig | null = null;
+
 		while (true) {
-			const config = await openConfigPanel(easyedaData.pads, layerNames, lastError);
+			const config = await openConfigPanel(easyedaData.pads, layerNames, lastError, lastConfig);
 			lastError = '';
 			if (!config)
 				return;
+			lastConfig = config;
 
 			eda.sys_LoadingAndProgressBar.showProgressBar(0, 'pdn-convert');
 
@@ -127,7 +130,7 @@ export async function runPdnAnalysis(): Promise<void> {
 			};
 
 			// Show analyzing dialog
-			eda.sys_IFrame.openIFrame('/ui/analyzing.html', 360, 160, 'pdn-analyzing', {
+			eda.sys_IFrame.openIFrame('/ui/analyzing.html', 480, 360, 'pdn-analyzing', {
 				buttonCallbackFn: () => {},
 				grayscaleMask: false,
 			}).catch(() => {});
@@ -216,7 +219,7 @@ export async function runPdnAnalysis(): Promise<void> {
 	}
 }
 
-function openConfigPanel(pads: EasyEDA_Pad[], layerNames: Record<number, string>, lastError?: string): Promise<PdnConfig | null> {
+function openConfigPanel(pads: EasyEDA_Pad[], layerNames: Record<number, string>, lastError?: string, lastConfig?: PdnConfig | null): Promise<PdnConfig | null> {
 	return new Promise((resolve) => {
 		try {
 			eda.sys_IFrame.closeIFrame('pdn-config');
@@ -252,7 +255,12 @@ function openConfigPanel(pads: EasyEDA_Pad[], layerNames: Record<number, string>
 				list.push(pad);
 				padsByNet[pad.net] = list;
 			}
-			eda.sys_MessageBus.publish('pdn-config-data', { padsByNet, layerNames, lastError: lastError || '' });
+			eda.sys_MessageBus.publish('pdn-config-data', {
+				padsByNet,
+				layerNames,
+				lastError: lastError || '',
+				lastConfig: lastConfig || null,
+			});
 		});
 		subscriptions.push(configReadyTask);
 

@@ -48,11 +48,26 @@ export class ResultDisplay {
 	}
 
 	/** 展示多结果集（合并 + 单独网络分析），返回用户操作 */
-	showResultSet(
+	async showResultSet(
 		resultSet: AnalysisResultSet,
 		layerNames?: Record<number, string>,
 		images?: AnalysisImages,
 	): Promise<'close' | 'reanalyze'> {
+		// Fetch PCB layer colors up-front so the renderer can colour each
+		// layer's copper fill using EasyEDA's own palette. Failure here is
+		// non-fatal: results.html falls back to its built-in palette.
+		const pcbLayerColorMap: Record<string, string> = {};
+		try {
+			const allLayers: Array<{ name: string; color: string }> = await eda.pcb_Layer.getAllLayers();
+			for (const l of allLayers || []) {
+				if (l && l.name && l.color)
+					pcbLayerColorMap[l.name] = l.color;
+			}
+		}
+		catch (e) {
+			console.warn('[Display] pcb_Layer.getAllLayers() failed:', e);
+		}
+
 		return new Promise((resolve) => {
 			// 先关闭已有面板
 			try {
@@ -100,6 +115,7 @@ export class ResultDisplay {
 						resultSet,
 						layerNames: layerNames || {},
 						images: images || null,
+						layerColors: pcbLayerColorMap,
 					};
 					payloadSize = JSON.stringify(payload).length;
 					eda.sys_MessageBus.publish('pdn-results-data', payload);

@@ -110,10 +110,14 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	// any reflected Gerber layers (common for bottom copper in some exports).
 	outline, outlineName := extractBoardOutline(parsed)
 
-	// Clean each layer: normalize ring orientations first, then union overlapping
-	// dark polygons. Clipper2 is sensitive to winding direction, so orient before
-	// union to avoid negative polygons being treated as holes and cancelling out
-	// the real copper.
+	// Clean each layer: normalize ring orientations. We deliberately skip the
+	// pre-inference global Union — merging polygons before net inference would
+	// weld adjacent different-net pours (e.g. a 3V3 trace touching a GND plane)
+	// into one MultiPolygon, hiding the visual boundary between them and
+	// producing "shorts / missing content" in the rendered output. Same-net
+	// merging happens after net inference further down this function, which
+	// preserves the boundary between distinct nets while still coalescing
+	// fragmented same-net copper pours.
 	for _, layer := range layers {
 		if len(layer.Shape) == 0 {
 			continue
@@ -121,27 +125,8 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 		for i := range layer.Shape {
 			layer.Shape[i].EnsureOrientation()
 		}
-		unioned, err := geometry.Union(layer.Shape, nil)
-		if err != nil || len(unioned) == 0 {
-			d.Warn(fmt.Sprintf("Layer '%s': union failed (%v), using raw geometry", layer.Name, err))
-		} else {
-			layer.Shape = unioned
-		}
-		// Morphological close to weld sub-resolution gaps between touching copper
-		// islands. This mirrors Python's shapely buffer(1e-4).buffer(-1e-4) cleanup.
-		// Disabled for now: Clipper2's union already produces clean polygons with
-		// holes from tracespace's region output; closing here merged distinct nets.
-		// const closeDelta = 1e-4
-		// closed, err := geometry.Close(layer.Shape, closeDelta)
-		// if err == nil && len(closed) > 0 {
-		// 	layer.Shape = closed
-		// } else if err != nil {
-		// 	d.Warn(fmt.Sprintf("Layer '%s': morphological close failed (%v), using unioned geometry", layer.Name, err))
-		// }
-		for i := range layer.Shape {
-			layer.Shape[i].EnsureOrientation()
-		}
-		d.Info(fmt.Sprintf("Layer '%s': cleaned to %d polygon(s) area=%.3f", layer.Name, len(layer.Shape), layer.Area()))
+		d.Info(fmt.Sprintf("Layer '%s': %d polygon(s) area=%.3f (pre-inference, no cross-net merge)",
+			layer.Name, len(layer.Shape), layer.Area()))
 	}
 
 	layerDict := make(map[string]*problem.Layer)

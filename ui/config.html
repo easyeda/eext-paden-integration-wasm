@@ -71,6 +71,10 @@
   .error-banner { display: none; padding: 10px 14px; background: #fef2f2; color: #b91c1c; font-size: 12px; line-height: 1.5; border-bottom: 1px solid #fecaca; cursor: pointer; }
   .error-banner.show { display: block; }
   .error-banner:hover { background: #fee2e2; }
+
+  #edit-gnd-select:focus { border-color: #1a73e8; box-shadow: 0 0 0 3px rgba(26,115,232,0.12); }
+  #edit-gnd-select option { padding: 3px 6px; }
+  tr[ondblclick] { cursor: cell; }
 </style>
 </head>
 <body>
@@ -140,6 +144,29 @@
   </div>
 </div>
 
+<!-- 参数编辑弹窗（双击行触发） -->
+<div class="overlay" id="edit-overlay">
+  <div class="overlay-box">
+    <h3 id="edit-title">编辑参数</h3>
+    <div class="current-row" id="edit-current-row" style="display:none">
+      <label>电流 (A):</label>
+      <input type="number" id="edit-current" min="0.001" step="0.1">
+    </div>
+    <div style="margin-bottom:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <label style="font-size:12px;color:#4b5563;font-weight:500">GND 引脚</label>
+        <button type="button" onclick="reautoDetectGnd()" style="padding:4px 10px;font-size:11px;border:1px solid #d1d5db;border-radius:5px;background:#fff;color:#374151;cursor:pointer;font-weight:500">重新自动检测</button>
+      </div>
+      <select id="edit-gnd-select" multiple size="6" style="width:100%;padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;background:#fff;outline:none;box-sizing:border-box"></select>
+      <div style="font-size:11px;color:#9ca3af;margin-top:4px">按住 Ctrl/Cmd 多选</div>
+    </div>
+    <div class="overlay-btns">
+      <button onclick="closeEditRow()">取消</button>
+      <button class="btn-ok" onclick="confirmEditRow()">确定</button>
+    </div>
+  </div>
+</div>
+
 <!-- 提示弹窗 -->
 <div class="overlay" id="hint-overlay">
   <div class="overlay-box">
@@ -177,6 +204,7 @@
       banner.classList.remove('show');
     }
     initRailConfig();
+    applyLastConfig(msg.lastConfig);
     renderNetList();
     if (allNetNames.length > 0) selectNet(0);
   });
@@ -298,6 +326,8 @@
     const cfg = railConfig[net];
     const gndNet = cfg.gndNet || null;
     for (const row of cfg.rows) {
+      // 用户手动编辑过 GND 引脚时（gndCustom）跳过自动重新检测
+      if (row.gndCustom) continue;
       const gndPads = findGndPadsForRefDes(row.ref_des, gndNet);
       row.gnd_pads = gndPads.map(p => ({
         x: p.x, y: p.y,
@@ -323,7 +353,7 @@
     tbody.innerHTML = cfg.rows.map((row, i) => {
       const roleClass = row.role === 'SOURCE' ? 'role-source' : 'role-load';
       const valueCell = row.role === 'LOAD' ? `${row.current}A` : `${cfg.voltage}V`;
-      return `<tr class="${i === selectedRowIdx ? 'selected-row' : ''}" onclick="selectRow(${i})">
+      return `<tr class="${i === selectedRowIdx ? 'selected-row' : ''}" onclick="selectRow(${i})" ondblclick="editRow(${i})" title="双击编辑参数">
         <td class="${roleClass}">${row.role === 'SOURCE' ? '电压源' : '负载'}</td>
         <td>${row.ref_des}</td>
         <td>${valueCell}</td>
@@ -472,6 +502,181 @@
     renderRailTable();
     updateActionButtons();
     renderNetList();
+  }
+
+  // ── 参数编辑（双击行） ──
+  let editingRowIdx = -1;
+
+  function findAllGndPadsForRefDes(refDes) {
+    const out = [];
+    const seen = new Set();
+    for (const netName of Object.keys(padsByNet)) {
+      if (!isGndNet(netName)) continue;
+      for (const p of (padsByNet[netName] || [])) {
+        const ref = p.ref_des || `Pad_${p.pad_number}`;
+        if (ref === refDes && !seen.has(p.pad_number)) {
+          seen.add(p.pad_number);
+          out.push(p);
+        }
+      }
+    }
+    return out;
+  }
+
+  function renderEditGndSelect(selectedKeys) {
+    const net = allNetNames[selectedNetIdx];
+    const cfg = railConfig[net];
+    const row = cfg.rows[editingRowIdx];
+    const gndRefPads = findAllGndPadsForRefDes(row.ref_des);
+    const select = document.getElementById('edit-gnd-select');
+    const cur = selectedKeys || new Set((row.gnd_pads || []).map(p => `${p.x}_${p.y}_${p.layer}`));
+    if (gndRefPads.length === 0) {
+      select.innerHTML = '<option disabled>该器件无 GND 焊盘</option>';
+      select.multiple = false;
+      return;
+    }
+    select.multiple = true;
+    select.innerHTML = gndRefPads.map(p => {
+      const layerName = p.layer != null ? (layerNames[p.layer] || `Layer_${p.layer}`) : '未指定';
+      const key = `${p.x}_${p.y}_${layerName}`;
+      const sel = cur.has(key) ? ' selected' : '';
+      return `<option value="${key}"${sel}>引脚 ${p.pad_number} (${layerName}, ${p.x.toFixed(3)}, ${p.y.toFixed(3)})</option>`;
+    }).join('');
+  }
+
+  function editRow(idx) {
+    if (selectedNetIdx < 0) return;
+    const net = allNetNames[selectedNetIdx];
+    const cfg = railConfig[net];
+    const row = cfg.rows[idx];
+    if (!row) return;
+    editingRowIdx = idx;
+
+    document.getElementById('edit-title').textContent =
+      `编辑参数：${row.ref_des}（${row.role === 'SOURCE' ? '电压源' : '负载'}）`;
+
+    document.getElementById('edit-current-row').style.display = row.role === 'LOAD' ? 'flex' : 'none';
+    if (row.role === 'LOAD') {
+      document.getElementById('edit-current').value = row.current;
+    }
+
+    renderEditGndSelect(null);
+    document.getElementById('edit-overlay').classList.add('show');
+  }
+
+  function reautoDetectGnd() {
+    if (editingRowIdx < 0 || selectedNetIdx < 0) return;
+    const net = allNetNames[selectedNetIdx];
+    const cfg = railConfig[net];
+    const row = cfg.rows[editingRowIdx];
+    delete row.gndCustom;
+    const gndNet = cfg.gndNet || null;
+    const gndPads = findGndPadsForRefDes(row.ref_des, gndNet);
+    const autoKeys = new Set(gndPads.map(p => {
+      const layerName = p.layer != null ? (layerNames[p.layer] || `Layer_${p.layer}`) : '未指定';
+      return `${p.x}_${p.y}_${layerName}`;
+    }));
+    renderEditGndSelect(autoKeys);
+  }
+
+  function closeEditRow() {
+    editingRowIdx = -1;
+    document.getElementById('edit-overlay').classList.remove('show');
+  }
+
+  function confirmEditRow() {
+    if (editingRowIdx < 0 || selectedNetIdx < 0) return;
+    const net = allNetNames[selectedNetIdx];
+    const cfg = railConfig[net];
+    const row = cfg.rows[editingRowIdx];
+
+    if (row.role === 'LOAD') {
+      const newCurrent = parseFloat(document.getElementById('edit-current').value);
+      if (isNaN(newCurrent) || newCurrent <= 0) {
+        eda.sys_Message.showToastMessage('电流必须是正数');
+        return;
+      }
+      row.current = newCurrent;
+    }
+
+    const select = document.getElementById('edit-gnd-select');
+    const newGndPads = [];
+    const newGndPinLabels = [];
+    Array.from(select.selectedOptions).forEach(o => {
+      if (o.disabled) return;
+      const [x, y, layerStr] = o.value.split('_');
+      newGndPads.push({ x: parseFloat(x), y: parseFloat(y), layer: layerStr });
+      const m = o.text.match(/^引脚 (.+?) /);
+      if (m) newGndPinLabels.push(m[1]);
+    });
+    row.gnd_pads = newGndPads;
+    row.gndPins = newGndPinLabels.length > 0 ? newGndPinLabels.join(', ') : '-';
+    if (newGndPinLabels.length > 0) row.gndCustom = true;
+
+    closeEditRow();
+    renderRailTable();
+    renderNetList();
+    eda.sys_Message.showToastMessage('参数已更新');
+  }
+
+  // ── 应用上次的配置（重新分析时回填） ──
+  function applyLastConfig(lastConfig) {
+    if (!lastConfig || !Array.isArray(lastConfig.rails)) return;
+    for (const rail of lastConfig.rails) {
+      if (!railConfig[rail.net]) {
+        railConfig[rail.net] = { voltage: rail.voltage, rows: [], gndNet: rail.gnd_net || '' };
+      }
+      railConfig[rail.net].voltage = rail.voltage;
+      if (rail.gnd_net) railConfig[rail.net].gndNet = rail.gnd_net;
+
+      const netPads = padsByNet[rail.net] || [];
+      for (const src of rail.sources || []) {
+        const padsByRef = netPads.filter(p => (p.ref_des || `Pad_${p.pad_number}`) === src.ref_des);
+        const pins = padsByRef.map(p => p.pad_number).join(', ');
+        const gndPads = src.gnd_pads || [];
+        const gndPinLabels = gndPads.map(g => {
+          for (const np of netPads) {
+            if ((np.ref_des || `Pad_${np.pad_number}`) === src.ref_des) {
+              if (Math.abs(np.x - g.x) < 0.001 && Math.abs(np.y - g.y) < 0.001) return np.pad_number;
+            }
+          }
+          return '?';
+        }).join(', ');
+        railConfig[rail.net].rows.push({
+          role: 'SOURCE',
+          ref_des: src.ref_des,
+          pads: src.pads || [],
+          gnd_pads: gndPads,
+          pins: pins || '0',
+          gndPins: gndPinLabels || '-',
+          current: 0,
+          gndCustom: gndPads.length > 0,
+        });
+      }
+      for (const load of rail.loads || []) {
+        const padsByRef = netPads.filter(p => (p.ref_des || `Pad_${p.pad_number}`) === load.ref_des);
+        const pins = padsByRef.map(p => p.pad_number).join(', ');
+        const gndPads = load.gnd_pads || [];
+        const gndPinLabels = gndPads.map(g => {
+          for (const np of netPads) {
+            if ((np.ref_des || `Pad_${np.pad_number}`) === load.ref_des) {
+              if (Math.abs(np.x - g.x) < 0.001 && Math.abs(np.y - g.y) < 0.001) return np.pad_number;
+            }
+          }
+          return '?';
+        }).join(', ');
+        railConfig[rail.net].rows.push({
+          role: 'LOAD',
+          ref_des: load.ref_des,
+          pads: load.pads || [],
+          gnd_pads: gndPads,
+          pins: pins || '0',
+          gndPins: gndPinLabels || '-',
+          current: load.current || 0.5,
+          gndCustom: gndPads.length > 0,
+        });
+      }
+    }
   }
 
   // ── 开始分析 / 取消 ──

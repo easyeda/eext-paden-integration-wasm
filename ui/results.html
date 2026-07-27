@@ -16,10 +16,6 @@
   .toolbar .spacer { flex: 1; }
   .toolbar .btn-close { background: #da3633; border-color: #da3633; color: #fff; }
   .toolbar .btn-close:hover { background: #f85149; }
-  .toolbar .btn-warn { background: #da3633; border-color: #da3633; color: #fff; position: relative; padding: 3px 12px; }
-  .toolbar .btn-warn:hover { background: #f85149; }
-  .toolbar .btn-warn .warn-icon { font-size: 14px; }
-  .toolbar .btn-warn .warn-badge { position: absolute; top: -4px; right: -4px; background: #f85149; color: #fff; font-size: 9px; padding: 1px 4px; border-radius: 8px; min-width: 14px; text-align: center; }
 
   .result-tabs { height: 30px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; padding: 0 8px; gap: 4px; flex-shrink: 0; }
   .result-tabs button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
@@ -42,7 +38,7 @@
   .layer-sidebar { width: 170px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
   .sidebar-header { padding: 8px 10px; font-size: 12px; font-weight: 600; color: #8b949e; border-bottom: 1px solid #30363d; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between; }
   .sidebar-header-title { flex: 1; }
-  .sidebar-layers { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .sidebar-layers { min-height: 0; overflow-y: auto; padding: 4px 0; }
   .sidebar-layers::-webkit-scrollbar { width: 5px; }
   .sidebar-layers::-webkit-scrollbar-track { background: transparent; }
   .sidebar-layers::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
@@ -56,9 +52,149 @@
   .layer-eye:hover { background: #30363d; color: #e6edf3; }
   .layer-eye.hidden { color: #484f58; }
 
-  .main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
   .canvas-wrap { flex: 1; position: relative; overflow: hidden; }
   #gl-canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+
+  .sidebar-divider {
+    height: 4px;
+    background: #30363d;
+    cursor: row-resize;
+    flex-shrink: 0;
+    transition: background 0.15s;
+    position: relative;
+  }
+  .sidebar-divider::before {
+    content: '';
+    position: absolute;
+    inset: -3px 0;
+  }
+  .sidebar-divider:hover, .sidebar-divider.dragging { background: #1f6feb; }
+
+  .warn-section {
+    flex: 1 1 40%;
+    min-height: 80px;
+    background: #161b22;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .warn-section-header {
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #f0f6fc;
+    border-bottom: 1px solid #30363d;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .warn-section-header .warn-badge {
+    background: #da3633;
+    color: #fff;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 600;
+  }
+  .warn-section-header .warn-badge.ok { background: #238636; }
+  .warn-section-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #c9d1d9;
+  }
+  .warn-section-body::-webkit-scrollbar { width: 6px; }
+  .warn-section-body::-webkit-scrollbar-track { background: transparent; }
+  .warn-section-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+  .warn-section-empty {
+    text-align: center;
+    padding: 20px 12px;
+    color: #3fb950;
+  }
+  .warn-section-empty .icon { font-size: 28px; }
+  .warn-section-empty .text { margin-top: 6px; font-size: 11px; }
+  .warn-summary {
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .warn-summary.error { border-color: #da3633; background: rgba(218,54,51,0.08); }
+  .warn-summary.warn  { border-color: #d29922; background: rgba(210,153,34,0.08); }
+  .warn-summary .icon { font-size: 14px; }
+  .warn-summary .text { font-weight: 600; font-size: 11px; }
+  .warn-summary.error .text { color: #f85149; }
+  .warn-summary.warn  .text { color: #d29922; }
+  .warn-card {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-left: 4px solid #30363d;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    overflow: hidden;
+  }
+  .warn-card.error { border-left-color: #da3633; }
+  .warn-card.warn  { border-left-color: #d29922; }
+  .warn-card-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .warn-card-head:hover { background: rgba(31,111,235,0.08); }
+  .warn-card-toggle {
+    font-size: 9px;
+    color: #8b949e;
+    transition: transform 0.15s;
+    display: inline-block;
+    width: 10px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .warn-card[data-collapsed="0"] .warn-card-toggle { transform: rotate(90deg); }
+  .warn-card[data-collapsed="1"] .warn-card-rows { display: none; }
+  .warn-card-head .icon { font-size: 13px; flex-shrink: 0; }
+  .warn-card-head .net { font-weight: 600; font-size: 11px; color: #f0f6fc; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .warn-card-head .net.error { color: #f85149; }
+  .warn-card-head .net.warn  { color: #d29922; }
+  .warn-card-head .sev { color: #8b949e; font-size: 10px; flex-shrink: 0; }
+  .warn-card-rows { background: #161b22; padding: 6px 8px; font-size: 10.5px; line-height: 1.6; border-top: 1px solid #30363d; }
+  .warn-card-rows .row { display: flex; justify-content: space-between; gap: 4px; }
+  .warn-card-rows .row .k { color: #8b949e; }
+  .warn-card-rows .row .v { color: #f0f6fc; font-weight: 600; }
+  .warn-card-rows .row .v.error { color: #f85149; }
+  .warn-card-rows .row .v.warn  { color: #d29922; }
+
+  .warn-tips-float {
+    position: fixed;
+    left: 12px;
+    bottom: 38px;
+    width: 280px;
+    max-height: 200px;
+    overflow-y: auto;
+    background: rgba(13,17,23,0.95);
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px;
+    z-index: 30;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .warn-tips-float h4 { color: #58a6ff; font-size: 11px; margin-bottom: 4px; font-weight: 600; }
+  .warn-tips-float ul { color: #c9d1d9; font-size: 10.5px; line-height: 1.6; padding-left: 16px; }
+  .warn-tips-float ul li { margin-bottom: 2px; }
 
   .colorbar { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); display: flex; gap: 4px; align-items: stretch; pointer-events: none; }
   .colorbar canvas { border: 1px solid #30363d; border-radius: 3px; }
@@ -106,11 +242,9 @@
   <div class="sep"></div>
   <button id="btn-diag" title="诊断日志">诊断</button>
   <button id="btn-copyimg" title="复制当前视图图片">复制图片</button>
-  <button id="btn-warn" title="电流容量警告" style="display:none">警告</button>
   <button id="btn-reset" title="重置视图 (R)">重置</button>
   <span class="spacer"></span>
   <button id="btn-reanalyze" style="background:#238636;border-color:#238636;color:#fff" onclick="reanalyze()">重新分析</button>
-  <button class="btn-close" onclick="closeWindow()">关闭</button>
 </div>
 
 <div class="result-tabs" id="result-tabs" style="display:none"></div>
@@ -124,6 +258,14 @@
     </button>
   </div>
   <div class="sidebar-layers" id="sidebar-layers"></div>
+  <div class="sidebar-divider" id="sidebar-divider" title="拖动调整区域大小"></div>
+  <div class="warn-section" id="warn-section">
+    <div class="warn-section-header">
+      <span>电流容量警告</span>
+      <span class="warn-badge" id="warn-section-badge" style="display:none">0</span>
+    </div>
+    <div class="warn-section-body" id="warn-section-body"></div>
+  </div>
 </div>
 <div class="main-area">
 <div class="canvas-wrap">
@@ -149,6 +291,15 @@
   <span id="st-pos">X: --  Y: --</span>
   <span id="st-voltage">电压: --</span>
   <span id="st-delta">Δ: --</span>
+</div>
+<div class="warn-tips-float" id="warn-tips-float" style="display:none">
+  <h4>💡 建议解决方案</h4>
+  <ul>
+    <li>增加走线宽度（当前宽度可能不足以承载配置电流）</li>
+    <li>增加铜厚度（使用更厚的铜箔）</li>
+    <li>降低温升要求（如果允许更高的温升）</li>
+    <li>分流：将负载分配到多个并联走线</li>
+  </ul>
 </div>
 <div id="warning-banner" style="display:none;position:fixed;bottom:28px;left:0;right:0;background:#da3633;color:#fff;padding:4px 12px;font-size:12px;text-align:center;z-index:100"></div>
 
@@ -336,6 +487,8 @@ let ext32bit;
 let resultData, layerNames, connectionPoints, layerBoundaries, pcbContext;
 let currentResultWarnings = [];
 let networkInfoData = [];
+let pcbLayerColors = {}; // EasyEDA layer name → 'RRGGBB' for copper context fill
+let activeNetName = null; // name of the currently analysed net; null = "全部" view (no overlay)
 let vccVoltage = 1.2;
 let currentLayerIdx = 0;
 let layerNamesList = [];
@@ -530,7 +683,16 @@ function loadResult(idx) {
   connectionPoints = entry.connectionPoints || {};
   layerBoundaries = entry.layerBoundaries || {};
   pcbContext = entry.pcbContext || null;
+  // Pull PCB layer colors from the entry if display.ts fetched them. Fall back to a
+  // hex→rgb map derived from default LAYER_COLORS so older payloads still render.
+  if (entry.layerColors && typeof entry.layerColors === 'object') pcbLayerColors = entry.layerColors;
   networkInfoData = entry.networkInfo || [];
+  // Active net = first network (single-network view). "全部" view leaves it null
+  // so the entire canvas reads as plain PCB colour with mesh gradients on top.
+  activeNetName = null;
+  if (!isShowingAllNetworks() && networkInfoData.length > 0 && networkInfoData[0].name) {
+    activeNetName = networkInfoData[0].name;
+  }
   currentResultWarnings = entry.currentWarnings || [];
   // Try also getting from resultData if entry.currentWarnings is empty
   if (!currentResultWarnings || currentResultWarnings.length === 0) {
@@ -934,6 +1096,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
 
   // === Build buffers that DON'T depend on connected mesh data (board, outline, disc, points) ===
   const lname = layerNamesList[li];
+  glData.layerName = lname;
 
   // Connection points: the 过孔 button should only show actual vias.
   const cps = (connectionPoints[lname] || []).filter(cp => cp.kind === 'via');
@@ -980,6 +1143,12 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   const boardFillVerts = [];
   const boardFillIdx = [];
   const boardFillFans = [];
+  // Parallel buffer for the active-net overlay: only polygons matching
+  // activeNetName, drawn on top of the base fill in a slightly deeper shade
+  // so the analysed network's copper reads distinctly without losing the
+  // surrounding Gerber context.
+  const activeFillVerts = [];
+  const activeFillIdx = [];
   for (const poly of polys) {
     const hasTris = poly.triangles && poly.triangles.length > 0 && poly.vertices && poly.vertices.length > 0;
     if (hasTris) {
@@ -987,6 +1156,14 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
       for (const pt of poly.vertices) boardFillVerts.push(pt[0], pt[1]);
       for (const tri of poly.triangles) {
         if (tri.length >= 3) boardFillIdx.push(base + tri[0], base + tri[1], base + tri[2]);
+      }
+      // Active overlay (only when net matches and we have a triangulated poly)
+      if (activeNetName && poly.net === activeNetName) {
+        const activeBase = activeFillVerts.length / 2;
+        for (const pt of poly.vertices) activeFillVerts.push(pt[0], pt[1]);
+        for (const tri of poly.triangles) {
+          if (tri.length >= 3) activeFillIdx.push(activeBase + tri[0], activeBase + tri[1], activeBase + tri[2]);
+        }
       }
       continue;
     }
@@ -1000,6 +1177,16 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
       const hOff = boardFillVerts.length / 2;
       for (const pt of hole) boardFillVerts.push(pt[0], pt[1]);
       boardFillFans.push({ offset: hOff, count: hole.length, isHole: true });
+    }
+    // For non-triangulated fallback polygons, build an active overlay from the
+    // exterior ring only (no holes). This is rare (only when backend did not
+    // supply triangles) but keeps the active highlight visually consistent.
+    if (activeNetName && poly.net === activeNetName && ext.length >= 3) {
+      const aOff = activeFillVerts.length / 2;
+      for (const pt of ext) activeFillVerts.push(pt[0], pt[1]);
+      for (let k = 1; k < ext.length - 1; k++) {
+        activeFillIdx.push(aOff, aOff + k, aOff + k + 1);
+      }
     }
   }
   if (boardFillVerts.length > 0) {
@@ -1016,6 +1203,17 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     } else {
       glData.boardFillFans = boardFillFans;
     }
+  }
+  if (activeFillVerts.length > 0 && activeFillIdx.length > 0) {
+    glData.activeFillVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glData.activeFillVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(activeFillVerts), gl.STATIC_DRAW);
+    const need32 = activeFillIdx.length >= 65536 && ext32bit;
+    glData.activeFillIBO = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glData.activeFillIBO);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, need32 ? new Uint32Array(activeFillIdx) : new Uint16Array(activeFillIdx), gl.STATIC_DRAW);
+    glData.activeFillIdxType = need32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+    glData.activeFillTriCount = activeFillIdx.length;
   }
   // Bounding box quad for stencil fill
   const bMargin = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) * 0.05;
@@ -1443,13 +1641,33 @@ function render() {
 
 }
 
+// Look up the EasyEDA display color for a given layer. Falls back to the
+// built-in LAYER_COLORS palette when the runtime color map is unavailable.
+function copperFillColor(layerName) {
+  if (pcbLayerColors && pcbLayerColors[layerName]) {
+    const hex = pcbLayerColors[layerName];
+    if (/^#?[0-9a-fA-F]{6}$/.test(hex)) {
+      const h = hex.startsWith('#') ? hex.slice(1) : hex;
+      return [
+        parseInt(h.slice(0, 2), 16) / 255,
+        parseInt(h.slice(2, 4), 16) / 255,
+        parseInt(h.slice(4, 6), 16) / 255,
+        1.0,
+      ];
+    }
+  }
+  return LAYER_COLORS[0].concat([1.0]);
+}
+
 function renderSingleLayer(li, mvp) {
   const gd = layerGL[li];
   if (!gd || (!gd.meshVBO && !gd.boardFillVBO)) return;
 
-  // 0) Copper pour fill - only for the currently selected layer so the back-side
-  // fill does not clutter/obscure the layer being inspected.
-  if (li === currentLayerIdx && gd.boardFillVBO) {
+  // 0) Copper pour fill — drawn for every visible layer so the user can see
+  // each layer's contribution stacked in z-order (active layer on top). The
+  // fill colour mirrors EasyEDA's 2D canvas: each layer renders in its own
+  // PCB colour, so different copper layers are visually distinct.
+  if (gd.boardFillVBO) {
     gl.useProgram(lineProg.prog);
     gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.boardFillVBO);
@@ -1459,7 +1677,11 @@ function renderSingleLayer(li, mvp) {
     if (currentViewMode === 'copper_coverage') {
       gl.uniform4f(lineProg.u.u_color, 0.15, 0.18, 0.22, 1.0); // Cold gray
     } else {
-      gl.uniform4f(lineProg.u.u_color, 0.22, 0.32, 0.25, 1.0); // Light green context
+      const c = copperFillColor(gd.layerName);
+      // Non-active layers render slightly dimmer so the active layer reads as
+      // "in front" without hiding the back-side context.
+      const dim = (li === currentLayerIdx) ? 1.0 : 0.55;
+      gl.uniform4f(lineProg.u.u_color, c[0] * dim, c[1] * dim, c[2] * dim, c[3]);
     }
 
     if (gd.boardFillIBO && gd.boardFillTriCount > 0) {
@@ -1472,6 +1694,30 @@ function renderSingleLayer(li, mvp) {
       }
     }
 
+    gl.disableVertexAttribArray(lineProg.a.a_pos);
+  }
+
+  // 0b) Active-net overlay — drawn only on the current layer for the
+  // polygons whose Net matches activeNetName. A slightly darker shade of the
+  // PCB colour keeps the visual identity of the layer but lifts the analysed
+  // network's copper forward so the user can locate it at a glance. Mesh
+  // triangles below carry the voltage gradient; this overlay only fills the
+  // gaps and edge slivers between mesh triangles.
+  if (gd.activeFillVBO && gd.activeFillIBO && activeNetName
+      && li === currentLayerIdx && currentViewMode !== 'copper_coverage') {
+    gl.useProgram(lineProg.prog);
+    gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gd.activeFillVBO);
+    gl.enableVertexAttribArray(lineProg.a.a_pos);
+    gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
+    const c = copperFillColor(gd.layerName);
+    // Darken within the same hue: ×0.7 keeps the colour identity intact
+    // (the active net still reads as this layer's copper) while making it
+    // visibly deeper than the surrounding fill. Plugs gaps where the FEM
+    // mesh is sparser than the underlying Gerber outline.
+    gl.uniform4f(lineProg.u.u_color, c[0] * 0.7, c[1] * 0.7, c[2] * 0.7, 1.0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.activeFillIBO);
+    gl.drawElements(gl.TRIANGLES, gd.activeFillTriCount, gd.activeFillIdxType, 0);
     gl.disableVertexAttribArray(lineProg.a.a_pos);
   }
 
@@ -1569,7 +1815,7 @@ function renderSingleLayer(li, mvp) {
   if (showEdges && gd.edgeVBO) {
     gl.useProgram(lineProg.prog);
     gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
-    gl.uniform4f(lineProg.u.u_color, 0.4, 0.4, 0.5, 0.25);
+    gl.uniform4f(lineProg.u.u_color, 0.72, 0.78, 0.88, 0.55);
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.edgeVBO);
     gl.enableVertexAttribArray(lineProg.a.a_pos);
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
@@ -1695,6 +1941,60 @@ function setupInteraction() {
   });
 
   window.addEventListener('resize', render);
+}
+
+function setupSidebarDivider() {
+  const sidebar = document.getElementById('layer-sidebar');
+  const layersEl = document.getElementById('sidebar-layers');
+  const warnEl = document.getElementById('warn-section');
+  const divider = document.getElementById('sidebar-divider');
+  if (!sidebar || !divider || !layersEl || !warnEl) return;
+
+  const applyHeights = (layersH) => {
+    const sidebarH = sidebar.getBoundingClientRect().height;
+    const dividerH = 4;
+    const minH = 80;
+    const maxLayersH = Math.max(minH, sidebarH - minH - dividerH);
+    const lyH = Math.max(minH, Math.min(maxLayersH, layersH));
+    const warnH = Math.max(minH, sidebarH - lyH - dividerH);
+    layersEl.style.flex = '0 0 ' + lyH + 'px';
+    layersEl.style.height = lyH + 'px';
+    warnEl.style.flex = '0 0 ' + warnH + 'px';
+    warnEl.style.height = warnH + 'px';
+  };
+
+  // 初始 60/40 分配
+  setTimeout(() => {
+    const sidebarH = sidebar.getBoundingClientRect().height;
+    if (sidebarH > 100) applyHeights(Math.round(sidebarH * 0.6));
+  }, 0);
+
+  divider.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    divider.classList.add('dragging');
+    const startY = e.clientY;
+    const startLayersH = layersEl.getBoundingClientRect().height;
+
+    const onMove = (ev) => {
+      applyHeights(startLayersH + (ev.clientY - startY));
+    };
+    const onUp = () => {
+      divider.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  // 窗口大小变化保持比例
+  window.addEventListener('resize', () => {
+    const sidebarH = sidebar.getBoundingClientRect().height;
+    if (sidebarH < 100) return;
+    const lyH = layersEl.getBoundingClientRect().height;
+    const ratio = lyH / sidebarH;
+    if (ratio > 0 && ratio < 1) applyHeights(Math.round(sidebarH * ratio));
+  });
 }
 
 // Check if current result is "all networks" combined view
@@ -1969,8 +2269,8 @@ function switchResult(idx) {
     _log('SwitchResult', 'SHOWING voltage display');
   }
 
-  // 更新警告按钮显示
-  updateWarningButton();
+  // 渲染右侧警告面板
+  renderWarningPanel();
 }
 
 // ============================================================
@@ -2020,10 +2320,6 @@ function setupUI() {
     document.getElementById('btn-copper').classList.toggle('active', currentViewMode === 'copper_coverage');
     drawColorbar(); updateInfoPanel(); render();
   });
-  const btnWarn = document.getElementById('btn-warn');
-  if (btnWarn) {
-    btnWarn.addEventListener('click', () => { showWarning(); });
-  }
   document.getElementById('btn-copper').addEventListener('click', () => {
     currentViewMode = currentViewMode === 'copper_coverage' ? 'voltage' : 'copper_coverage';
     document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
@@ -2067,6 +2363,7 @@ function setupUI() {
   document.getElementById('st-layer').textContent = '层: ' + layerNamesList[currentLayerIdx];
   updateToggles();
   updateInfoPanel();
+  setupSidebarDivider();
 }
 
 function buildSidebar() {
@@ -2351,6 +2648,9 @@ function onMessageBusData(msg) {
   resultSet = data.resultSet;
   layerNames = data.layerNames || {};
   images = data.images || null;
+  if (data && data.layerColors && typeof data.layerColors === 'object') {
+    pcbLayerColors = data.layerColors;
+  }
 
   _log('MsgBus', 'resultSet=' + !!resultSet + ' count=' + (resultSet?.results?.length ?? 0));
 
@@ -2413,7 +2713,7 @@ function startUI() {
   }
 
   // 更��警告按钮显示
-  updateWarningButton();
+  renderWarningPanel();
 }
 
 function showImageFallback() {
@@ -2461,119 +2761,96 @@ function showImageFallback() {
 }
 
 // ============================================================
-// 警告按钮相关函数
+// 警告面板（嵌入左侧层列表下方）
 // ============================================================
-function updateWarningButton() {
-  const btnWarn = document.getElementById('btn-warn');
+// 渲染左侧警告面板，每个警告卡片默认折叠，点击 header 展开/收起详细参数。
+// 修复建议固定浮动在左下角。
+function renderWarningPanel() {
+  const body = document.getElementById('warn-section-body');
+  const badge = document.getElementById('warn-section-badge');
+  const tipsEl = document.getElementById('warn-tips-float');
+  if (!body) return;
+
   const currentWarnings = currentResultWarnings || [];
   // 过滤掉线宽摘要
   const realWarnings = currentWarnings.filter(w => w.network_name !== '[线宽摘要]');
-  _log('WarnBtn', 'realWarnings=' + realWarnings.length);
-  if (realWarnings.length > 0) {
-    _log('WarnBtn', 'warnings=' + JSON.stringify(realWarnings));
-  }
-  // 只要有真正的电流容量警告就显示按钮（包括超限和接近上限）
-  if (realWarnings.length > 0 && btnWarn) {
-    btnWarn.style.display = '';
-    _log('WarnBtn', 'Showing button');
-    // 统计超限数量
-    const exceededCount = realWarnings.filter(w => w.is_exceeded).length;
-    if (exceededCount > 0) {
-      btnWarn.title = `电流容量警告 (${exceededCount}个网络超限)`;
-    } else {
-      btnWarn.title = `电流容量警告 (${realWarnings.length}个网络接近上限)`;
-    }
-  } else if (btnWarn) {
-    btnWarn.style.display = 'none';
-    _log('WarnBtn', 'Hiding button');
-  } else {
-    _log('WarnBtn', 'btnWarn element not found');
-  }
-}
-
-function showWarning() {
-  const overlay = document.getElementById('warn-overlay');
-  const body = document.getElementById('warn-content');
-  const currentWarnings = currentResultWarnings || [];
-
-  // 过滤掉线宽摘要，只显示真正的警告
-  const realWarnings = currentWarnings.filter(w => w.network_name !== '[线宽摘要]');
+  _log('WarnPanel', 'realWarnings=' + realWarnings.length);
 
   if (realWarnings.length === 0) {
-    body.innerHTML = '<div style="text-align:center;padding:40px;color:#3fb950"><span style="font-size:48px">✓</span><p style="margin-top:16px">电流容量检查通过，无超限警告</p></div>';
-  } else {
-    // 统计信息
-    const exceededCount = realWarnings.filter(w => w.is_exceeded).length;
-    const nearLimitCount = realWarnings.length - exceededCount;
-
-    let html = '<div style="padding:8px 16px;margin-bottom:16px;background:#161b22;border-radius:6px;border:1px solid #30363d">';
-    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
-    if (exceededCount > 0) {
-      html += '<span style="font-size:20px;color:#f85149">⚠</span>';
-      html += '<span style="color:#f85149;font-weight:600">发现 ' + exceededCount + ' 个网络电流超限！</span>';
-    } else {
-      html += '<span style="font-size:20px;color:#f0883e">⚠</span>';
-      html += '<span style="color:#f0883e;font-weight:600">发现 ' + nearLimitCount + ' 个网络接近上限</span>';
-    }
-    html += '</div></div>';
-
-    // 每个警告详情
-    for (const w of realWarnings) {
-      const severity = w.is_exceeded ? 'error' : 'warning';
-      const severityColor = w.is_exceeded ? '#f85149' : '#f0883e';
-      const severityIcon = w.is_exceeded ? '✕' : '⚠';
-      const severityText = w.is_exceeded ? '超限' : '接近上限';
-
-      html += '<div style="margin-bottom:12px;padding:12px;background:#0d1117;border-radius:6px;border:1px solid ' + severityColor + ';border-left:4px solid ' + severityColor + '">';
-      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
-      html += '<span style="font-size:18px;color:' + severityColor + '">' + severityIcon + '</span>';
-      html += '<span style="color:' + severityColor + ';font-weight:600;font-size:13px">[' + w.network_name + ' @ ' + w.layer_name + ']</span>';
-      html += '<span style="color:#8b949e;font-size:11px">' + severityText + '</span>';
-      html += '</div>';
-
-      html += '<div style="padding:8px 12px;background:#161b22;border-radius:4px;font-size:12px;line-height:1.8">';
-      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
-      html += '<span style="color:#8b949e">配置电流:</span>';
-      html += '<span style="color:#f0f6fc;font-weight:600">' + w.calculated_current.toFixed(2) + ' A</span>';
-      html += '</div>';
-      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
-      html += '<span style="color:#8b949e">最大允许:</span>';
-      html += '<span style="color:' + severityColor + ';font-weight:600">' + w.max_allowed_current.toFixed(2) + ' A</span>';
-      html += '</div>';
-      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
-      html += '<span style="color:#8b949e">利用率:</span>';
-      html += '<span style="color:' + severityColor + ';font-weight:600">' + (w.utilization * 100).toFixed(0) + '%</span>';
-      html += '</div>';
-      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
-      html += '<span style="color:#8b949e">走线宽度:</span>';
-      html += '<span style="color:#f0f6fc">' + w.trace_width_mm.toFixed(3) + ' mm</span>';
-      html += '</div>';
-      html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px">';
-      html += '<span style="color:#8b949e">铜厚度:</span>';
-      html += '<span style="color:#f0f6fc">' + w.copper_oz.toFixed(2) + ' oz</span>';
-      html += '</div>';
-      html += '<div style="display:flex;justify-content:space-between">';
-      html += '<span style="color:#8b949e">温升设置:</span>';
-      html += '<span style="color:#f0f6fc">' + w.temp_rise + ' °C</span>';
-      html += '</div>';
-      html += '</div>';
-      html += '</div>';
-    }
-
-    // 建议
-    html += '<div style="margin-top:16px;padding:12px;background:#161b22;border-radius:6px;border:1px solid #30363d">';
-    html += '<div style="color:#58a6ff;font-weight:600;margin-bottom:8px">💡 建议解决方案:</div>';
-    html += '<ul style="color:#c9d1d9;font-size:12px;line-height:1.8;margin:0;padding-left:20px">';
-    html += '<li>增加走线宽度（当前宽度可能不足以承载配置电流）</li>';
-    html += '<li>增加铜厚度（使用更厚的铜箔）</li>';
-    html += '<li>降低温升要求（如果允许更高的温升）</li>';
-    html += '<li>分流：将负载分配到多个并联走线</li>';
-    html += '</ul>';
-    html += '</div>';
-
-    body.innerHTML = html;
+    body.innerHTML = '<div class="warn-section-empty">'
+      + '<div class="icon">✓</div>'
+      + '<div class="text">无警告</div>'
+      + '</div>';
+    if (badge) badge.style.display = 'none';
+    if (tipsEl) tipsEl.style.display = 'none';
+    return;
   }
-  overlay.style.display = '';
+
+  const exceededCount = realWarnings.filter(w => w.is_exceeded).length;
+  if (badge) {
+    badge.textContent = String(realWarnings.length);
+    badge.style.display = '';
+    badge.classList.toggle('ok', exceededCount === 0);
+    badge.title = exceededCount > 0
+      ? `${exceededCount} 个网络超限，${realWarnings.length - exceededCount} 个网络接近上限`
+      : `${realWarnings.length} 个网络接近上限`;
+  }
+
+  let html = '';
+  if (exceededCount > 0) {
+    html += '<div class="warn-summary error">'
+      + '<span class="icon">⚠</span>'
+      + '<span class="text">发现 ' + exceededCount + ' 个网络电流超限</span>'
+      + '</div>';
+  } else {
+    html += '<div class="warn-summary warn">'
+      + '<span class="icon">⚠</span>'
+      + '<span class="text">发现 ' + realWarnings.length + ' 个网络接近上限</span>'
+      + '</div>';
+  }
+
+  // 每个警告卡片（默认 data-collapsed="1" 折叠）
+  for (const w of realWarnings) {
+    const isErr = w.is_exceeded;
+    const sevCls = isErr ? 'error' : 'warn';
+    const sevText = isErr ? '超限' : '接近上限';
+    const sevIcon = isErr ? '✕' : '⚠';
+
+    html += '<div class="warn-card ' + sevCls + '" data-collapsed="1">'
+      + '<div class="warn-card-head">'
+      + '<span class="warn-card-toggle">▶</span>'
+      + '<span class="icon ' + sevCls + '">' + sevIcon + '</span>'
+      + '<span class="net ' + sevCls + '">[' + escHtmlAttr(w.network_name) + ' @ ' + escHtmlAttr(w.layer_name) + ']</span>'
+      + '<span class="sev">' + sevText + '</span>'
+      + '</div>'
+      + '<div class="warn-card-rows">'
+      + '<div class="row"><span class="k">配置电流:</span><span class="v">' + w.calculated_current.toFixed(2) + ' A</span></div>'
+      + '<div class="row"><span class="k">最大允许:</span><span class="v ' + sevCls + '">' + w.max_allowed_current.toFixed(2) + ' A</span></div>'
+      + '<div class="row"><span class="k">利用率:</span><span class="v ' + sevCls + '">' + (w.utilization * 100).toFixed(0) + '%</span></div>'
+      + '<div class="row"><span class="k">走线宽度:</span><span class="v">' + w.trace_width_mm.toFixed(3) + ' mm</span></div>'
+      + '<div class="row"><span class="k">铜厚度:</span><span class="v">' + w.copper_oz.toFixed(2) + ' oz</span></div>'
+      + '<div class="row"><span class="k">温升设置:</span><span class="v">' + w.temp_rise + ' °C</span></div>'
+      + '</div>'
+      + '</div>';
+  }
+
+  body.innerHTML = html;
+
+  // 绑定每个卡片的折叠/展开
+  body.querySelectorAll('.warn-card').forEach(card => {
+    const head = card.querySelector('.warn-card-head');
+    head.addEventListener('click', () => {
+      const collapsed = card.getAttribute('data-collapsed') === '1';
+      card.setAttribute('data-collapsed', collapsed ? '0' : '1');
+    });
+  });
+
+  // 修复建议固定在左下角浮动显示
+  if (tipsEl) tipsEl.style.display = 'block';
+}
+
+function escHtmlAttr(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) + '\n' + (e.stack || '')); }
@@ -2587,19 +2864,6 @@ try { main(); } catch(e) { _log('FATAL', 'main() crashed: ' + (e.message || e) +
       <button onclick="document.getElementById('diag-overlay').style.display='none'">关闭</button>
     </div>
     <div class="diag-body" id="diag-content">无诊断信息</div>
-  </div>
-</div>
-
-<div id="warn-overlay" class="diag-overlay" style="display:none">
-  <div class="diag-modal" style="width:600px">
-    <div class="diag-header">
-      <h3 style="display:flex;align-items:center;gap:8px">
-        <span style="color:#f0883e">⚠</span>
-        <span>电流容量检查报告</span>
-      </h3>
-      <button onclick="document.getElementById('warn-overlay').style.display='none'">关闭</button>
-    </div>
-    <div class="diag-body" id="warn-content" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px;line-height:1.5;white-space:normal;padding:16px">无警告信息</div>
   </div>
 </div>
 

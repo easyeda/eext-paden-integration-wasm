@@ -85,12 +85,15 @@ type ConnectionPoint struct {
 // BoundaryPolygon describes layer boundary exterior and holes as [x,y] arrays
 // so the JS renderer can consume them directly. Vertices/Triangles provide a
 // pre-triangulated fill so the frontend does not need to fan-fill concave
-// polygons.
+// polygons. Net carries the inferred net name for this polygon so the
+// frontend can highlight the analysed network's copper without losing the
+// surrounding Gerber geometry.
 type BoundaryPolygon struct {
 	Exterior  [][]float64   `json:"exterior"`
 	Holes     [][][]float64 `json:"holes"`
 	Vertices  [][]float64   `json:"vertices"`
 	Triangles [][]int       `json:"triangles"`
+	Net       string        `json:"net,omitempty"`
 }
 
 // SerializeSolution converts a solver.Solution to JSON bytes.
@@ -253,7 +256,8 @@ func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[s
 		// sub-mm gaps between adjacent copper pours. With results now
 		// delivered via sys_MessageBus there is no longer a 1 MB payload
 		// cap to fight, so the simplification is unnecessary.
-		for _, poly := range sol.Problem.Layers[i].Shape {
+		netLabels := sol.Problem.Layers[i].NetLabels
+		for pi, poly := range sol.Problem.Layers[i].Shape {
 			if len(poly) == 0 || len(poly[0]) < 3 {
 				continue
 			}
@@ -277,11 +281,16 @@ func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[s
 			// Defensive sanitization: toEasyEDA can propagate any Inf/NaN present
 			// in the source polygons (e.g. mirror-induced empty rings); the JSON
 			// marshal will reject those otherwise.
+			netLabel := ""
+			if pi < len(netLabels) {
+				netLabel = netLabels[pi]
+			}
 			polys = append(polys, BoundaryPolygon{
 				Exterior:  sanitizePointSlice(exterior),
 				Holes:     sanitizeHoles(holes),
 				Vertices:  sanitizePointSlice(flatVerts),
 				Triangles: tris,
+				Net:       netLabel,
 			})
 		}
 		out[layer.Name] = polys
