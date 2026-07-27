@@ -325,13 +325,87 @@ function shapeToPolygons(shape) {
 		polygons.push([ring]);
 	}
 	else if (shape.type === 'rectangle') {
-		const { x, y, xSize, ySize } = shape;
-		polygons.push([[
-			{ x, y },
-			{ x: x + xSize, y },
-			{ x: x + xSize, y: y + ySize },
-			{ x, y: y + ySize },
-		]]);
+		// tracespace flattens OBROUND into a rectangle with an `r` corner-radius
+		// attribute; without honouring `r` the outline loses all rounded
+		// corners and ends up as a sharp polygon. Build an outline shape with
+		// proper quarter arcs at each corner when r is non-zero.
+		const { x, y, xSize, ySize, r: cornerR } = shape;
+		if (cornerR && cornerR > 0) {
+			const eps = 1e-9;
+			const halfX = xSize / 2;
+			const halfY = ySize / 2;
+			// Stadium rotated horizontally: xSize > ySize, cornerR == halfY
+			if (Math.abs(cornerR - halfY) < eps && cornerR < halfX - eps) {
+				const cxL = x + cornerR;
+				const cxR = x + xSize - cornerR;
+				const cy = y + halfY;
+				polygons.push([[
+					{ x: cxL, y },
+					{ x: cxR, y },
+					...interpolateArc({ x: cxR, y }, { x: cxR, y: y + ySize }, { x: cxR, y: cy }, cornerR).slice(1),
+					{ x: cxR, y: y + ySize },
+					{ x: cxL, y: y + ySize },
+					...interpolateArc({ x: cxL, y: y + ySize }, { x: cxL, y }, { x: cxL, y: cy }, cornerR).slice(1),
+				]]);
+			}
+			// Stadium rotated vertically: ySize > xSize, cornerR == halfX
+			else if (Math.abs(cornerR - halfX) < eps && cornerR < halfY - eps) {
+				const cx = x + halfX;
+				const cyT = y + cornerR;
+				const cyB = y + ySize - cornerR;
+				polygons.push([[
+					{ x: x + xSize, y: cyT },
+					{ x: x + xSize, y: cyB },
+					...interpolateArc({ x: x + xSize, y: cyB }, { x, y: cyB }, { x: cx, y: cyB }, cornerR).slice(1),
+					{ x, y: cyB },
+					{ x, y: cyT },
+					...interpolateArc({ x, y: cyT }, { x: x + xSize, y: cyT }, { x: cx, y: cyT }, cornerR).slice(1),
+				]]);
+			}
+			// Rounded rectangle: cornerR < min(halfX, halfY)
+			else if (cornerR < Math.min(halfX, halfY) - eps) {
+				const cr = Math.min(cornerR, halfX, halfY);
+				const x0 = x;
+				const x1 = x + xSize;
+				const y0 = y;
+				const y1 = y + ySize;
+				const cx0 = x + cr;
+				const cy0 = y + cr;
+				const cx1 = x + xSize - cr;
+				const cy1 = y + ySize - cr;
+				polygons.push([[
+					{ x: cx0, y: y0 },
+					{ x: cx1, y: y0 },
+					...interpolateArc({ x: cx1, y: y0 }, { x: x1, y: cy0 }, { x: cx1, y: cy0 }, cr).slice(1),
+					{ x: x1, y: cy0 },
+					{ x: x1, y: cy1 },
+					...interpolateArc({ x: x1, y: cy1 }, { x: cx1, y: y1 }, { x: cx1, y: cy1 }, cr).slice(1),
+					{ x: cx1, y: y1 },
+					{ x: cx0, y: y1 },
+					...interpolateArc({ x: cx0, y: y1 }, { x: x0, y: cy1 }, { x: cx0, y: cy1 }, cr).slice(1),
+					{ x: x0, y: cy1 },
+					{ x: x0, y: cy0 },
+					...interpolateArc({ x: x0, y: cy0 }, { x: cx0, y: y0 }, { x: cx0, y: cy0 }, cr).slice(1),
+				]]);
+			}
+			else {
+				// cornerR spans the whole side — degenerate, fall back to sharp rectangle.
+				polygons.push([[
+					{ x, y },
+					{ x: x + xSize, y },
+					{ x: x + xSize, y: y + ySize },
+					{ x, y: y + ySize },
+				]]);
+			}
+		}
+		else {
+			polygons.push([[
+				{ x, y },
+				{ x: x + xSize, y },
+				{ x: x + xSize, y: y + ySize },
+				{ x, y: y + ySize },
+			]]);
+		}
 	}
 	else if (shape.type === 'polygon') {
 		polygons.push([shape.points.map(p => ({ x: p[0], y: p[1] }))]);

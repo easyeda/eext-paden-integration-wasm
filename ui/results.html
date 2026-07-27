@@ -35,7 +35,11 @@
   .diag-body .diag-bad { color: #f85149; }
   .info-panel .diag-link { color: #58a6ff; cursor: pointer; text-decoration: underline; pointer-events: auto; }
 
-  .layer-sidebar { width: 170px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
+  :root { --sidebar-width: 220px; }
+  .layer-sidebar { width: var(--sidebar-width); background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; min-width: 160px; }
+  .sidebar-resizer { width: 4px; background: #30363d; cursor: col-resize; flex-shrink: 0; transition: background 0.15s; position: relative; }
+  .sidebar-resizer::before { content: ''; position: absolute; inset: 0 -3px; }
+  .sidebar-resizer:hover, .sidebar-resizer.dragging { background: #1f6feb; }
   .sidebar-header { padding: 8px 10px; font-size: 12px; font-weight: 600; color: #8b949e; border-bottom: 1px solid #30363d; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between; }
   .sidebar-header-title { flex: 1; }
   .sidebar-layers { min-height: 0; overflow-y: auto; padding: 4px 0; }
@@ -72,7 +76,7 @@
   .sidebar-divider:hover, .sidebar-divider.dragging { background: #1f6feb; }
 
   .warn-section {
-    flex: 1 1 40%;
+    flex: 2 1 66.667%;
     min-height: 80px;
     background: #161b22;
     display: flex;
@@ -179,9 +183,9 @@
 
   .warn-tips-float {
     position: fixed;
-    left: 12px;
+    left: 6px;
     bottom: 38px;
-    width: 280px;
+    width: var(--sidebar-width, 220px);
     max-height: 200px;
     overflow-y: auto;
     background: rgba(13,17,23,0.95);
@@ -267,6 +271,7 @@
     <div class="warn-section-body" id="warn-section-body"></div>
   </div>
 </div>
+<div class="sidebar-resizer" id="sidebar-resizer" title="拖动调整面板宽度"></div>
 <div class="main-area">
 <div class="canvas-wrap">
   <canvas id="gl-canvas"></canvas>
@@ -1149,6 +1154,13 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   // surrounding Gerber context.
   const activeFillVerts = [];
   const activeFillIdx = [];
+  // Parallel buffer for the GND-net overlay: polygons whose net name looks
+  // like a ground net get a distinct, darker fill so they don't visually
+  // blend with VCC copper on the same layer (which would otherwise look
+  // like a short).
+  const gndFillVerts = [];
+  const gndFillIdx = [];
+  const isGndNet = (n) => typeof n === 'string' && n.toUpperCase().includes('GND');
   for (const poly of polys) {
     const hasTris = poly.triangles && poly.triangles.length > 0 && poly.vertices && poly.vertices.length > 0;
     if (hasTris) {
@@ -1163,6 +1175,16 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
         for (const pt of poly.vertices) activeFillVerts.push(pt[0], pt[1]);
         for (const tri of poly.triangles) {
           if (tri.length >= 3) activeFillIdx.push(activeBase + tri[0], activeBase + tri[1], activeBase + tri[2]);
+        }
+      }
+      // GND overlay: filled with a distinct grey-purple shade so the GND
+      // copper visually separates from the layer's VCC fill even when they
+      // share the same Gerber layer.
+      if (isGndNet(poly.net)) {
+        const gndBase = gndFillVerts.length / 2;
+        for (const pt of poly.vertices) gndFillVerts.push(pt[0], pt[1]);
+        for (const tri of poly.triangles) {
+          if (tri.length >= 3) gndFillIdx.push(gndBase + tri[0], gndBase + tri[1], gndBase + tri[2]);
         }
       }
       continue;
@@ -1186,6 +1208,14 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
       for (const pt of ext) activeFillVerts.push(pt[0], pt[1]);
       for (let k = 1; k < ext.length - 1; k++) {
         activeFillIdx.push(aOff, aOff + k, aOff + k + 1);
+      }
+    }
+    // GND overlay fallback: same exterior-only treatment.
+    if (isGndNet(poly.net) && ext.length >= 3) {
+      const gOff = gndFillVerts.length / 2;
+      for (const pt of ext) gndFillVerts.push(pt[0], pt[1]);
+      for (let k = 1; k < ext.length - 1; k++) {
+        gndFillIdx.push(gOff, gOff + k, gOff + k + 1);
       }
     }
   }
@@ -1214,6 +1244,17 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, need32 ? new Uint32Array(activeFillIdx) : new Uint16Array(activeFillIdx), gl.STATIC_DRAW);
     glData.activeFillIdxType = need32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
     glData.activeFillTriCount = activeFillIdx.length;
+  }
+  if (gndFillVerts.length > 0 && gndFillIdx.length > 0) {
+    glData.gndFillVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glData.gndFillVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gndFillVerts), gl.STATIC_DRAW);
+    const need32g = gndFillIdx.length >= 65536 && ext32bit;
+    glData.gndFillIBO = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glData.gndFillIBO);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, need32g ? new Uint32Array(gndFillIdx) : new Uint16Array(gndFillIdx), gl.STATIC_DRAW);
+    glData.gndFillIdxType = need32g ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+    glData.gndFillTriCount = gndFillIdx.length;
   }
   // Bounding box quad for stencil fill
   const bMargin = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) * 0.05;
@@ -1721,6 +1762,26 @@ function renderSingleLayer(li, mvp) {
     gl.disableVertexAttribArray(lineProg.a.a_pos);
   }
 
+  // 0c) GND fill overlay — drawn over the base copper fill for polygons
+  // labelled as GND, so the ground copper on a multi-net layer reads as a
+  // distinctly different fill colour instead of blending with VCC copper.
+  // Only applied on the active layer in non-coverage modes; in coverage mode
+  // everything renders cold gray anyway.
+  if (gd.gndFillVBO && gd.gndFillIBO
+      && li === currentLayerIdx && currentViewMode !== 'copper_coverage') {
+    gl.useProgram(lineProg.prog);
+    gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gd.gndFillVBO);
+    gl.enableVertexAttribArray(lineProg.a.a_pos);
+    gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
+    // Muted purple-grey gives a clear visual separation from any PCB layer
+    // colour while keeping the overall scene readable on dark backgrounds.
+    gl.uniform4f(lineProg.u.u_color, 0.36, 0.30, 0.42, 1.0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.gndFillIBO);
+    gl.drawElements(gl.TRIANGLES, gd.gndFillTriCount, gd.gndFillIdxType, 0);
+    gl.disableVertexAttribArray(lineProg.a.a_pos);
+  }
+
   // 1) Mesh triangles — per-mesh rendering with VCC/GND colormaps
   console.log('[Results] mesh render check: meshVBO=' + !!gd.meshVBO + ', prog=' + !!meshProg.prog + ', perMeshIdxRanges=' + (gd.perMeshIdxRanges ? gd.perMeshIdxRanges.length : 'null') + ', meshIsGnd=' + JSON.stringify(gd.meshIsGnd));
   if (gd.meshVBO && meshProg.prog && gd.perMeshIdxRanges) {
@@ -1963,10 +2024,10 @@ function setupSidebarDivider() {
     warnEl.style.height = warnH + 'px';
   };
 
-  // 初始 60/40 分配
+  // 初始 1/3（层列表） + 2/3（警告）分配
   setTimeout(() => {
     const sidebarH = sidebar.getBoundingClientRect().height;
-    if (sidebarH > 100) applyHeights(Math.round(sidebarH * 0.6));
+    if (sidebarH > 100) applyHeights(Math.round(sidebarH / 3));
   }, 0);
 
   divider.addEventListener('mousedown', (e) => {
@@ -1994,6 +2055,37 @@ function setupSidebarDivider() {
     const lyH = layersEl.getBoundingClientRect().height;
     const ratio = lyH / sidebarH;
     if (ratio > 0 && ratio < 1) applyHeights(Math.round(sidebarH * ratio));
+  });
+}
+
+// 水平拖动调整侧栏宽度，宽度同时通过 CSS 变量驱动 .layer-sidebar 和
+// .warn-tips-float，保证浮动提示与侧栏宽度永远一致。
+const SIDEBAR_MIN = 160;
+const SIDEBAR_MAX = 480;
+const SIDEBAR_DEFAULT = 220;
+function setupSidebarResizer() {
+  const sidebar = document.getElementById('layer-sidebar');
+  const resizer = document.getElementById('sidebar-resizer');
+  if (!sidebar || !resizer) return;
+
+  document.documentElement.style.setProperty('--sidebar-width', SIDEBAR_DEFAULT + 'px');
+
+  resizer.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    resizer.classList.add('dragging');
+    const startX = e.clientX;
+    const startW = sidebar.getBoundingClientRect().width;
+    const onMove = (ev) => {
+      const w = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(startW + (ev.clientX - startX))));
+      document.documentElement.style.setProperty('--sidebar-width', w + 'px');
+    };
+    const onUp = () => {
+      resizer.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   });
 }
 
@@ -2207,14 +2299,29 @@ function toggleLayer() {
   onLayerChange();
 }
 
-function toggleViewMode() {
-  const modes = ['voltage', 'power'];
-  currentViewMode = modes[(modes.indexOf(currentViewMode) + 1) % modes.length];
+// 三个视图按钮互斥：点击已激活的按钮回到默认的 voltage 视图。
+function setViewMode(mode) {
+  if (currentViewMode === mode) {
+    currentViewMode = 'voltage';
+  } else {
+    currentViewMode = mode;
+  }
   document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
   document.getElementById('btn-gndpower').classList.toggle('active', currentViewMode === 'gnd_power');
+  document.getElementById('btn-copper').classList.toggle('active', currentViewMode === 'copper_coverage');
   drawColorbar();
   updateInfoPanel();
   render();
+}
+
+function toggleViewMode() {
+  // P 键：仅在 power 与 voltage 之间切换。从 gnd_power / copper_coverage
+  // 按下时直接落到 power。
+  if (currentViewMode === 'power') {
+    setViewMode('voltage');
+  } else {
+    setViewMode('power');
+  }
 }
 
 function onLayerChange() {
@@ -2312,21 +2419,9 @@ function setupUI() {
     }
     render();
   });
-  document.getElementById('btn-viewmode').addEventListener('click', toggleViewMode);
-  document.getElementById('btn-gndpower').addEventListener('click', () => {
-    currentViewMode = currentViewMode === 'gnd_power' ? 'voltage' : 'gnd_power';
-    document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
-    document.getElementById('btn-gndpower').classList.toggle('active', currentViewMode === 'gnd_power');
-    document.getElementById('btn-copper').classList.toggle('active', currentViewMode === 'copper_coverage');
-    drawColorbar(); updateInfoPanel(); render();
-  });
-  document.getElementById('btn-copper').addEventListener('click', () => {
-    currentViewMode = currentViewMode === 'copper_coverage' ? 'voltage' : 'copper_coverage';
-    document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
-    document.getElementById('btn-gndpower').classList.toggle('active', currentViewMode === 'gnd_power');
-    document.getElementById('btn-copper').classList.toggle('active', currentViewMode === 'copper_coverage');
-    drawColorbar(); updateInfoPanel(); render();
-  });
+  document.getElementById('btn-viewmode').addEventListener('click', () => setViewMode('power'));
+  document.getElementById('btn-gndpower').addEventListener('click', () => setViewMode('gnd_power'));
+  document.getElementById('btn-copper').addEventListener('click', () => setViewMode('copper_coverage'));
   document.getElementById('btn-reset').addEventListener('click', () => { resetView(); render(); });
 
   // 箭头密度控制
@@ -2364,6 +2459,7 @@ function setupUI() {
   updateToggles();
   updateInfoPanel();
   setupSidebarDivider();
+  setupSidebarResizer();
 }
 
 function buildSidebar() {

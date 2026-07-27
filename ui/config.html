@@ -14,7 +14,10 @@
   .net-list { flex: 1; overflow-y: auto; padding: 4px; }
   .net-item { padding: 8px 10px; cursor: pointer; font-size: 12px; border-radius: 6px; margin-bottom: 3px; transition: background 0.15s; color: #374151; }
   .net-item:hover { background: #eff6ff; }
+  .net-item.last-config { background: #dbeafe; color: #1e3a8a; font-weight: 500; }
+  .net-item.last-config:hover { background: #bfdbfe; }
   .net-item.selected { background: #1a73e8; color: #fff; box-shadow: 0 1px 2px rgba(26,115,232,0.25); }
+  .net-item.selected.last-config { background: #1a73e8; color: #fff; }
 
   .right { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; border: 1px solid #d1d5db; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
   .rail-header { padding: 12px 14px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; gap: 14px; }
@@ -186,6 +189,8 @@
   let selectedNetIdx = -1;
   let selectedRowIdx = -1;
   let pickerMode = '';
+  // 上次配置过的网络集合（来自 lastConfig），用于在左侧列表里高亮标记
+  let lastConfigNets = new Set();
 
   // Pad: { net, x, y, pad_number, width, height, layer?, ref_des?, device_name? }
   // 每条轨道的配置
@@ -205,8 +210,26 @@
     }
     initRailConfig();
     applyLastConfig(msg.lastConfig);
+    // 记录上次配过的网络名集合，给左侧列表打浅色背景标记
+    lastConfigNets = new Set(
+      (msg.lastConfig && Array.isArray(msg.lastConfig.rails))
+        ? msg.lastConfig.rails.map(r => r.net).filter(n => allNetNames.includes(n))
+        : [],
+    );
     renderNetList();
-    if (allNetNames.length > 0) selectNet(0);
+    // 重新分析时，优先切到上次配置的第一个 net，否则才落到字母序第一个
+    let selectIdx = -1;
+    if (msg.lastConfig && Array.isArray(msg.lastConfig.rails)) {
+      for (const rail of msg.lastConfig.rails) {
+        const idx = allNetNames.indexOf(rail.net);
+        if (idx >= 0 && (railConfig[rail.net]?.rows?.length || 0) > 0) {
+          selectIdx = idx;
+          break;
+        }
+      }
+    }
+    if (selectIdx < 0) selectIdx = 0;
+    if (allNetNames.length > 0) selectNet(selectIdx);
   });
   eda.sys_MessageBus.publish('pdn-config-ready', {});
 
@@ -292,7 +315,12 @@
       const srcCount = cfg.rows.filter(r => r.role === 'SOURCE').length;
       const loadCount = cfg.rows.filter(r => r.role === 'LOAD').length;
       const badge = srcCount > 0 || loadCount > 0 ? ` [${srcCount}S/${loadCount}L]` : '';
-      return `<div class="net-item${i === selectedNetIdx ? ' selected' : ''}" onclick="selectNet(${i})">${net} (${padCount}p)${badge}</div>`;
+      const cls = [
+        'net-item',
+        i === selectedNetIdx ? 'selected' : '',
+        lastConfigNets.has(net) ? 'last-config' : '',
+      ].filter(Boolean).join(' ');
+      return `<div class="${cls}" onclick="selectNet(${i})">${net} (${padCount}p)${badge}</div>`;
     }).join('');
   }
 

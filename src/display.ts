@@ -153,7 +153,7 @@ export class ResultDisplay {
 			});
 			subscriptions.push(closeTask);
 
-			eda.sys_IFrame.openIFrame('/ui/results.html', 960, 900, 'pdne-results', {
+			eda.sys_IFrame.openIFrame('/ui/results.html', 1280, 900, 'pdne-results', {
 				maximizeButton: true,
 				minimizeButton: true,
 				minimizeStyle: 'collapsed',
