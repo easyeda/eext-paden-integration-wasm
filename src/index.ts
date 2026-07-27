@@ -358,38 +358,9 @@ export async function showResults(): Promise<void> {
 	}
 	catch {}
 
-	// No existing iframe — check for cached results and reopen
-	try {
-		const raw = eda.sys_Storage.getExtensionUserConfig('pdn-results');
-		if (!raw || typeof raw !== 'string') {
-			eda.sys_Dialog.showInformationMessage('没有可显示的分析结果，请先运行 PDN 分析', '提示');
-			return;
-		}
-		const data = JSON.parse(raw);
-		if (!data.result || !data.result.layerSolutions) {
-			eda.sys_Dialog.showInformationMessage('没有可显示的分析结果，请先运行 PDN 分析', '提示');
-			return;
-		}
-
-		// Reopen results iframe (it will load data from Storage)
-		eda.sys_IFrame.openIFrame('/ui/results.html', 960, 900, 'pdne-results', {
-			maximizeButton: true,
-			minimizeButton: false,
-			grayscaleMask: false,
-			title: 'PDN 分析结果',
-			buttonCallbackFn: (btn) => {
-				if (btn === 'close') {
-					try {
-						eda.sys_IFrame.closeIFrame('pdne-results');
-					}
-					catch {}
-				}
-			},
-		}).catch(() => {});
-	}
-	catch {
-		eda.sys_Dialog.showInformationMessage('没有可显示的分析结果，请先运行 PDN 分析', '提示');
-	}
+	// No existing iframe — cannot reopen from cache because SysStorage no longer
+	// holds results (we deliver results via sys_MessageBus to avoid the 1MB cap).
+	eda.sys_Dialog.showInformationMessage('没有可显示的分析结果，请先运行 PDN 分析', '提示');
 }
 
 export function about(): void {

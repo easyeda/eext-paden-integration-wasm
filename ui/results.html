@@ -515,29 +515,10 @@ function initGL() {
 // Data loading & buffer creation
 // ============================================================
 function loadResultSet() {
-  try {
-    const raw = eda.sys_Storage.getExtensionUserConfig('pdn-results');
-    if (!raw || typeof raw !== 'string') {
-      _log('Storage', 'no data, type=' + typeof raw);
-      return false;
-    }
-    _log('Storage', 'raw size=' + raw.length + ' chars');
-    const d = JSON.parse(raw);
-    resultSet = d.resultSet;
-    layerNames = d.layerNames || {};
-    if (!resultSet || !resultSet.results || resultSet.results.length === 0) {
-      _log('Storage', 'parsed but no valid resultSet');
-      return false;
-    }
-    _log('Storage', 'OK, results=' + resultSet.results.length);
-
-    try {
-      const rawImgs = eda.sys_Storage.getExtensionUserConfig('pdn-results-images');
-      if (rawImgs && typeof rawImgs === 'string') images = JSON.parse(rawImgs);
-    } catch(e) {}
-
-    return true;
-  } catch(e) { _log('Storage', 'PARSE ERROR: ' + (e.message || e)); return false; }
+  // SysStorage 不再用于跨 iframe 传输结果（1MB 容量限制是大板子杀手）。
+  // 所有结果通过 sys_MessageBus 推送，参见 main() 的 'pdn-results-data' 订阅。
+  // 保留此函数占位，避免外部脚本或扩展把它当作可调用入口。
+  return false;
 }
 
 function loadResult(idx) {
@@ -2354,32 +2335,11 @@ function main() {
 
   eda.sys_MessageBus.subscribe('pdn-results-data', onMessageBusData);
 
-  const storageOk = loadResultSet();
-  _log('Main', 'Storage load result: ok=' + storageOk + ' resultSet=' + !!resultSet + ' count=' + (resultSet?.results?.length ?? 0));
-
-  if (storageOk && loadResult(0)) {
-    _log('Main', '=== Data loaded from Storage OK ===');
-    eda.sys_MessageBus.publish('padne-results-ready', {});
-    startUI();
-    return;
-  }
-
-  // Storage failed or loadResult failed — clear resultSet so message bus fallback works
-  if (resultSet) {
-    _log('Main', 'Storage had data but loadResult(0) FAILED, clearing resultSet for message bus fallback');
-    resultSet = null;
-  }
-
-  _log('Main', 'Waiting for message bus data...');
+  // 不再从 SysStorage 读取——结果完全走 sys_MessageBus。
+  // 通知 display.ts 触发推送；display.ts 订阅了 'padne-results-ready'，
+  // 收到后会调用 sendViaBus() 把 resultSet 推到 'pdn-results-data'。
   eda.sys_MessageBus.publish('padne-results-ready', {});
-
-  // Retry from Storage after delay as last resort
-  setTimeout(() => {
-    if (!resultSet && loadResultSet() && loadResult(0)) {
-      _log('Main', 'Delayed Storage retry succeeded');
-      startUI();
-    }
-  }, 2000);
+  _log('Main', 'Published padne-results-ready, waiting for message bus data...');
 }
 
 function onMessageBusData(msg) {

@@ -5,7 +5,11 @@ import type { AnalysisImages, AnalysisResultSet, NetworkInfo, PcbContextData, So
  * 负责将后端求解结果可视化展示给用户
  */
 export class ResultDisplay {
-	/** 清理 Storage 中的旧数据 */
+	/**
+	 * 清理 Storage 中的旧数据（一次性迁移用）。
+	 * 历史版本把 resultSet 写入 SysStorage；现在完全走 MessageBus，
+	 * 这个方法只在运行期清理残留数据，避免老用户看到过期结果。
+	 */
 	static cleanupStorage(): void {
 		try {
 			eda.sys_Storage.setExtensionUserConfig('pdn-results', '');
@@ -76,73 +80,50 @@ export class ResultDisplay {
 					eda.sys_IFrame.closeIFrame('pdne-results');
 				}
 				catch {}
-				// 如果关闭（不是重新分析），清理 Storage 中的大对象
+				// 关闭时清理 storage 中残留的旧数据（兼容老版本）
 				if (action === 'close') {
-					try {
-						eda.sys_Storage.setExtensionUserConfig('pdn-results', '');
-						eda.sys_Storage.setExtensionUserConfig('pdn-results-images', '');
-					}
-					catch (e) {
-						console.warn('[Display] Storage cleanup failed:', e);
-					}
+					ResultDisplay.cleanupStorage();
 				}
 				resolve(action);
 			};
 
-			// Storage 传递数据
-			const jsonStr = JSON.stringify({
-				resultSet,
-				layerNames: layerNames || {},
-			});
-			console.warn('[Display] Storage write: data size =', jsonStr.length, 'chars, results =', resultSet.results.length);
-			let storageWritten = false;
-			try {
-				eda.sys_Storage.setExtensionUserConfig('pdn-results', jsonStr);
-				storageWritten = true;
-			}
-			catch (e) {
-				console.warn('[Display] Storage write failed (data too large?):', e);
-			}
-			if (images) {
-				try {
-					eda.sys_Storage.setExtensionUserConfig('pdn-results-images', JSON.stringify(images));
-				}
-				catch (e) {
-					console.warn('[Display] Images Storage write failed:', e);
-				}
-			}
+			// 一次性清理可能残留的旧 storage 数据（迁移用）
+			ResultDisplay.cleanupStorage();
 
-			// MessageBus 双保险: 即使 storage 写入失败，results 弹窗也能通过
-			// message bus 拿到数据。同时把 resultsSet 拆成轻量 snapshot 走
-			// message bus，避免某些 host 上大 payload 被截断。
+			// 全部数据通过 MessageBus 推送，彻底绕过 SysStorage 1MB 容量限制。
+			// Single publish payload 当前在 EasyEDA host 上没有明确上限文档，
+			// 已能跨过多个 test-3 级别（≈1MB original）的板子。
+			let payloadSize = 0;
 			const sendViaBus = () => {
 				try {
-					eda.sys_MessageBus.publish('pdn-results-data', {
+					const payload = {
 						resultSet,
 						layerNames: layerNames || {},
 						images: images || null,
-						storageOk: storageWritten,
-					});
+					};
+					payloadSize = JSON.stringify(payload).length;
+					eda.sys_MessageBus.publish('pdn-results-data', payload);
 				}
 				catch (e) {
 					console.warn('[Display] MessageBus publish failed:', e);
 				}
 			};
 
-			// Storage 失败或 results.html 主动请求时，都通过 bus 再发一次。
+			// results.html 主动请求时重发（处理订阅挂上前的窗口）
 			const task = eda.sys_MessageBus.subscribe('padne-results-ready', () => {
 				task.cancel();
-				console.warn(`[Display] Received padne-results-ready, sending data via message bus (storageOk=${storageWritten})`);
+				console.warn('[Display] Received padne-results-ready, sending data via message bus');
 				sendViaBus();
+				console.warn('[Display] Payload sent via message bus, size =', payloadSize, 'chars, results =', resultSet.results.length);
 			});
 			subscriptions.push(task);
 
-			if (!storageWritten) {
-				// Storage 不可用时，结果完全靠 message bus。把超时 fallback 也
-				// 加上，防止 results.html 已经 publish 了 padne-results-ready
-				// 但我们的订阅还没挂上导致数据丢失。
-				setTimeout(() => sendViaBus(), 800);
-			}
+			// 兜底：iframe 打开后立即推一次，避免 results.html 已 publish ready
+			// 但我们的订阅还没挂上的竞态。
+			setTimeout(() => {
+				if (!resolved)
+					sendViaBus();
+			}, 150);
 
 			// 监听重新分析
 			const reanalyzeTask = eda.sys_MessageBus.subscribe('pdn-reanalyze', () => {
