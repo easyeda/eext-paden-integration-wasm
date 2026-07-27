@@ -18,14 +18,17 @@ type DiagCollector struct {
 
 func (d *DiagCollector) Info(msg string) {
 	d.Lines = append(d.Lines, "[INFO] "+msg)
+	echoDiag("[INFO] " + msg)
 }
 
 func (d *DiagCollector) Warn(msg string) {
 	d.Lines = append(d.Lines, "[WARN] "+msg)
+	echoDiag("[WARN] " + msg)
 }
 
 func (d *DiagCollector) Error(msg string) {
 	d.Lines = append(d.Lines, "[ERROR] "+msg)
+	echoDiag("[ERROR] " + msg)
 }
 
 // Analyze runs the full PDN analysis pipeline.

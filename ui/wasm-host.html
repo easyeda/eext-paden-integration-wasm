@@ -149,6 +149,14 @@
               if (window.__padenLogs.length > 2000)
                 window.__padenLogs.splice(0, window.__padenLogs.length - 2000);
               console.log(`[WASM Worker:${msg.level}]`, msg.message);
+              // Forward to any subscriber (e.g. the analyzing dialog) so it can
+              // show a live tail of calculation steps.
+              try {
+                bus.publish('pdn-wasm-log', msg);
+              }
+              catch (e) {
+                console.warn('[WASM Host] failed to publish log:', e);
+              }
               break;
           }
         };

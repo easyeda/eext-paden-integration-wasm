@@ -14,10 +14,17 @@ const TOPIC_ERROR = 'pdn-wasm-error';
 const TOPIC_ANALYZE = 'pdn-wasm-analyze';
 const TOPIC_RESULT = 'pdn-wasm-analyze-result';
 const TOPIC_PROGRESS = 'pdn-wasm-progress';
+const TOPIC_WASM_LOG = 'pdn-wasm-log';
+const TOPIC_ANALYZING_LOG = 'pdn-analyzing-log';
+const TOPIC_ANALYZING_LOG_REQ = 'pdn-analyzing-log-req';
+
+const RECENT_LOG_LIMIT = 200;
 
 export class PdnWasmClient {
 	private initialized = false;
 	private initPromise: Promise<void> | null = null;
+	private recentLogs: string[] = [];
+	private logSubscribed = false;
 
 	async init(): Promise<void> {
 		if (this.initialized)
@@ -35,6 +42,8 @@ export class PdnWasmClient {
 			await eda.sys_IFrame.closeIFrame(WASM_HOST_FRAME);
 		}
 		catch {}
+
+		this.subscribeLogBridge();
 
 		return new Promise((resolve, reject) => {
 			let readySub: any;
@@ -147,5 +156,69 @@ export class PdnWasmClient {
 				replyTopic,
 			});
 		});
+	}
+
+	private subscribeLogBridge() {
+		if (this.logSubscribed)
+			return;
+		this.logSubscribed = true;
+
+		// Capture every worker log line into a ring buffer so the analyzing
+		// dialog can fetch history when it opens, and forward each new line
+		// to live subscribers.
+		try {
+			eda.sys_MessageBus.subscribe(TOPIC_WASM_LOG, (msg: any) => {
+				const line = this.formatLogLine(msg);
+				if (!line)
+					return;
+				this.recentLogs.push(line);
+				if (this.recentLogs.length > RECENT_LOG_LIMIT)
+					this.recentLogs.splice(0, this.recentLogs.length - RECENT_LOG_LIMIT);
+				try {
+					eda.sys_MessageBus.publish(TOPIC_ANALYZING_LOG, { line });
+				}
+				catch {}
+			});
+		}
+		catch (e) {
+			console.warn('paden: failed to subscribe to wasm logs:', e);
+		}
+
+		// Snapshot endpoint so the analyzing dialog can backfill any logs that
+		// were emitted before its iframe finished loading.
+		try {
+			eda.sys_MessageBus.subscribe(TOPIC_ANALYZING_LOG_REQ, (msg: any) => {
+				const reply = msg?.replyTopic;
+				if (!reply)
+					return;
+				try {
+					eda.sys_MessageBus.publish(reply, {
+						logs: this.recentLogs.slice(),
+					});
+				}
+				catch {}
+			});
+		}
+		catch (e) {
+			console.warn('paden: failed to subscribe to log history requests:', e);
+		}
+	}
+
+	private formatLogLine(msg: any): string {
+		if (!msg)
+			return '';
+		if (typeof msg === 'string')
+			return msg;
+		const message = typeof msg.message === 'string' ? msg.message : '';
+		if (!message)
+			return '';
+		const args = Array.isArray(msg.args) ? msg.args : [];
+		if (args.length > 0) {
+			const tail = args
+				.map((a: any) => (typeof a === 'string' ? a : JSON.stringify(a)))
+				.join(' ');
+			return tail ? `${message} ${tail}` : message;
+		}
+		return message;
 	}
 }

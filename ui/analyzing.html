@@ -5,33 +5,129 @@
 <title>PDN 分析中</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%;
+  height: 100%;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  overflow: hidden;
+}
 body {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100vh;
-  background: #1e1e2e;
-  color: #cdd6f4;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 18px 22px;
+  gap: 10px;
 }
 .spinner {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border: 3px solid #45475a;
   border-top-color: #89b4fa;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  margin-bottom: 16px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
-.hint { font-size: 12px; color: #6c7086; }
+.title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.tail {
+  width: 100%;
+  margin-top: 6px;
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #a6adc8;
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 6px;
+  padding: 8px 10px;
+  height: 60px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  transition: opacity 0.2s ease;
+}
+.tail.empty { opacity: 0.5; }
+.tail .row {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  height: 1.45em;
+}
+.tail .row.dim { color: #585b70; }
+.tail .row.spin { animation: rowIn 0.25s ease-out; }
+@keyframes rowIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 </style>
 </head>
 <body>
 <div class="spinner"></div>
 <div class="title">PDN 分析中，请稍候...</div>
-<div class="hint">正在网格剖分与 FEM 求解</div>
+<div class="tail empty" id="tail">
+  <div class="row dim">等待计算日志…</div>
+</div>
+<script>
+(function () {
+  const TAIL_LINES = 3;
+  const tailEl = document.getElementById('tail');
+  const buf = [];
+
+  function render() {
+    if (buf.length === 0) {
+      tailEl.innerHTML = '<div class="row dim">等待计算日志…</div>';
+      tailEl.classList.add('empty');
+      return;
+    }
+    tailEl.classList.remove('empty');
+    const rows = buf.slice(-TAIL_LINES).map((line) => {
+      const safe = String(line).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+      return `<div class="row spin" title="${safe}">${safe}</div>`;
+    });
+    tailEl.innerHTML = rows.join('');
+  }
+
+  function append(line) {
+    if (!line) return;
+    const trimmed = String(line).replace(/\s+/g, ' ').trim();
+    if (!trimmed) return;
+    buf.push(trimmed);
+    if (buf.length > 32) buf.splice(0, buf.length - 32);
+    render();
+  }
+
+  function fillInitial(logs) {
+    if (!Array.isArray(logs)) return;
+    buf.length = 0;
+    for (const l of logs) append(l);
+  }
+
+  try {
+    const eda = window.eda;
+    const bus = eda && eda.sys_MessageBus;
+    if (!bus) return;
+
+    bus.subscribe('pdn-analyzing-log', (msg) => {
+      if (msg && typeof msg.line === 'string') append(msg.line);
+    });
+
+    const replyTopic = 'pdn-analyzing-log-history-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    const unsub = bus.subscribe(replyTopic, (msg) => {
+      fillInitial(msg && msg.logs);
+      try { unsub.cancel(); } catch (e) {}
+    });
+    bus.publish('pdn-analyzing-log-req', { replyTopic });
+  } catch (e) {
+    console.warn('analyzing: log bridge unavailable', e);
+  }
+})();
+</script>
 </body>
 </html>
