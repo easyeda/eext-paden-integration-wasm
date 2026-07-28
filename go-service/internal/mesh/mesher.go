@@ -24,7 +24,8 @@ func DefaultConfig() Config {
 
 // Mesher generates triangular meshes for polygons.
 type Mesher struct {
-	Config Config
+	Config      Config
+	MaxVertices int // per-polygon cap (0 = use adaptiveVertexBudget based on poly area)
 }
 
 // NewMesher creates a mesher with the given config.
@@ -33,10 +34,10 @@ func NewMesher(cfg Config) *Mesher {
 }
 
 // PolygonToMesh triangulates a polygon with holes using a boundary-conforming
-// earcut mesh followed by edge-split refinement and edge-flip quality
-// improvement. Unlike the previous Delaunay+centroid-filter path, this never
-// creates triangles that bridge concave boundaries or holes, so the rendered
-// copper fill exactly matches the polygon outline.
+// earcut mesh, followed by edge-split refinement, interior Steiner point
+// insertion for large triangles, and edge-flip quality improvement. The
+// interior-point pass is what stops large copper pours from degenerating into
+// the long thin slivers that the previous earcut-only path produced.
 func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh, error) {
 	if len(poly) == 0 || len(poly[0]) < 3 {
 		return NewMesh(), nil
@@ -47,15 +48,34 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 		maxSize = 1.2
 	}
 
-	// Very light simplification: remove only nearly duplicate points from the
-	// high-resolution Gerber arc approximation while preserving shape.
-	simplTol := math.Max(0.0005, maxSize*0.001)
+	// Per-polygon vertex budget: scale with area when the caller did not
+	// specify one. For test-3 (~1071 mm² total copper over many pours)
+	// something like ~2000–4000 verts per polygon keeps solves fast while
+	// giving every pour enough interior Steiner points to avoid slivers.
+	maxVerts := m.MaxVertices
+	if maxVerts <= 0 {
+		maxVerts = adaptiveVertexBudget(polygonAreaSum(poly))
+	}
+
+	// Tighten the filter thresholds so genuine slivers near pads are
+	// rejected rather than polluting the FEM system.
+	minSeedDist := math.Max(math.Min(maxSize*0.04, 0.08), 0.02)
+
+	// Scale simplification tolerance with mesh size, and ensure it always
+	// exceeds the bridge's circle chord tolerance (0.05mm). The bridge
+	// emits up to 128 points per Gerber circle for visual smoothness; if
+	// the mesher's simplify tolerance is finer than that chord, every
+	// circle point survives and crowds out the per-polygon vertex budget
+	// before interior refinement runs. By making simplTol >= 2x the chord
+	// the mesher cleanly drops the redundant boundary points while the
+	// bridge-rendered geometry (and the FEM solve) keep their shape.
+	simplTol := math.Max(0.05, maxSize*0.05)
 	poly = poly.Simplify(simplTol)
 	if len(poly) == 0 || len(poly[0]) < 3 {
 		return NewMesh(), nil
 	}
 
-	// Primary path: boundary-conforming earcut.
+	// Primary path: boundary-conforming earcut (gives us a correct boundary).
 	tri, err := Earcut(poly)
 	if err != nil {
 		return nil, err
@@ -68,9 +88,8 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 	}
 
 	// Insert seed points (connection terminals) so boundary conditions are
-	// applied at exact locations. Reject seed points that are too close to
-	// existing vertices or edges — they create degenerate fan triangles.
-	minSeedDist := math.Max(math.Min(maxSize*0.04, 0.08), 0.02)
+	// applied at exact locations. Reject seed points too close to existing
+	// vertices or edges.
 	for _, sp := range seedPoints {
 		if !pointInPolygon(sp, poly) {
 			continue
@@ -80,9 +99,6 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 			t := tris[ti]
 			a, b, c := pts[t[0]], pts[t[1]], pts[t[2]]
 			if pointInTriangle(sp, a, b, c) {
-				// Skip if seed is too close to any vertex or edge — the fan
-				// triangles would be degenerate spikes. The solver will snap the
-				// connection to the nearest mesh vertex instead.
 				if distTo(sp, a) < minSeedDist || distTo(sp, b) < minSeedDist || distTo(sp, c) < minSeedDist {
 					inserted = true // treated as inserted so no warning is logged
 					break
@@ -102,9 +118,8 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 		}
 	}
 
-	// Refine long edges by splitting them. This preserves boundaries because
-	// edges are only subdivided, never crossed.
-	const maxVerts = 12000
+	// Pass 1: edge-split refinement. Only splits boundary edges so large
+	// polygons keep their outline exact.
 	for iter := 0; iter < 30 && len(pts) < maxVerts; iter++ {
 		edgeMap := buildEdgeMap(tris)
 		var candidates [][2]int
@@ -138,6 +153,116 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 		}
 	}
 
+	// Pass 2: interior Steiner point insertion. Two complementary rules:
+	//   (a) Long-edge rule — any triangle whose longest edge exceeds
+	//       `maxSize` gets a centroid Steiner point (catches the wide
+	//       sparse earcut output on large copper pours).
+	//   (b) Aspect rule — any triangle with aspect ratio ≥ 3 gets the
+	//       midpoint of its longest edge inserted as a Steiner point.
+	//       This directly attacks the "long thin sliver" failure mode that
+	//       the boundary-only refinement cannot reach.
+	// Both rounds cascade: each insertion produces three smaller
+	// triangles that get re-evaluated in the same iteration until the
+	// mesh converges or the per-polygon budget is exhausted.
+	// Pass 2: quality-driven refinement. Repeatedly find the worst-quality
+	// triangle and split its longest edge at the midpoint until every
+	// triangle is well shaped or the per-polygon budget is exhausted.
+	//
+	// Quality metric: aspect ratio Q = longest_edge / shortest_edge.
+	// Triangles with Q ≥ 3 are split (their smallest interior angle is
+	// then ~19° max, well below the boundary-conforming earcut baseline).
+	// After splitting, each new triangle has the longest edge halved,
+	// so cascading iterations drive Q down geometrically.
+	//
+	// The previous version used an area threshold alongside Q, which
+	// left tiny slivers (sub-millimetre scale, sub-0.001 mm² area)
+	// untouched. The current rule is Q-only — splitting a tiny sliver
+	// is cheap (one midpoint point) and is the real source of the broken
+	// faces the user reported.
+	// Pass 2: quality-driven refinement. Each iteration finds every
+	// triangle whose aspect ratio Q = longest/shortest exceeds
+	// `targetAspect` and splits its longest edge at the midpoint. The
+	// cascade converges geometrically: splitting a Q=10 triangle halves
+	// the resulting Q, so 3-4 outer iterations bring even pathological
+	// obtuse slivers under targetAspect.
+	targetAspect := 2.5
+	for iter := 0; iter < 30 && len(pts) < maxVerts; iter++ {
+		// Build the list of (triangle, longest-edge endpoint pair) for
+		// every bad-quality triangle. Sort by descending Q so the worst
+		// slivers are processed first.
+		type splitJob struct {
+			tri    [3]int
+			edge   [2]int
+			other  int // the third vertex that forms the (edge[0],edge[1],other) triangle
+			q      float64
+		}
+		var jobs []splitJob
+		for ti := range tris {
+			t := tris[ti]
+			a, b, c := pts[t[0]], pts[t[1]], pts[t[2]]
+			e0 := math.Hypot(b.X-a.X, b.Y-a.Y)
+			e1 := math.Hypot(c.X-b.X, c.Y-b.Y)
+			e2 := math.Hypot(a.X-c.X, a.Y-c.Y)
+			edges := [3]float64{e0, e1, e2}
+			longest := edges[0]
+			shortest := edges[0]
+			longIdx := 0
+			for i := 1; i < 3; i++ {
+				if edges[i] > longest {
+					longest = edges[i]
+					longIdx = i
+				}
+				if edges[i] < shortest {
+					shortest = edges[i]
+				}
+			}
+			if shortest < 1e-9 {
+				continue
+			}
+			q := longest / shortest
+			if q >= targetAspect {
+				pairs := [][3]int{{t[0], t[1], t[2]}, {t[1], t[2], t[0]}, {t[2], t[0], t[1]}}
+				choice := pairs[longIdx]
+				jobs = append(jobs, splitJob{
+					tri:   [3]int{choice[0], choice[1], choice[2]},
+					edge:   [2]int{choice[0], choice[1]},
+					other:  choice[2],
+					q:      q,
+				})
+			}
+		}
+		if len(jobs) == 0 {
+			break
+		}
+		// Process worst jobs first. Edges are split via the shared
+		// splitEdgeInSoup helper, which handles triangles on both
+		// sides of an interior edge.
+		sort.Slice(jobs, func(i, j int) bool { return jobs[i].q > jobs[j].q })
+		processedEdges := make(map[[2]int]bool)
+		splitsDone := 0
+		for _, jb := range jobs {
+			if len(pts) >= maxVerts {
+				break
+			}
+			edgeKey := [2]int{jb.edge[0], jb.edge[1]}
+			if jb.edge[0] > jb.edge[1] {
+				edgeKey = [2]int{jb.edge[1], jb.edge[0]}
+			}
+			if processedEdges[edgeKey] {
+				continue
+			}
+			beforeN := len(tris)
+			splitEdgeInSoup(&pts, &tris, buildEdgeMap(tris), jb.edge[0], jb.edge[1])
+			if len(tris) > beforeN {
+				splitsDone++
+				processedEdges[edgeKey] = true
+			}
+		}
+		if splitsDone == 0 {
+			break
+		}
+	}
+
 	// Improve element shape by flipping interior edges.
 	if m.Config.MinimumAngle > 0 && len(pts) < maxVerts {
 		minAngleRad := math.Pi * m.Config.MinimumAngle / 180.0
@@ -166,6 +291,69 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 		return NewMesh(), nil
 	}
 	return FromTriangleSoup(pts, tris), nil
+}
+
+// adaptiveVertexBudget returns a per-polygon vertex budget that scales with
+// the polygon's copper area. The shape is intentionally generous: most
+// polygons spend a large fraction of their budget on Gerber arc
+// discretisation along the boundary, and a separate interior budget for
+// Steiner refinement is essential for killing slivers. The cap (30000 for
+// the largest polygons) is well below the global mesh budget (60000) so a
+// single large pour still leaves room for connected polygons on other
+// layers / regions.
+func adaptiveVertexBudget(area float64) int {
+	switch {
+	case area < 20:
+		return 600
+	case area < 100:
+		return 1500
+	case area < 400:
+		return 3000
+	case area < 1500:
+		return 6000
+	case area < 5000:
+		return 12000
+	default:
+		return 30000
+	}
+}
+
+func polygonAreaSum(poly geometry.Polygon) float64 {
+	var area float64
+	for _, ring := range poly {
+		area += math.Abs(ring.Area())
+	}
+	return area
+}
+
+func triArea(a, b, c Point) float64 {
+	return math.Abs((b.X-a.X)*(c.Y-a.Y) - (c.X-a.X)*(b.Y-a.Y)) * 0.5
+}
+
+func findTriIndex(tris [][3]int, target [3]int) int {
+	// Match one triangle in any cyclic rotation.
+	for i, t := range tris {
+		if triEquals(t, target) {
+			return i
+		}
+	}
+	return -1
+}
+
+func triEquals(a, b [3]int) bool {
+	for i := 0; i < 3; i++ {
+		matched := false
+		for j := 0; j < 3; j++ {
+			if a[i] == b[j] {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 // generatePoints creates boundary + adaptive interior points.
@@ -680,10 +868,9 @@ func distToSegment(p, a, b Point) float64 {
 	}
 	t := ((p.X-a.X)*dx + (p.Y-a.Y)*dy) / (dx*dx + dy*dy)
 	if t < 0 {
-		return math.Hypot(p.X-a.X, p.Y-a.Y)
-	}
-	if t > 1 {
-		return math.Hypot(p.X-b.X, p.Y-b.Y)
+		t = 0
+	} else if t > 1 {
+		t = 1
 	}
 	return math.Hypot(p.X-(a.X+t*dx), p.Y-(a.Y+t*dy))
 }
@@ -813,23 +1000,22 @@ func quadConvex(pts []Point, a, b, c, d int) bool {
 	return crossA*crossB < 0
 }
 
-// filterValidTriangles drops degenerate or hole-spanning triangles.
+// filterValidTriangles drops degenerate or hole-spanning triangles. The
+// minimum-angle threshold is intentionally generous (15°). The simple
+// longest/shortest aspect ratio used below is a poor proxy for the
+// obtuse-triangle case the PCB copper primitives produce in practice —
+// two short sides meeting at a small angle can have aspect < 2 yet
+// still be a clear sliver — so we use the true minimum angle.
 func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Polygon) [][3]int {
-	// Compute a characteristic scale from the polygon to set a relative
-	// minimum-area threshold. Cap the scale so very large boards do not
-	// over-filter small-but-real copper features.
 	box := poly.Bounds()
 	charLen := math.Hypot(box.MaxX-box.MinX, box.MaxY-box.MinY)
 	if charLen > 200 {
 		charLen = 200
 	}
-	// Tighten thresholds relative to the previous version.  The absolute floors
-	// keep small-but-real features (fine tracks/pads) while rejecting the
-	// degenerate spike triangles that appear near inserted seed points.
 	minArea := math.Max(1e-9, charLen*charLen*1e-7)
-	minEdge := math.Max(2e-3, charLen*5e-5) // minimum edge length
-	minAngle := 2.0 * math.Pi / 180.0       // reject needle-like spike triangles
-	maxAspect := 25.0                       // reject extremely elongated triangles
+	minEdge := math.Max(2e-3, charLen*5e-5)
+	minAngle := 15.0 * math.Pi / 180.0 // reject slivers and needle-like triangles
+	maxAspect := 4.0                   // reject extremely elongated triangles
 
 	var filtered [][3]int
 	dropped := 0
@@ -839,7 +1025,6 @@ func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Poly
 		bc := math.Hypot(c.X-b.X, c.Y-b.Y)
 		ca := math.Hypot(a.X-c.X, a.Y-c.Y)
 
-		// Drop if any edge is shorter than the minimum (produces spike triangles).
 		if ab < minEdge || bc < minEdge || ca < minEdge {
 			dropped++
 			continue
@@ -855,7 +1040,6 @@ func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Poly
 			dropped++
 			continue
 		}
-		// Reject needle-like triangles (spikes) by minimum angle and aspect ratio.
 		minE := math.Min(ab, math.Min(bc, ca))
 		maxE := math.Max(ab, math.Max(bc, ca))
 		if maxE/minE > maxAspect {

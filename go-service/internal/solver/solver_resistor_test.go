@@ -34,7 +34,7 @@ func TestStampResistorsAppendsConductance(t *testing.T) {
 func TestCoarsenMeshConfigUsesNextAttempt(t *testing.T) {
 	cfg := mesh.Config{MaximumSize: 2, MinimumAngle: 20}
 	got := coarsenMeshConfig(cfg, 15354, 15000)
-	wantSize := cfg.MaximumSize * math.Sqrt(15354.0/15000.0) * 1.2
+	wantSize := cfg.MaximumSize * math.Sqrt(15354.0/15000.0) * 1.5
 
 	if math.Abs(got.MaximumSize-wantSize) > 1e-12 {
 		t.Fatalf("MaximumSize = %g, want %g", got.MaximumSize, wantSize)

@@ -64,7 +64,7 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	totalArea := totalCopperArea(layerGeoms)
 	cfg := initialMeshConfig(totalArea)
 	const (
-		maxMeshVerts    = 15000
+		maxMeshVerts    = 60000
 		maxMeshAttempts = 10
 	)
 	var meshes []*mesh.Mesh
@@ -636,8 +636,8 @@ func initialMeshConfig(totalArea float64) mesh.Config {
 
 func coarsenMeshConfig(cfg mesh.Config, vertexCount, maxVertices int) mesh.Config {
 	ratio := math.Sqrt(float64(vertexCount) / float64(maxVertices))
-	cfg.MaximumSize *= math.Min(ratio*1.2, 4.0)
-	cfg.MaximumSize = math.Min(cfg.MaximumSize, 50.0)
+	cfg.MaximumSize *= math.Min(ratio*1.5, 6.0)
+	cfg.MaximumSize = math.Min(cfg.MaximumSize, 80.0)
 	cfg.MinimumAngle = math.Max(cfg.MinimumAngle-3.0, 0)
 	return cfg
 }
