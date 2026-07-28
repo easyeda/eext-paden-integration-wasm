@@ -454,42 +454,18 @@ void main(){
   gl_FragColor = u_color;
 }`;
 
-const VS_POINT = `
-attribute vec2 a_pos;
-attribute vec3 a_col;
-attribute float a_dia;
-uniform mat4 u_mvp;
-uniform float u_worldToPx;
-varying vec3 v_col;
-void main(){
-  gl_Position = u_mvp * vec4(a_pos, 0.0, 1.0);
-  gl_PointSize = max(3.0, a_dia / u_worldToPx);
-  v_col = a_col;
-}`;
-
-const FS_POINT = `
-precision mediump float;
-varying vec3 v_col;
-void main(){
-  vec2 d = gl_PointCoord - vec2(0.5);
-  float r = length(d);
-  if(r > 0.5) discard;
-  float border = smoothstep(0.35, 0.42, r);
-  vec3 c = mix(v_col, vec3(0.05), border);
-  float hole = 1.0 - smoothstep(0.15, 0.22, r);
-  c = mix(c, vec3(0.04), hole);
-  gl_FragColor = vec4(c, 1.0);
-}`;
-
 // ============================================================
 // Globals
 // ============================================================
 let gl, canvas;
-let meshProg, lineProg, pointProg;
+let meshProg, lineProg;
 let cmapTex;
 let ext32bit;
 
 let resultData, layerNames, connectionPoints, layerBoundaries, pcbContext;
+// Every via on the board, from the Gerber drill files. Net-agnostic, so unlike
+// connectionPoints it also covers vias on signal nets.
+let viaPositions = [];
 let currentResultWarnings = [];
 let networkInfoData = [];
 let pcbLayerColors = {}; // EasyEDA layer name → 'RRGGBB' for copper context fill
@@ -652,10 +628,6 @@ function initGL() {
   lineProg.u = getUniforms(lineProg.prog, ['u_mvp','u_color']);
   lineProg.a = getAttribs(lineProg.prog, ['a_pos']);
 
-  pointProg = { prog: linkProgram(VS_POINT, FS_POINT) };
-  pointProg.u = getUniforms(pointProg.prog, ['u_mvp','u_worldToPx']);
-  pointProg.a = getAttribs(pointProg.prog, ['a_pos','a_col','a_dia']);
-
   cmapTex = gl.createTexture();
   updateCmapTexture();
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -686,6 +658,7 @@ function loadResult(idx) {
 
   resultData = entry.result;
   connectionPoints = entry.connectionPoints || {};
+  viaPositions = entry.viaPositions || [];
   layerBoundaries = entry.layerBoundaries || {};
   pcbContext = entry.pcbContext || null;
   // Pull PCB layer colors from the entry if display.ts fetched them. Fall back to a
@@ -1103,21 +1076,62 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   const lname = layerNamesList[li];
   glData.layerName = lname;
 
-  // Connection points: the 过孔 button should only show actual vias.
-  const cps = (connectionPoints[lname] || []).filter(cp => cp.kind === 'via');
-  if (cps.length > 0) {
-    const ptData = new Float32Array(cps.length * 6);
-    for (let i = 0; i < cps.length; i++) {
-      const cp = cps[i];
-      const col = cp.is_source ? [1.0, 0.2, 0.2] : [0.2, 1.0, 0.4];
-      ptData[i*6] = cp.x; ptData[i*6+1] = cp.y;
-      ptData[i*6+2] = col[0]; ptData[i*6+3] = col[1]; ptData[i*6+4] = col[2];
-      ptData[i*6+5] = cp.diameter || 0.5;
+  // Via overlay geometry.
+  //
+  // Source of truth is viaPositions (from the Gerber drill files), not
+  // connectionPoints: the latter only contains vias on analysed power/ground
+  // nets, so signal-net vias would be missing even though they exist on the
+  // board. Connection points are still used to tint the vias that take part in
+  // the solve.
+  //
+  // Built as real world-space annulus geometry rather than gl.POINTS sprites.
+  // Point sprites rasterise at a fixed pixel size, so they blur when zoomed in
+  // and stop scaling once they hit the driver's gl_PointSize cap (often 63-255).
+  if (viaPositions.length > 0) {
+    const cps = (connectionPoints[lname] || []).filter(cp => cp.kind === 'via');
+    const classify = (vx, vy) => {
+      for (const cp of cps) {
+        if (Math.abs(cp.x - vx) < 0.05 && Math.abs(cp.y - vy) < 0.05)
+          return cp.is_source ? 'src' : 'load';
+      }
+      return 'plain';
+    };
+
+    const viaVerts = [];
+    const srcIdx = [], loadIdx = [], plainIdx = [];
+    const VIA_SEGS = 24;
+    for (const v of viaPositions) {
+      const outerR = Math.max(v.diameter || 0.5, 1e-4) / 2;
+      // Barrel wall: the plated ring between the drill and the pad edge.
+      const innerR = outerR * 0.55;
+      const base = viaVerts.length / 2;
+      for (let s = 0; s < VIA_SEGS; s++) {
+        const a = (s / VIA_SEGS) * 2 * Math.PI;
+        const ca = Math.cos(a), sa = Math.sin(a);
+        viaVerts.push(v.x + outerR * ca, v.y + outerR * sa);
+        viaVerts.push(v.x + innerR * ca, v.y + innerR * sa);
+      }
+      const cls = classify(v.x, v.y);
+      const idx = cls === 'src' ? srcIdx : cls === 'load' ? loadIdx : plainIdx;
+      for (let s = 0; s < VIA_SEGS; s++) {
+        const o0 = base + s * 2, i0 = o0 + 1;
+        const n = (s + 1) % VIA_SEGS;
+        const o1 = base + n * 2, i1 = o1 + 1;
+        idx.push(o0, i0, o1, i0, i1, o1);
+      }
     }
-    glData.pointVBO = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, glData.pointVBO);
-    gl.bufferData(gl.ARRAY_BUFFER, ptData, gl.STATIC_DRAW);
-    glData.pointCount = cps.length;
+    glData.viaVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glData.viaVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(viaVerts), gl.STATIC_DRAW);
+    const viaIdx = srcIdx.concat(loadIdx, plainIdx);
+    const need32v = viaVerts.length / 2 >= 65536 && ext32bit;
+    glData.viaIBO = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glData.viaIBO);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, need32v ? new Uint32Array(viaIdx) : new Uint16Array(viaIdx), gl.STATIC_DRAW);
+    glData.viaIdxType = need32v ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+    glData.viaSrcCount = srcIdx.length;
+    glData.viaLoadCount = loadIdx.length;
+    glData.viaPlainCount = plainIdx.length;
   }
 
   // Outlines
@@ -1896,25 +1910,29 @@ function renderSingleLayer(li, mvp) {
     gl.disableVertexAttribArray(lineProg.a.a_pos);
   }
 
-  // 4) Connection points
-  if (showVias && gd.pointVBO) {
-    gl.useProgram(pointProg.prog);
-    gl.uniformMatrix4fv(pointProg.u.u_mvp, false, mvp);
-    // Vertical world height = 2 / viewZoom; canvas.height pixels cover it.
-    const worldToPx = 2 / (viewZoom * canvas.height);
-    gl.uniform1f(pointProg.u.u_worldToPx, worldToPx);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gd.pointVBO);
-    const ptStride = 6 * 4;
-    gl.enableVertexAttribArray(pointProg.a.a_pos);
-    gl.vertexAttribPointer(pointProg.a.a_pos, 2, gl.FLOAT, false, ptStride, 0);
-    gl.enableVertexAttribArray(pointProg.a.a_col);
-    gl.vertexAttribPointer(pointProg.a.a_col, 3, gl.FLOAT, false, ptStride, 8);
-    gl.enableVertexAttribArray(pointProg.a.a_dia);
-    gl.vertexAttribPointer(pointProg.a.a_dia, 1, gl.FLOAT, false, ptStride, 20);
-    gl.drawArrays(gl.POINTS, 0, gd.pointCount);
-    gl.disableVertexAttribArray(pointProg.a.a_pos);
-    gl.disableVertexAttribArray(pointProg.a.a_col);
-    gl.disableVertexAttribArray(pointProg.a.a_dia);
+  // 4) Vias — world-space annulus geometry, stays sharp at any zoom.
+  if (showVias && gd.viaVBO) {
+    gl.useProgram(lineProg.prog);
+    gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gd.viaVBO);
+    gl.enableVertexAttribArray(lineProg.a.a_pos);
+    gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.viaIBO);
+    const viaIdxBytes = gd.viaIdxType === gl.UNSIGNED_INT ? 4 : 2;
+    if (gd.viaSrcCount > 0) {
+      gl.uniform4f(lineProg.u.u_color, 1.0, 0.25, 0.25, 1.0);
+      gl.drawElements(gl.TRIANGLES, gd.viaSrcCount, gd.viaIdxType, 0);
+    }
+    if (gd.viaLoadCount > 0) {
+      gl.uniform4f(lineProg.u.u_color, 0.25, 1.0, 0.45, 1.0);
+      gl.drawElements(gl.TRIANGLES, gd.viaLoadCount, gd.viaIdxType, gd.viaSrcCount * viaIdxBytes);
+    }
+    // Vias not part of the solve (signal nets) — neutral grey.
+    if (gd.viaPlainCount > 0) {
+      gl.uniform4f(lineProg.u.u_color, 0.62, 0.66, 0.72, 0.9);
+      gl.drawElements(gl.TRIANGLES, gd.viaPlainCount, gd.viaIdxType, (gd.viaSrcCount + gd.viaLoadCount) * viaIdxBytes);
+    }
+    gl.disableVertexAttribArray(lineProg.a.a_pos);
   }
 
   // 5) Current flow arrows
@@ -1944,9 +1962,9 @@ function renderSingleLayer(li, mvp) {
 // ============================================================
 function setupInteraction() {
   canvas.addEventListener('mousedown', e => {
-    if (e.button === 0 || e.button === 1) { isDrag = true; lastMX = e.offsetX; lastMY = e.offsetY; e.preventDefault(); canvas.style.cursor = 'grabbing'; }
+    if (e.button === 0 || e.button === 1 || e.button === 2) { isDrag = true; lastMX = e.offsetX; lastMY = e.offsetY; e.preventDefault(); canvas.style.cursor = 'grabbing'; }
   });
-  window.addEventListener('mouseup', e => { if (e.button === 0 || e.button === 1) { isDrag = false; canvas.style.cursor = 'crosshair'; } });
+  window.addEventListener('mouseup', e => { if (e.button === 0 || e.button === 1 || e.button === 2) { isDrag = false; canvas.style.cursor = 'crosshair'; } });
   canvas.addEventListener('auxclick', e => e.preventDefault());
   canvas.addEventListener('contextmenu', e => e.preventDefault());
   canvas.addEventListener('mousemove', e => {

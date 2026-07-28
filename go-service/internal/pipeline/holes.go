@@ -8,52 +8,6 @@ import (
 	"github.com/easyeda/eext-paden-integration/go-service/internal/problem"
 )
 
-// subtractTHTPadHoles drills pad holes out of every copper layer so that the
-// remaining annular ring is correctly associated with the pad's net. Without
-// this, a THT pad centre can fall inside a solid copper pour of the wrong net.
-func subtractTHTPadHoles(layers []*problem.Layer, pads []Pad, transform *[4]float64, d *DiagCollector) {
-	var holes []geometry.Polygon
-	for _, p := range pads {
-		if !p.IsTHT || p.HoleDiameter <= 0 {
-			continue
-		}
-		x, y := p.X, p.Y
-		if transform != nil {
-			x = x*transform[0] + transform[2]
-			y = y*transform[1] + transform[3]
-		}
-		holes = append(holes, circlePolygon(x, y, p.HoleDiameter/2))
-	}
-	if len(holes) == 0 {
-		return
-	}
-	holeMP := geometry.MultiPolygon(holes)
-	for _, layer := range layers {
-		newShape := make(geometry.MultiPolygon, 0, len(layer.Shape))
-		newLabels := make([]string, 0, len(layer.Shape))
-		for i, poly := range layer.Shape {
-			clipped, err := geometry.Difference(geometry.MultiPolygon{poly}, holeMP)
-			if err != nil || len(clipped) == 0 {
-				continue
-			}
-			label := ""
-			if i < len(layer.NetLabels) {
-				label = layer.NetLabels[i]
-			}
-			newShape = append(newShape, clipped...)
-			for range clipped {
-				newLabels = append(newLabels, label)
-			}
-		}
-		if len(newShape) == 0 {
-			d.Warn(fmt.Sprintf("Layer '%s': hole subtraction removed all copper", layer.Name))
-			continue
-		}
-		layer.Shape = newShape
-		layer.NetLabels = newLabels
-	}
-}
-
 func circlePolygon(cx, cy, r float64) geometry.Polygon {
 	const n = 32
 	ring := make(geometry.Ring, n)

@@ -692,6 +692,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 					elements = append(elements, &problem.VoltageSource{P: fc.NodeID, N: fConns[0].NodeID, Voltage: 0})
 					allConns = append(allConns, fc)
 				}
+				if len(tConns) > 1 {
 				for _, tc := range tConns[1:] {
 					k := connKey(tc)
 					if seen[k] {
@@ -701,6 +702,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 					elements = append(elements, &problem.VoltageSource{P: tc.NodeID, N: csT.NodeID, Voltage: 0})
 					allConns = append(allConns, tc)
 				}
+			}
 				if len(tConns) > 0 && connKey(csT) != connKey(nConns[0]) {
 					elements = append(elements, &problem.VoltageSource{P: csT.NodeID, N: nConns[0].NodeID, Voltage: 0})
 				}

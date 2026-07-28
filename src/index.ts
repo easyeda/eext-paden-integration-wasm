@@ -110,6 +110,7 @@ export async function runPdnAnalysis(): Promise<void> {
 				const connectionPoints = (solution as any).connection_points ?? {};
 				const layerBoundaries = (solution as any).layer_boundaries ?? {};
 				const currentWarnings = (solution as any).current_warnings ?? [];
+				const viaPositions = (solution as any).via_positions ?? [];
 				const warningMessage = solution.success === false && solution.message ? solution.message : undefined;
 				// 显式清理大对象，防止内存泄漏
 				solution.layer_solutions.length = 0;
@@ -122,6 +123,7 @@ export async function runPdnAnalysis(): Promise<void> {
 					networkInfo: buildNetworkInfo(runConfig),
 					connectionPoints,
 					layerBoundaries,
+					viaPositions,
 					pcbContext: buildPcbContext(easyedaData.tracks, easyedaData.pads, runConfig),
 					warningMessage,
 					currentWarnings,

@@ -71,6 +71,16 @@ type AnalyzeResponse struct {
 	LayerBoundaries  map[string][]BoundaryPolygon `json:"layer_boundaries"`
 	Diagnostics      []string                     `json:"diagnostics"`
 	CurrentWarnings  []CurrentCheckOutput         `json:"current_warnings"`
+	ViaPositions     []ViaPosition                `json:"via_positions"`
+}
+
+// ViaPosition is a via hole read from the Excellon drill files. Unlike
+// ConnectionPoint these are net-agnostic: the viewer's via overlay shows every
+// via on the board, including signal nets that take no part in the PDN solve.
+type ViaPosition struct {
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	Diameter float64 `json:"diameter"`
 }
 
 // ConnectionPoint is a single connection point entry.
@@ -112,6 +122,7 @@ func SerializeSolution(sol *solver.Solution) ([]byte, error) {
 		LayerBoundaries:  serializeLayerBoundaries(sol, extras.Transform),
 		Diagnostics:      extras.Diagnostics.Lines,
 		CurrentWarnings:  checkCurrentCapacities(sol, extras.Config),
+		ViaPositions:     serializeViaPositions(extras.DrillVias, extras.Transform),
 	}
 
 	return json.Marshal(resp)
@@ -172,6 +183,29 @@ func serializeLayerSolutions(sol *solver.Solution, transform *[4]float64) []Laye
 			})
 		}
 		out[i] = lso
+	}
+	return out
+}
+
+// serializeViaPositions converts drill-file via holes to EasyEDA space. The
+// rendered diameter is the annular ring rather than the bare drill, since the
+// Excellon file only carries the tool size.
+func serializeViaPositions(pts []geometry.DrillPoint, transform *[4]float64) []ViaPosition {
+	out := make([]ViaPosition, 0, len(pts))
+	for _, p := range pts {
+		if !p.Via {
+			continue
+		}
+		x, y := toEasyEDA(p.X, p.Y, transform)
+		dia := p.Diameter
+		if dia <= 0 {
+			dia = 0.3
+		}
+		out = append(out, ViaPosition{
+			X:        sanitizeFloat(x),
+			Y:        sanitizeFloat(y),
+			Diameter: sanitizeFloat(dia + 0.2),
+		})
 	}
 	return out
 }

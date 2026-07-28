@@ -859,7 +859,13 @@ func padPolygon(pad IPC356APad) geometry.Polygon {
 // often exported without holes for pads; after Clipper2 union the pad copper is
 // absorbed into the plane and net inference mislabels the plane. Restoring the
 // pads as separate polygons fixes the net votes.
-func punchIPC356APadHoles(layers []*problem.Layer, netlist *IPC356ANetlist, d *DiagCollector) {
+//
+// drillHoles are the Excellon drill-file holes already subtracted from the raw
+// copper in step 2a. They must be re-applied to the pad/via shapes added back
+// here: padPolygon() builds a *solid* pad, so without this the shape fills in
+// the hole that was just drilled (THT pads render fully filled, and slotted
+// pads lose their slot entirely).
+func punchIPC356APadHoles(layers []*problem.Layer, netlist *IPC356ANetlist, drillHoles geometry.MultiPolygon, d *DiagCollector) {
 	if netlist == nil || len(layers) == 0 {
 		return
 	}
@@ -971,11 +977,57 @@ func punchIPC356APadHoles(layers []*problem.Layer, netlist *IPC356ANetlist, d *D
 		for range punched {
 			newLabels = append(newLabels, largestNet)
 		}
-		newShape = append(newShape, holes...)
-		newLabels = append(newLabels, holeNets...)
+		// Re-drill the recovered pad shapes. Without this the solid pad polygon
+		// fills the drill hole that step 2a already removed from the pour.
+		// Group pads by net so we make one Clipper Difference call per net
+		// instead of one per pad; for a 675-pad board the per-pad loop made
+		// hundreds of expensive syscall/js round trips.
+		var drilledCount int
+		holesByNet := make(map[string]geometry.MultiPolygon)
+		for hi, holePoly := range holes {
+			net := ""
+			if hi < len(holeNets) {
+				net = holeNets[hi]
+			}
+			holesByNet[net] = append(holesByNet[net], holePoly)
+		}
+		for net, netHoles := range holesByNet {
+			var pieces geometry.MultiPolygon
+			if len(drillHoles) > 0 {
+				if drilled, err := geometry.Difference(netHoles, drillHoles); err == nil && len(drilled) > 0 {
+					if !samePolygonCount(drilled, netHoles) {
+						drilledCount++
+					}
+					pieces = drilled
+				} else {
+					pieces = netHoles
+				}
+			} else {
+				pieces = netHoles
+			}
+			for _, piece := range pieces {
+				newShape = append(newShape, piece)
+				newLabels = append(newLabels, net)
+			}
+		}
 		layer.Shape = newShape
 		layer.NetLabels = newLabels
-		d.Info(fmt.Sprintf("Layer '%s': punched %d IPC356A pad/via hole(s) -> %d polygon(s)", layer.Name, len(holes), len(newShape)))
+		d.Info(fmt.Sprintf("Layer '%s': punched %d IPC356A pad/via hole(s), re-drilled %d -> %d polygon(s)", layer.Name, len(holes), drilledCount, len(newShape)))
 	}
+}
+
+// samePolygonCount reports whether a and b look like the same set of polygons
+// (count match with no slot inflation). Used to detect whether a re-drill
+// actually chewed the pads, vs. returning them unchanged.
+func samePolygonCount(a, b geometry.MultiPolygon) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if len(a[i]) != len(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 

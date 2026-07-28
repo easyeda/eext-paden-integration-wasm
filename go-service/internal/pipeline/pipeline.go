@@ -155,34 +155,25 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	if len(drillHoles) > 0 {
 		d.Info(fmt.Sprintf("Subtracting %d drill-hole polygon(s) from all copper layers", len(drillHoles)))
 		for _, layer := range layers {
-			newShape := make(geometry.MultiPolygon, 0, len(layer.Shape))
-			newLabels := make([]string, 0, len(layer.Shape))
-			for i, poly := range layer.Shape {
-				punched, err := geometry.Difference(geometry.MultiPolygon{poly}, drillHoles)
-				if err != nil {
-					d.Warn(fmt.Sprintf("Layer '%s': drill subtraction failed (%v), keeping original", layer.Name, err))
-					continue
+			// Bulk-subtract the drill holes from every polygon in one
+			// Clipper call instead of one Difference per polygon. The label
+			// of each resulting piece is whichever original polygon contains
+			// its centroid; that is what downstream net inference expects.
+			if punched, err := geometry.Difference(layer.Shape, drillHoles); err != nil {
+				d.Warn(fmt.Sprintf("Layer '%s': drill subtraction failed (%v), keeping original", layer.Name, err))
+			} else if len(punched) > 0 {
+				newLabels := make([]string, len(punched))
+				for pi := range punched {
+					cen := polygonCentroid(punched[pi])
+					newLabels[pi] = labelForCentroid(cen, layer.Shape, layer.NetLabels)
 				}
-				if len(punched) == 0 {
-					continue
+				layer.Shape = punched
+				layer.NetLabels = newLabels
+				for i := range layer.Shape {
+					layer.Shape[i].EnsureOrientation()
 				}
-				label := ""
-				if i < len(layer.NetLabels) {
-					label = layer.NetLabels[i]
-				}
-				newShape = append(newShape, punched...)
-				for range punched {
-					newLabels = append(newLabels, label)
-				}
-			}
-			if len(newShape) == 0 {
+			} else {
 				d.Warn(fmt.Sprintf("Layer '%s': empty after drill subtraction, keeping original", layer.Name))
-				continue
-			}
-			layer.Shape = newShape
-			layer.NetLabels = newLabels
-			for i := range layer.Shape {
-				layer.Shape[i].EnsureOrientation()
 			}
 		}
 	}
@@ -209,7 +200,7 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 		applyIPC356AOffset(ipcNetlist, ox, oy)
 		// Punch holes for pads/vias so they are not absorbed into a large copper
 		// pour during union; this keeps each net's copper separate for labelling.
-		punchIPC356APadHoles(layers, ipcNetlist, d)
+		punchIPC356APadHoles(layers, ipcNetlist, drillHoles, d)
 		ensureNetLabels(layers)
 		inferPolygonNetsFromIPC356A(layers, ipcNetlist, cfg.GndNet, d)
 		// Fall back to pad/track inference only for polygons the netlist did not label.
@@ -347,10 +338,27 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	d.Info(fmt.Sprintf("Solve OK: ground_current=%.6e, residual=%.6e", gni, rn))
 
 	// Attach diagnostics context for later serialization
+	// Via overlay geometry comes from the drill files rather than the solved
+	// networks: cfg.Vias only carries vias on the analysed nets, so signal-net
+	// vias would otherwise be invisible in the viewer.
+	drillVias, err := geometry.ParseDrillPoints(gerberZip)
+	if err != nil {
+		d.Warn(fmt.Sprintf("Drill point parsing failed: %v", err))
+	} else {
+		var viaCount int
+		for _, p := range drillVias {
+			if p.Via {
+				viaCount++
+			}
+		}
+		d.Info(fmt.Sprintf("Drill points: %d total, %d from via drill files", len(drillVias), viaCount))
+	}
+
 	sol.UserData = &SolutionExtras{
 		Diagnostics: d,
 		Config:      cfg,
 		Transform:   transform,
+		DrillVias:   drillVias,
 	}
 
 	return sol, d, nil
@@ -361,6 +369,10 @@ type SolutionExtras struct {
 	Diagnostics *DiagCollector
 	Config      Config
 	Transform   *[4]float64
+	// DrillVias are every via hole found in the Excellon drill files, in Gerber
+	// space. They feed the viewer's via overlay, which must show vias on all
+	// nets — not just the analysed power/ground ones.
+	DrillVias []geometry.DrillPoint
 }
 
 func matchLayerName(layerName, filename string) bool {
@@ -484,6 +496,46 @@ func layerArea(mp geometry.MultiPolygon) float64 {
 		area += polygonSignedArea(poly)
 	}
 	return math.Abs(area)
+}
+
+// polygonCentroid returns the (unweighted) centroid of a polygon's outer ring.
+func polygonCentroid(poly geometry.Polygon) geometry.Point {
+	if len(poly) == 0 || len(poly[0]) == 0 {
+		return geometry.Point{}
+	}
+	ring := poly[0]
+	var cx, cy float64
+	n := 0
+	for _, pt := range ring {
+		cx += pt.X
+		cy += pt.Y
+		n++
+	}
+	if n == 0 {
+		return geometry.Point{}
+	}
+	return geometry.Point{X: cx / float64(n), Y: cy / float64(n)}
+}
+
+// labelForCentroid returns the net label of the original polygon that
+// contains the given centroid. Falling back to the first non-empty label
+// preserves net attribution when the centroid lies on a polygon edge.
+func labelForCentroid(cen geometry.Point, original geometry.MultiPolygon, originalLabels []string) string {
+	for i, poly := range original {
+		if pointInPolygonMesh(cen, poly) {
+			if i < len(originalLabels) {
+				return originalLabels[i]
+			}
+			return ""
+		}
+	}
+	for i, lbl := range originalLabels {
+		if lbl != "" {
+			_ = i
+			return lbl
+		}
+	}
+	return ""
 }
 
 // unmirrorReflectedLayers flips layers whose Gerber header says they are

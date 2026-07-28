@@ -310,6 +310,56 @@ function pathSegmentsToConnectedPolylines(segments) {
 	return polylines;
 }
 
+function pointsSignedArea(pts) {
+	let a = 0;
+	const n = pts.length;
+	for (let i = 0; i < n; i++) {
+		const j = (i + 1) % n;
+		a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+	}
+	return a / 2;
+}
+
+// tracespace's macro vector-line primitive (codes 2/20) offsets the segment
+// corners along the segment *tangent* instead of its normal, so every vector
+// line collapses into a zero-area 4-point polygon. EasyEDA's `RoundRect`
+// aperture macro (used for all rounded SMD pads) is built from four corner
+// circles plus four vector lines, so the sides vanish and the pad degrades
+// into a bare rectangle with corner bumps.
+//
+// The collapsed quad still carries enough information to rebuild the stroke:
+//   p0 = A + t, p1 = B + t, p2 = B - t, p3 = A - t   (|t| == width / 2)
+// so the centerline endpoints are the midpoints of (p0,p3) and (p1,p2), and
+// the stroke width is |p0 - p3|. Rebuild the quad with a proper normal.
+function collapsedVectorLineToQuad(pts) {
+	if (!Array.isArray(pts) || pts.length !== 4)
+		return null;
+	const [p0, p1, p2, p3] = pts;
+	const width = Math.hypot(p0[0] - p3[0], p0[1] - p3[1]);
+	const widthAlt = Math.hypot(p1[0] - p2[0], p1[1] - p2[1]);
+	if (width <= 1e-9 || Math.abs(width - widthAlt) > 1e-6)
+		return null;
+	const start = { x: (p0[0] + p3[0]) / 2, y: (p0[1] + p3[1]) / 2 };
+	const end = { x: (p1[0] + p2[0]) / 2, y: (p1[1] + p2[1]) / 2 };
+	const dx = end.x - start.x;
+	const dy = end.y - start.y;
+	const len = Math.hypot(dx, dy);
+	if (len <= 1e-9)
+		return null;
+	// Only rebuild genuinely collapsed quads; leave real polygons untouched.
+	const scale = Math.max(width, len);
+	if (Math.abs(pointsSignedArea(pts)) > 1e-6 * scale * scale)
+		return null;
+	const nx = (-dy / len) * (width / 2);
+	const ny = (dx / len) * (width / 2);
+	return [
+		{ x: start.x + nx, y: start.y + ny },
+		{ x: end.x + nx, y: end.y + ny },
+		{ x: end.x - nx, y: end.y - ny },
+		{ x: start.x - nx, y: start.y - ny },
+	];
+}
+
 function shapeToPolygons(shape) {
 	const polygons = [];
 	if (shape.type === 'circle') {
@@ -408,7 +458,17 @@ function shapeToPolygons(shape) {
 		}
 	}
 	else if (shape.type === 'polygon') {
-		polygons.push([shape.points.map(p => ({ x: p[0], y: p[1] }))]);
+		// Drop malformed points (tracespace can emit [null, null] for some
+		// macro primitives) before doing anything else.
+		const pts = (shape.points || []).filter(p =>
+			Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+		if (pts.length >= 3) {
+			const repaired = collapsedVectorLineToQuad(pts);
+			if (repaired)
+				polygons.push([repaired]);
+			else
+				polygons.push([pts.map(p => ({ x: p[0], y: p[1] }))]);
+		}
 	}
 	else if (shape.type === 'outline') {
 		const pts = pathSegmentsToPoints(shape.segments);
