@@ -1,5 +1,3 @@
-//go:build js && wasm
-
 package geometry
 
 import (
@@ -62,10 +60,10 @@ func parseExcellonPoints(text string, via bool) []DrillPoint {
 	var pts []DrillPoint
 	tools := make(map[string]float64) // T01 -> diameter (mm)
 	var activeTool string
-	metric := true              // M48/METRIC default
-	format := [2]int{3, 3}      // digits before/after decimal
-	zeroMode := ""              // LZ=leading, TZ=trailing
-	lastX, lastY := 0.0, 0.0    // modal coordinates
+	metric := true           // M48/METRIC default
+	format := [2]int{3, 3}   // digits before/after decimal
+	zeroMode := ""           // LZ=leading, TZ=trailing
+	lastX, lastY := 0.0, 0.0 // modal coordinates
 	lastXset, lastYset := false, false
 
 	lines := splitLines(text)
@@ -307,4 +305,3 @@ func indexByte(s string, b byte) int {
 	}
 	return -1
 }
-

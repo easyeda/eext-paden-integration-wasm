@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/easyeda/eext-paden-integration/go-service/internal/problem"
 	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
+	"github.com/easyeda/eext-paden-integration/go-service/internal/problem"
 )
 
 // inferPolygonNets labels every polygon in each layer with the net of the pads
@@ -52,6 +52,11 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 
 	conflicts := 0
 	for _, l := range layers {
+		// Build a per-layer spatial index once, then reuse it for every pad
+		// probe. For boards with thousands of polygons and pads this turns an
+		// O(P*N) brute-force scan into an O(P*k) query where k is the small
+		// number of polygons whose bounding box actually contains the probe.
+		idx := BuildPolygonIndex(l.Shape)
 		votes := make([]map[string]int, len(l.Shape))
 		for i := range votes {
 			votes[i] = make(map[string]int)
@@ -74,8 +79,8 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 				}
 				for _, radius := range radii {
 					for _, probe := range thtAnnularProbes(pi.pt, radius) {
-						for polyIdx, poly := range l.Shape {
-							if pointInPolygonMesh(probe, poly) {
+						for _, polyIdx := range idx.Candidates(probe) {
+							if pointInPolygonMesh(probe, l.Shape[polyIdx]) {
 								if pi.net != "" {
 									votes[polyIdx][pi.net]++
 								}
@@ -85,8 +90,8 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 				}
 				continue
 			}
-			for polyIdx, poly := range l.Shape {
-				if pointInPolygonMesh(pi.pt, poly) {
+			for _, polyIdx := range idx.Candidates(pi.pt) {
+				if pointInPolygonMesh(pi.pt, l.Shape[polyIdx]) {
 					if pi.net != "" {
 						votes[polyIdx][pi.net]++
 					}
@@ -122,6 +127,14 @@ func inferPolygonNets(layers []*problem.Layer, pads []Pad, transform *[4]float64
 // inferPolygonNetsFromTracks labels polygons that contain track endpoints.
 // This helps connect trace runs that do not pass through any labelled pad.
 func inferPolygonNetsFromTracks(layers []*problem.Layer, tracks []Track, layerIDToName map[int]string, transform *[4]float64) {
+	if len(tracks) == 0 || len(layers) == 0 {
+		return
+	}
+	// Build one index per layer and reuse it for every track endpoint.
+	indexes := make(map[string]*PolygonIndex, len(layers))
+	for _, l := range layers {
+		indexes[l.Name] = BuildPolygonIndex(l.Shape)
+	}
 	for _, t := range tracks {
 		if t.Net == "" {
 			continue
@@ -130,22 +143,17 @@ func inferPolygonNetsFromTracks(layers []*problem.Layer, tracks []Track, layerID
 		if layerName == "" {
 			continue
 		}
-		var layer *problem.Layer
-		for _, l := range layers {
-			if l.Name == layerName {
-				layer = l
-				break
-			}
-		}
+		layer := layerDict(layers, layerName)
 		if layer == nil {
 			continue
 		}
+		idx := indexes[layerName]
 		for _, p := range []geometry.Point{
 			transformPoint(t.X1, t.Y1, transform),
 			transformPoint(t.X2, t.Y2, transform),
 		} {
-			for i, poly := range layer.Shape {
-				if pointInPolygonMesh(p, poly) {
+			for _, i := range idx.Candidates(p) {
+				if pointInPolygonMesh(p, layer.Shape[i]) {
 					if layer.NetLabels[i] == "" {
 						layer.NetLabels[i] = t.Net
 					}
@@ -153,6 +161,16 @@ func inferPolygonNetsFromTracks(layers []*problem.Layer, tracks []Track, layerID
 			}
 		}
 	}
+}
+
+// layerDict returns the layer with the given name, or nil if not found.
+func layerDict(layers []*problem.Layer, name string) *problem.Layer {
+	for _, l := range layers {
+		if l.Name == name {
+			return l
+		}
+	}
+	return nil
 }
 
 func transformPoint(x, y float64, transform *[4]float64) geometry.Point {

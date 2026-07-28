@@ -6,13 +6,13 @@
  * having been set by ui/wasm-host.html before this bundle executes.
  */
 
-import { parse } from '@tracespace/parser';
+import { createParser, parse } from '@tracespace/parser';
 import { plot } from '@tracespace/plotter';
 import earcut from 'earcut';
 
 // The bridge reads these globals and exposes window.padenGeometry.
 import './wasm-geometry-bridge.js';
 
-window.tracespaceParser = { parse };
+window.tracespaceParser = { createParser, parse };
 window.tracespacePlotter = { plot };
 window.earcut = earcut;

@@ -32,6 +32,17 @@ function getParse() {
 	return window.tracespaceParser?.parse;
 }
 
+function parseSource(text) {
+	const createParser = window.tracespaceParser?.createParser;
+	if (!createParser)
+		return getParse()(text);
+	const parser = createParser();
+	const chunkSize = 1024 * 1024;
+	for (let offset = 0; offset < text.length; offset += chunkSize)
+		parser.feed(text.slice(offset, offset + chunkSize));
+	return parser.result();
+}
+
 function getPlot() {
 	return window.tracespacePlotter?.plot;
 }
@@ -572,7 +583,7 @@ function gerberToPolygons(gerberText) {
 	}
 	let tree;
 	try {
-		tree = parseFn(gerberText);
+		tree = parseSource(gerberText);
 	}
 	catch (e) {
 		console.error('[geometry bridge] tracespace parse error:', e);
@@ -788,7 +799,7 @@ function drillToPolygons(drillText) {
 	}
 	let tree;
 	try {
-		tree = parseFn(drillText);
+		tree = parseSource(drillText);
 	}
 	catch (e) {
 		console.error('[geometry bridge] drill parse error:', e);

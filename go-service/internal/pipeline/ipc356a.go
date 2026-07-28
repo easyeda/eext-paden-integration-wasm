@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -41,12 +40,12 @@ type IPC356APad struct {
 
 // IPC356AVia is a via or mounting hole entry.
 type IPC356AVia struct {
-	Net        string
-	RefDes     string
-	X, Y       float64
-	DrillDia   float64
-	Side       string
-	OuterDia   float64
+	Net      string
+	RefDes   string
+	X, Y     float64
+	DrillDia float64
+	Side     string
+	OuterDia float64
 }
 
 // IPC356ATrace is a conductive trace segment.
@@ -528,35 +527,26 @@ func inferPolygonNetsFromIPC356A(layers []*problem.Layer, netlist *IPC356ANetlis
 		sortedLayerNames[i] = l.Name
 	}
 
-	// Precompute polygon areas and sort indices by ascending area for each layer.
-	// When a pad/trace point falls in an overlap region between a small pad/trace
-	// polygon and a large plane, the smallest containing polygon is the more
-	// specific net indicator and gets the vote.
-	type layerPolyOrder struct {
-		indices []int
-		areas   []float64
-	}
-	polyOrders := make([]layerPolyOrder, len(layers))
+	// Build a per-layer polygon spatial index. The smallest-area-first priority
+	// is preserved by sorting each candidate list by area before the linear scan,
+	// which mirrors the brute-force sort.Slice over `indices` that this
+	// function used previously. The index turns what was an O(N) over every
+	// polygon in the layer into an O(k) over the few polygons whose bounding
+	// box actually contains the probe point.
+	layerIndexes := make([]*PolygonIndex, len(layers))
 	for li, l := range layers {
-		indices := make([]int, len(l.Shape))
-		areas := make([]float64, len(l.Shape))
-		for i, poly := range l.Shape {
-			indices[i] = i
-			if len(poly) > 0 {
-				areas[i] = math.Abs(poly[0].Area())
-			}
-		}
-		sort.Slice(indices, func(i, j int) bool {
-			return areas[indices[i]] < areas[indices[j]]
-		})
-		polyOrders[li] = layerPolyOrder{indices: indices, areas: areas}
+		layerIndexes[li] = BuildPolygonIndex(l.Shape)
 	}
 
 	findSmallestContaining := func(li int, pt geometry.Point) int {
 		if li < 0 || li >= len(layers) {
 			return -1
 		}
-		for _, pi := range polyOrders[li].indices {
+		idx := layerIndexes[li]
+		if idx == nil {
+			return -1
+		}
+		for _, pi := range idx.CandidatesByArea(pt) {
 			if pointInPolygonMesh(pt, layers[li].Shape[pi]) {
 				return pi
 			}
@@ -1030,4 +1020,3 @@ func samePolygonCount(a, b geometry.MultiPolygon) bool {
 	}
 	return true
 }
-

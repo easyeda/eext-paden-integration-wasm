@@ -21,3 +21,4 @@
 /tsconfig.json
 .eslintcache
 debug.log
+test/
