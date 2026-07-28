@@ -82,7 +82,7 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 	}
 	pts := append([]Point(nil), tri.Vertices...)
 	tris := append([][3]int(nil), tri.Triangles...)
-	tris = filterValidTriangles(pts, tris, poly)
+	tris = filterMeshSafety(pts, tris, poly)
 	if len(tris) == 0 {
 		return NewMesh(), nil
 	}
@@ -191,10 +191,10 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 		// every bad-quality triangle. Sort by descending Q so the worst
 		// slivers are processed first.
 		type splitJob struct {
-			tri    [3]int
-			edge   [2]int
-			other  int // the third vertex that forms the (edge[0],edge[1],other) triangle
-			q      float64
+			tri   [3]int
+			edge  [2]int
+			other int // the third vertex that forms the (edge[0],edge[1],other) triangle
+			q     float64
 		}
 		var jobs []splitJob
 		for ti := range tris {
@@ -225,9 +225,9 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 				choice := pairs[longIdx]
 				jobs = append(jobs, splitJob{
 					tri:   [3]int{choice[0], choice[1], choice[2]},
-					edge:   [2]int{choice[0], choice[1]},
-					other:  choice[2],
-					q:      q,
+					edge:  [2]int{choice[0], choice[1]},
+					other: choice[2],
+					q:     q,
 				})
 			}
 		}
@@ -286,7 +286,7 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 		}
 	}
 
-	tris = filterValidTriangles(pts, tris, poly)
+	tris = filterMeshSafety(pts, tris, poly)
 	if len(tris) == 0 {
 		return NewMesh(), nil
 	}
@@ -327,7 +327,7 @@ func polygonAreaSum(poly geometry.Polygon) float64 {
 }
 
 func triArea(a, b, c Point) float64 {
-	return math.Abs((b.X-a.X)*(c.Y-a.Y) - (c.X-a.X)*(b.Y-a.Y)) * 0.5
+	return math.Abs((b.X-a.X)*(c.Y-a.Y)-(c.X-a.X)*(b.Y-a.Y)) * 0.5
 }
 
 func findTriIndex(tris [][3]int, target [3]int) int {
@@ -1058,13 +1058,50 @@ func filterValidTriangles(points []Point, triangles [][3]int, poly geometry.Poly
 	return filtered
 }
 
+// filterMeshSafety removes only triangles that cannot safely participate in the
+// FEM mesh. Quality problems are handled by refinement; dropping otherwise
+// valid triangles here would leave holes in an otherwise conforming mesh.
+func filterMeshSafety(points []Point, triangles [][3]int, poly geometry.Polygon) [][3]int {
+	box := poly.Bounds()
+	charLen := math.Hypot(box.MaxX-box.MinX, box.MaxY-box.MinY)
+	minArea := math.Max(1e-12, charLen*charLen*1e-12)
+	filtered := make([][3]int, 0, len(triangles))
+	dropped := 0
+	for _, t := range triangles {
+		if t[0] < 0 || t[1] < 0 || t[2] < 0 || t[0] >= len(points) || t[1] >= len(points) || t[2] >= len(points) ||
+			t[0] == t[1] || t[1] == t[2] || t[2] == t[0] {
+			dropped++
+			continue
+		}
+		a, b, c := points[t[0]], points[t[1]], points[t[2]]
+		if !finitePoint(a) || !finitePoint(b) || !finitePoint(c) {
+			dropped++
+			continue
+		}
+		area2 := math.Abs((b.X-a.X)*(c.Y-a.Y) - (c.X-a.X)*(b.Y-a.Y))
+		if area2 <= minArea || !pointInPolygon(centroid(a, b, c), poly) {
+			dropped++
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	if dropped > 0 {
+		fmt.Printf("[PADEN mesh] dropped %d/%d unsafe triangles\n", dropped, len(triangles))
+	}
+	return filtered
+}
+
+func finitePoint(p Point) bool {
+	return !math.IsNaN(p.X) && !math.IsNaN(p.Y) && !math.IsInf(p.X, 0) && !math.IsInf(p.Y, 0)
+}
+
 // EarcutFallback triangulates a polygon using the JS earcut library.
 func EarcutFallback(poly geometry.Polygon) (*Mesh, error) {
 	tri, err := Earcut(poly)
 	if err != nil {
 		return nil, err
 	}
-	valid := filterValidTriangles(tri.Vertices, tri.Triangles, poly)
+	valid := filterMeshSafety(tri.Vertices, tri.Triangles, poly)
 	if len(valid) == 0 {
 		return NewMesh(), nil
 	}
