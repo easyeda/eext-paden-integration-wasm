@@ -46,6 +46,7 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	if len(prob.Networks) == 0 {
 		return nil, fmt.Errorf("no networks")
 	}
+	solveStart := time.Now()
 
 	// Build layer geom indices (do not deep-copy layer shapes to save memory;
 	// the pipeline no longer mutates shapes after this point).
@@ -55,10 +56,13 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	}
 
 	// Find connected layer-geom pairs
+	tSolve := time.Now()
 	connected := findConnectedPairs(prob, layerGeoms)
 	if len(connected) == 0 {
 		return nil, fmt.Errorf("no connected copper regions")
 	}
+	fmt.Printf("[PADEN solver] findConnectedPairs: %v\n", time.Since(tSolve))
+	tSolve = time.Now()
 
 	// Generate meshes with iterative coarsening until the vertex budget is met.
 	totalArea := totalCopperArea(layerGeoms)
@@ -96,9 +100,13 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	if totalMeshVerts > maxMeshVerts {
 		return nil, fmt.Errorf("mesh too large: %d vertices (limit %d); reduce board complexity or increase element size", totalMeshVerts, maxMeshVerts)
 	}
+	fmt.Printf("[PADEN solver] generateMeshes: %v verts=%d\n", time.Since(tSolve), totalMeshVerts)
+	tSolve = time.Now()
 
 	// Disconnected meshes: render-only, keep a tight memory budget.
 	disconnected := generateDisconnectedMeshes(prob, layerGeoms, connected, 20000)
+	fmt.Printf("[PADEN solver] generateDisconnectedMeshes: %v\n", time.Since(tSolve))
+	tSolve = time.Now()
 
 	// Build vertex indexer
 	vindex := buildVertexIndexer(meshes)
@@ -115,6 +123,8 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 
 	// Build node indexer
 	nodeIndexer := buildNodeIndexer(prob, meshes, meshToLayer, meshToGeom, vindex, filteredNetworks)
+	fmt.Printf("[PADEN solver] buildNodeIndexer: %v\n", time.Since(tSolve))
+	tSolve = time.Now()
 
 	// Merge nodes that are shorted by ideal 0 V voltage sources.
 	originalN := len(vindex.globalToLocal) + nodeIndexer.internalCount
@@ -167,6 +177,8 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 		stampCurrentSources(net, nodeIndexer, rhs)
 	}
 	A := NewCSRFromTriplets(M, triplets)
+	fmt.Printf("[PADEN solver] stamp+CSR: %v triplets=%d nnz=%d\n", time.Since(tSolve), len(triplets), A.NNZ())
+	tSolve = time.Now()
 
 	// Identify Dirichlet (fixed-potential) nodes: the ground reference and the
 	// positive terminals of all non-zero voltage sources.  Voltage-source
@@ -214,6 +226,8 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 		}
 	}
 	Areg := Abc.AddDiagonal(reg)
+	fmt.Printf("[PADEN solver] dirichlet BC: %v\n", time.Since(tSolve))
+	tSolve = time.Now()
 
 	maxIter := M * 4
 	if maxIter < 1000 {
@@ -245,6 +259,8 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	if err != nil {
 		return nil, fmt.Errorf("solver failed: %w", err)
 	}
+	fmt.Printf("[PADEN solver] SolveCG done: %v\n", time.Since(tSolve))
+	tSolve = time.Now()
 	v := x
 
 	// Ground current = total current flowing into the ground node (KCL residual).
@@ -269,6 +285,8 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 
 	// Produce layer solutions
 	layerSols := produceLayerSolutions(prob, vindex, meshes, meshToLayer, v, disconnected, globalToNew)
+	fmt.Printf("[PADEN solver] produceLayerSolutions: %v\n", time.Since(tSolve))
+	fmt.Printf("[PADEN solver] Solve total: %v\n", time.Since(solveStart))
 
 	return &Solution{
 		Problem:        prob,
@@ -470,6 +488,13 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 	// touch or overlap. A pad polygon and the copper pour it connects to are
 	// separate polygons after union; without this they would not both be meshed
 	// and the preview would show only the small pad shape.
+	//
+	// For a layer with N polygons, the naive O(N^2) adjacency loop dominated
+	// test-3 (~15 s on its own) because Step 2b can leave several hundred small
+	// fragments per layer. Build a uniform grid keyed by polygon bbox; only
+	// test pairs that share at least one cell. Pick the cell size from the
+	// median polygon extent so the grid stays cheap on both fine and coarse
+	// geometries.
 	component := make(map[[2]int]int)
 	nextComp := 0
 	for li, geoms := range layerGeoms {
@@ -492,16 +517,95 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 			}
 		}
 
-		for i := 0; i < n; i++ {
-			for j := i + 1; j < n; j++ {
-				if !boxesOverlap(geoms[i].Bounds(), geoms[j].Bounds()) {
-					continue
-				}
-				if polygonsAdjacent(geoms[i], geoms[j]) {
-					union(i, j)
+		// Spatial grid: hash polygons by their bounding-box cells so we only
+		// test pairs that actually share space.
+		type cellKey = [2]int
+		grid := make(map[cellKey][]int)
+		bounds := make([]geometry.Box, n)
+		vertexCounts := make([]int, n)
+		// Simplify polygons before adjacency testing — Gerber pours ship with
+		// hundreds of collinear vertices that 200× the cost of the O(V×V)
+		// adjacency test. 0.1 mm tolerance is finer than any pad/via pad
+		// radius, so real overlaps still register.
+		simplified := make([]geometry.Polygon, n)
+		const simplifyTol = 0.1
+		// Pick a cell size proportional to the median extent — too small and
+		// each polygon lands in many cells (slow insertion), too large and
+		// every polygon collides with every other (back to O(N^2)).
+		var extents []float64
+		for i, g := range geoms {
+			b := g.Bounds()
+			bounds[i] = b
+			dx := b.MaxX - b.MinX
+			dy := b.MaxY - b.MinY
+			extents = append(extents, math.Max(dx, dy))
+			sp := g.Simplify(simplifyTol)
+			simplified[i] = sp
+			for _, ring := range sp {
+				vertexCounts[i] += len(ring)
+			}
+		}
+		cellSize := median(extents)
+		if cellSize <= 0 {
+			cellSize = 1.0
+		}
+		// Report worst vertex counts so it is obvious which polygons blow up
+		// the adjacency test.
+		var worstVerts int
+		for _, v := range vertexCounts {
+			if v > worstVerts {
+				worstVerts = v
+			}
+		}
+		var totalVerts int
+		for _, v := range vertexCounts {
+			totalVerts += v
+		}
+		fmt.Printf("[PADEN solver] layer %d polygon vertex counts (post-simplify tol=%.3f): total=%d, worst=%d, avg=%.1f\n",
+			li, simplifyTol, totalVerts, worstVerts, float64(totalVerts)/float64(n))
+		// Snap invocations so (x,y) coordinate lookups land in the same cell.
+		inv := 1.0 / cellSize
+		for i, b := range bounds {
+			x0 := int(math.Floor(b.MinX * inv))
+			x1 := int(math.Floor(b.MaxX * inv))
+			y0 := int(math.Floor(b.MinY * inv))
+			y1 := int(math.Floor(b.MaxY * inv))
+			for x := x0; x <= x1; x++ {
+				for y := y0; y <= y1; y++ {
+					grid[cellKey{x, y}] = append(grid[cellKey{x, y}], i)
 				}
 			}
 		}
+		// Set of visited pairs to avoid testing the same pair twice.
+		visited := make(map[cellKey]bool)
+		tested := 0
+		adjCalls := 0
+		adjSeconds := 0.0
+		for _, ids := range grid {
+			nc := len(ids)
+			for a := 0; a < nc; a++ {
+				ia := ids[a]
+				for b := a + 1; b < nc; b++ {
+					ib := ids[b]
+					pk := cellKey{ia, ib}
+					if visited[pk] {
+						continue
+					}
+					visited[pk] = true
+					if !boxesOverlap(bounds[ia], bounds[ib]) {
+						continue
+					}
+					tested++
+					adjStart := time.Now()
+					if polygonsAdjacent(simplified[ia], simplified[ib]) {
+						union(ia, ib)
+					}
+					adjSeconds += time.Since(adjStart).Seconds()
+					adjCalls++
+				}
+			}
+		}
+		fmt.Printf("[PADEN solver] layer %d grid: %d polys, %d candidate pairs, %d adj tests in %.3fs (cell=%.3f)\n", li, n, tested, adjCalls, adjSeconds, cellSize)
 
 		compMap := make(map[int]int)
 		for i := 0; i < n; i++ {
@@ -514,7 +618,10 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 		}
 	}
 
-	// Determine which components contain a network connection point.
+	// Determine which components contain a network connection point. The
+	// connection set is tiny (~tens), but iterating every polygon is wasteful:
+	// snap each point into the same grid, then only test polygons that share
+	// its cell.
 	connectedComps := make(map[int]bool)
 	for _, net := range prob.Networks {
 		for _, conn := range net.Connections {
@@ -522,11 +629,14 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 				continue
 			}
 			li, ok := layerIdx[conn.Layer]
-			if !ok {
+			if !ok || li >= len(layerGeoms) {
 				continue
 			}
-			for gi, geom := range layerGeoms[li] {
-				if pointHitsGeom(conn.Point, geom) {
+			geoms := layerGeoms[li]
+			// Build layer-local spatial index lazily for the connection probe.
+			probe := buildPointProbeGrid(geoms)
+			for _, gi := range probeCandidates(probe, conn.Point) {
+				if pointHitsGeom(conn.Point, geoms[gi]) {
 					connectedComps[component[[2]int{li, gi}]] = true
 				}
 			}
@@ -1324,4 +1434,88 @@ func scaleSymmetric(A *CSRMatrix, b []float64) (*CSRMatrix, []float64, []float64
 	}
 
 	return NewCSRFromTriplets(A.N, triplets), scaledB, s
+}
+
+// median returns the median of the supplied values (in-place safe on its
+// input slice). Treats empty/single-value inputs as 0.
+func median(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	if len(xs) == 1 {
+		return xs[0]
+	}
+	cp := make([]float64, len(xs))
+	copy(cp, xs)
+	sort.Float64s(cp)
+	return cp[len(cp)/2]
+}
+
+// pointProbeGrid is a uniform spatial index for fast point-in-polygon probing.
+// Layer-local only.
+type pointProbeGrid struct {
+	inv      float64
+	polygons []geometry.Polygon
+	cells    map[[2]int][]int
+}
+
+func buildPointProbeGrid(geoms []geometry.Polygon) *pointProbeGrid {
+	if len(geoms) == 0 {
+		return &pointProbeGrid{cells: map[[2]int][]int{}}
+	}
+	// Cell size = median polygon extent, same heuristic as findConnectedPairs.
+	extents := make([]float64, len(geoms))
+	for i, g := range geoms {
+		b := g.Bounds()
+		dx := b.MaxX - b.MinX
+		dy := b.MaxY - b.MinY
+		extents[i] = math.Max(dx, dy)
+	}
+	cell := median(extents)
+	if cell <= 0 {
+		cell = 1.0
+	}
+	inv := 1.0 / cell
+	cells := make(map[[2]int][]int)
+	for i, g := range geoms {
+		b := g.Bounds()
+		x0 := int(math.Floor(b.MinX * inv))
+		x1 := int(math.Floor(b.MaxX * inv))
+		y0 := int(math.Floor(b.MinY * inv))
+		y1 := int(math.Floor(b.MaxY * inv))
+		for x := x0; x <= x1; x++ {
+			for y := y0; y <= y1; y++ {
+				cells[[2]int{x, y}] = append(cells[[2]int{x, y}], i)
+			}
+		}
+	}
+	return &pointProbeGrid{inv: inv, polygons: geoms, cells: cells}
+}
+
+// probeCandidates returns the polygon indices whose bbox shares at least one
+// grid cell with the given point. The caller still needs to call the exact
+// point-in-polygon test, but the candidate set is small.
+func probeCandidates(p *pointProbeGrid, pt geometry.Point) []int {
+	if p == nil || len(p.polygons) == 0 {
+		return nil
+	}
+	x := int(math.Floor(pt.X * p.inv))
+	y := int(math.Floor(pt.Y * p.inv))
+	// Re-check the point against slightly surrounding cells in case of
+	// float-rounding at cell borders.
+	out := make([]int, 0, 8)
+	seen := make(map[int]bool)
+	for dx := -1; dx <= 1; dx++ {
+		for dy := -1; dy <= 1; dy++ {
+			if ids, ok := p.cells[[2]int{x + dx, y + dy}]; ok {
+				for _, id := range ids {
+					if !seen[id] {
+						seen[id] = true
+						out = append(out, id)
+					}
+				}
+			}
+		}
+	}
+	return out
 }
