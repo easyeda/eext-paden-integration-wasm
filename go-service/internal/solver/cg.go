@@ -3,7 +3,6 @@ package solver
 import (
 	"fmt"
 	"math"
-	"time"
 )
 
 // SolveCG solves A*x = b using the preconditioned conjugate gradient method.
@@ -33,9 +32,7 @@ func SolveCG(a *CSRMatrix, b []float64, maxIter int, tol float64, precond Precon
 	}
 
 	Ap := make([]float64, n)
-	cgStart := time.Now()
 	for iter := 0; iter < maxIter; iter++ {
-		iterStart := time.Now()
 		a.Multiply(p, Ap)
 		pAp := Dot(p, Ap)
 		if math.Abs(pAp) < 1e-30 {
@@ -48,10 +45,10 @@ func SolveCG(a *CSRMatrix, b []float64, maxIter int, tol float64, precond Precon
 
 		resNorm := math.Sqrt(Dot(r, r))
 		if iter < 5 || iter%50 == 0 {
-			fmt.Printf("[PADEN solver] CG iter %d: res=%g, pAp=%g, alpha=%g, dt=%v\n", iter, resNorm, pAp, alpha, time.Since(iterStart))
+			fmt.Printf("[PADEN solver] CG iter %d: res=%g, pAp=%g, alpha=%g\n", iter, resNorm, pAp, alpha)
 		}
 		if resNorm < tol {
-			fmt.Printf("[PADEN solver] CG converged at iter %d: res=%g, totalCG=%v\n", iter, resNorm, time.Since(cgStart))
+			fmt.Printf("[PADEN solver] CG converged at iter %d: res=%g\n", iter, resNorm)
 			return x, nil
 		}
 
