@@ -145,26 +145,32 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	d.Info(fmt.Sprintf("Step 1 (parse Gerber) done in %v", time.Since(t0)))
 	t0 = time.Now()
 	d.Info("Step 2: Board outline clipping")
+	tSub := time.Now()
 	if outline != nil {
 		d.Info(fmt.Sprintf("Using outline layer '%s' with %d polygon(s)", outlineName, len(outline)))
 		clipLayersWithOutline(layers, outline, d)
+		d.Info(fmt.Sprintf("Step 2a (clip outline) done in %v", time.Since(tSub)))
 	} else {
 		d.Info("No board outline found")
 	}
 
 	// 2a. Subtract Gerber drill-file holes from every copper layer so the FEM
 	// mesh and copper preview accurately represent the drilled board.
+	tSub = time.Now()
 	drillHoles, err := geometry.ParseDrillHoles(gerberZip)
 	if err != nil {
 		d.Warn(fmt.Sprintf("Drill hole parsing failed: %v", err))
 	}
+	d.Info(fmt.Sprintf("Step 2b (parse drill holes: %d polygons) done in %v", len(drillHoles), time.Since(tSub)))
 	if len(drillHoles) > 0 {
 		d.Info(fmt.Sprintf("Subtracting %d drill-hole polygon(s) from all copper layers", len(drillHoles)))
+		tSub = time.Now()
 		for _, layer := range layers {
 			// Bulk-subtract the drill holes from every polygon in one
 			// Clipper call instead of one Difference per polygon. The label
 			// of each resulting piece is whichever original polygon contains
 			// its centroid; that is what downstream net inference expects.
+			tLayer := time.Now()
 			if punched, err := geometry.Difference(layer.Shape, drillHoles); err != nil {
 				d.Warn(fmt.Sprintf("Layer '%s': drill subtraction failed (%v), keeping original", layer.Name, err))
 			} else if len(punched) > 0 {
@@ -178,10 +184,13 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 				for i := range layer.Shape {
 					layer.Shape[i].EnsureOrientation()
 				}
+				d.Info(fmt.Sprintf("Step 2b sub: layer '%s' drill subtract (%d polys - %d holes) -> %d polys in %v",
+					layer.Name, len(layer.Shape), len(drillHoles), len(punched), time.Since(tLayer)))
 			} else {
 				d.Warn(fmt.Sprintf("Layer '%s': empty after drill subtraction, keeping original", layer.Name))
 			}
 		}
+		d.Info(fmt.Sprintf("Step 2b (drill subtract all layers) done in %v", time.Since(tSub)))
 	}
 
 	// 3. Coordinate transform
