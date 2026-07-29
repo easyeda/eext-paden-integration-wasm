@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 	"github.com/easyeda/eext-paden-integration/go-service/internal/problem"
@@ -33,6 +34,7 @@ func (d *DiagCollector) Error(msg string) {
 
 // Analyze runs the full PDN analysis pipeline.
 func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.Solution, *DiagCollector, error) {
+	analyzeStart := time.Now()
 	d := &DiagCollector{}
 
 	var cfg Config
@@ -56,6 +58,8 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 
 	d.Info(fmt.Sprintf("project=%s, layers=%d, vias=%d, pads=%d, sources=%d, loads=%d",
 		cfg.ProjectName, len(cfg.Layers), len(cfg.Vias), len(cfg.Pads), len(cfg.Sources), len(cfg.Loads)))
+
+	t0 := time.Now()
 
 	if len(cfg.Layers) == 0 {
 		return nil, d, fmt.Errorf("no layer configs")
@@ -138,6 +142,8 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	unmirrorReflectedLayers(layers, outline, d)
 
 	// 2. Board outline clipping
+	d.Info(fmt.Sprintf("Step 1 (parse Gerber) done in %v", time.Since(t0)))
+	t0 = time.Now()
 	d.Info("Step 2: Board outline clipping")
 	if outline != nil {
 		d.Info(fmt.Sprintf("Using outline layer '%s' with %d polygon(s)", outlineName, len(outline)))
@@ -188,6 +194,8 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	stackup := buildStackup(cfg.LayerCuThickness, layers)
 
 	// 4a. Infer net labels for each copper polygon from pad positions and tracks.
+	d.Info(fmt.Sprintf("Step 2 (board outline) done in %v", time.Since(t0)))
+	t0 = time.Now()
 	d.Info("Step 2b: Infer polygon nets")
 	layerIDToName := make(map[int]string)
 	for _, lc := range cfg.Layers {
@@ -259,6 +267,8 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	}
 
 	// 5. Via specs
+	d.Info(fmt.Sprintf("Step 2b (infer nets) done in %v", time.Since(t0)))
+	t0 = time.Now()
 	d.Info("Step 3: Via specs")
 	viaSpecs := extractViaSpecs(cfg.Vias, layerDict, transform)
 	d.Info(fmt.Sprintf("Via specs: %d", len(viaSpecs)))
@@ -272,16 +282,22 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	}
 
 	// 6. Via networks
+	d.Info(fmt.Sprintf("Step 3 (via specs) done in %v", time.Since(t0)))
+	t0 = time.Now()
 	d.Info("Step 4: Via resistor networks")
 	viaNetworks := buildViaNetworks(viaSpecs, layerDict, stackup, cfg, d)
 	d.Info(fmt.Sprintf("Via networks: %d", len(viaNetworks)))
 
 	// 7. User networks
+	d.Info(fmt.Sprintf("Step 4 (via networks) done in %v", time.Since(t0)))
+	t0 = time.Now()
 	d.Info("Step 5: User networks")
 	userNetworks := buildUserNetworks(cfg, layerDict, transform, d)
 	d.Info(fmt.Sprintf("User networks: %d", len(userNetworks)))
 
 	// 7a. Track networks connect copper polygons that are linked by traces.
+	d.Info(fmt.Sprintf("Step 5 (user networks) done in %v", time.Since(t0)))
+	t0 = time.Now()
 	d.Info("Step 5b: Track networks")
 	trackNetworks := buildTrackNetworks(cfg, layerDict, layerIDToName, transform, d)
 	d.Info(fmt.Sprintf("Track networks: %d", len(trackNetworks)))
@@ -317,6 +333,8 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	}
 
 	// 8. Solve
+	d.Info(fmt.Sprintf("Step 5b (track networks) done in %v", time.Since(t0)))
+	t0 = time.Now()
 	d.Info("Step 6: Assemble + solve")
 	prob := &problem.Problem{
 		Layers:      filteredLayers,
@@ -353,6 +371,8 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 		}
 		d.Info(fmt.Sprintf("Drill points: %d total, %d from via drill files", len(drillVias), viaCount))
 	}
+
+	d.Info(fmt.Sprintf("Step 6 (solve + drill) done in %v, total=%v", time.Since(t0), time.Since(analyzeStart)))
 
 	sol.UserData = &SolutionExtras{
 		Diagnostics: d,
