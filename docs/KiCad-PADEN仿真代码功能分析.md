@@ -1,5 +1,7 @@
 # padne 代码功能分析
 
+> **历史文档**: 本文档分析上游 padne Python 工具（KiCad 入口）。EasyEDA 扩展当前的 Go/WASM + ODB++ 实现详见 [CLAUDE.md](../CLAUDE.md)。
+
 ## 项目概述
 
 **padne** 是一个面向 KiCad 的 **直流电源分配网络 (PDN) 分析工具**。它使用有限元方法 (FEM) 模拟 PCB 铜层上的直流电压降和电流密度���布，帮助识别电阻瓶颈、设计高电流分配网络或实现复杂的加热元件。

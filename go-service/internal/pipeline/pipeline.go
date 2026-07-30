@@ -33,27 +33,13 @@ func (d *DiagCollector) Error(msg string) {
 }
 
 // Analyze runs the full PDN analysis pipeline.
-func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.Solution, *DiagCollector, error) {
+func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector, error) {
 	analyzeStart := time.Now()
 	d := &DiagCollector{}
 
 	var cfg Config
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return nil, d, fmt.Errorf("failed to parse config: %w", err)
-	}
-
-	// Parse authoritative IPC-D-356A netlist if provided.
-	var ipcNetlist *IPC356ANetlist
-	if ipc356aText != "" {
-		var err error
-		ipcNetlist, err = ParseIPC356A(ipc356aText)
-		if err != nil {
-			d.Warn(fmt.Sprintf("IPC-D-356A parse failed: %v", err))
-			ipcNetlist = nil
-		} else {
-			d.Info(fmt.Sprintf("IPC-D-356A netlist: %d pads, %d vias, %d traces, %d board edges",
-				len(ipcNetlist.Pads), len(ipcNetlist.Vias), len(ipcNetlist.Traces), len(ipcNetlist.BoardEdge)))
-		}
 	}
 
 	d.Info(fmt.Sprintf("project=%s, layers=%d, vias=%d, pads=%d, sources=%d, loads=%d",
@@ -65,49 +51,53 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 		return nil, d, fmt.Errorf("no layer configs")
 	}
 
-	// 1. Parse Gerber
-	d.Info("Step 1: Parse Gerber files")
+	// 1. Parse ODB++ geometry and its authoritative net-to-feature mapping.
+	d.Info("Step 1: Parse ODB++ archive")
 	layerNames := make([]string, len(cfg.Layers))
 	for i, lc := range cfg.Layers {
 		layerNames[i] = lc.Name
 	}
-	parsed, err := geometry.ParseGerberZip(gerberZip, layerNames)
-	if err != nil {
-		return nil, d, fmt.Errorf("Gerber parse failed: %w", err)
+	targetNets := make(map[string]bool)
+	if cfg.GndNet != "" {
+		targetNets[cfg.GndNet] = true
 	}
+	for _, source := range cfg.Sources {
+		targetNets[source.Net] = true
+		targetNets[source.GndNet] = true
+	}
+	for _, load := range cfg.Loads {
+		targetNets[load.Net] = true
+		targetNets[load.GndNet] = true
+	}
+	parsedODB, err := geometry.ParseODB(odbTgz, layerNames, targetNets)
+	if err != nil {
+		return nil, d, fmt.Errorf("ODB++ parse failed: %w", err)
+	}
+	parsed := parsedODB.Layers
 
 	var layers []*problem.Layer
 	for _, lc := range cfg.Layers {
 		gl, ok := parsed[lc.Name]
-		if !ok {
-			// Try matching by normalized name (handles "Top Layer" vs "Gerber_TopLayer.GTL").
-			for _, candidate := range parsed {
-				if matchLayerName(lc.Name, candidate.Filename) {
-					gl = candidate
-					d.Info(fmt.Sprintf("Layer '%s' matched file '%s'", lc.Name, candidate.Filename))
-					break
-				}
-			}
-		}
-		if gl.Name == "" {
+		if !ok || gl.Name == "" {
+			d.Warn(fmt.Sprintf("Layer '%s': not found in ODB++ stackup", lc.Name))
 			continue
 		}
 		if len(gl.Polygons) == 0 {
-			d.Warn(fmt.Sprintf("Layer '%s': Gerber parse result empty", lc.Name))
+			d.Warn(fmt.Sprintf("Layer '%s': no selected-net copper in ODB++", lc.Name))
 			continue
 		}
 		layer := &problem.Layer{
 			Shape:       gl.Polygons,
+			NetLabels:   gl.NetLabels,
 			Name:        lc.Name,
 			Conductance: lc.EffectiveConductance(),
-			Reflected:   gl.Reflected,
 		}
 		layers = append(layers, layer)
-		d.Info(fmt.Sprintf("Layer '%s': %d polygons from Gerber", lc.Name, len(gl.Polygons)))
+		d.Info(fmt.Sprintf("Layer '%s': %d net-attributed ODB++ features", lc.Name, len(gl.Polygons)))
 	}
 
 	if len(layers) == 0 {
-		return nil, d, fmt.Errorf("no valid copper layers from Gerber")
+		return nil, d, fmt.Errorf("no selected-net copper layers from ODB++")
 	}
 
 	// Extract the board outline early; its centre is the reference for un-mirroring
@@ -138,11 +128,10 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 		layerDict[l.Name] = l
 	}
 
-	// 1b. Un-mirror any reflected layers so IPC-D-356A / config coordinates align.
-	unmirrorReflectedLayers(layers, outline, d)
+	// ODB++ uses board coordinates for every layer, so no reflected-layer correction is needed.
 
 	// 2. Board outline clipping
-	d.Info(fmt.Sprintf("Step 1 (parse Gerber) done in %v", time.Since(t0)))
+	d.Info(fmt.Sprintf("Step 1 (parse ODB++) done in %v", time.Since(t0)))
 	t0 = time.Now()
 	d.Info("Step 2: Board outline clipping")
 	tSub := time.Now()
@@ -154,41 +143,46 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 		d.Info("No board outline found")
 	}
 
-	// 2a. Subtract Gerber drill-file holes from every copper layer so the FEM
-	// mesh and copper preview accurately represent the drilled board.
+	// 2a. Subtract ODB++ drill holes from every copper layer.
 	tSub = time.Now()
-	drillHoles, err := geometry.ParseDrillHoles(gerberZip)
-	if err != nil {
-		d.Warn(fmt.Sprintf("Drill hole parsing failed: %v", err))
-	}
-	d.Info(fmt.Sprintf("Step 2b (parse drill holes: %d polygons) done in %v", len(drillHoles), time.Since(tSub)))
+	drillHoles := parsedODB.DrillHoles
+	d.Info(fmt.Sprintf("Step 2b (ODB++ drill holes: %d polygons) done in %v", len(drillHoles), time.Since(tSub)))
 	if len(drillHoles) > 0 {
 		d.Info(fmt.Sprintf("Subtracting %d drill-hole polygon(s) from all copper layers", len(drillHoles)))
 		tSub = time.Now()
 		for _, layer := range layers {
-			// Bulk-subtract the drill holes from every polygon in one
-			// Clipper call instead of one Difference per polygon. The label
-			// of each resulting piece is whichever original polygon contains
-			// its centroid; that is what downstream net inference expects.
 			tLayer := time.Now()
-			if punched, err := geometry.Difference(layer.Shape, drillHoles); err != nil {
-				d.Warn(fmt.Sprintf("Layer '%s': drill subtraction failed (%v), keeping original", layer.Name, err))
-			} else if len(punched) > 0 {
-				newLabels := make([]string, len(punched))
-				for pi := range punched {
-					cen := polygonCentroid(punched[pi])
-					newLabels[pi] = labelForCentroid(cen, layer.Shape, layer.NetLabels)
+			groups := make(map[string]geometry.MultiPolygon)
+			for i, polygon := range layer.Shape {
+				net := ""
+				if i < len(layer.NetLabels) {
+					net = layer.NetLabels[i]
 				}
-				layer.Shape = punched
-				layer.NetLabels = newLabels
-				for i := range layer.Shape {
-					layer.Shape[i].EnsureOrientation()
-				}
-				d.Info(fmt.Sprintf("Step 2b sub: layer '%s' drill subtract (%d polys - %d holes) -> %d polys in %v",
-					layer.Name, len(layer.Shape), len(drillHoles), len(punched), time.Since(tLayer)))
-			} else {
-				d.Warn(fmt.Sprintf("Layer '%s': empty after drill subtraction, keeping original", layer.Name))
+				groups[net] = append(groups[net], polygon)
 			}
+			var punched geometry.MultiPolygon
+			var labels []string
+			for net, group := range groups {
+				pieces, err := geometry.Difference(group, drillHoles)
+				if err != nil {
+					d.Warn(fmt.Sprintf("Layer '%s' net '%s': drill subtraction failed, keeping original", layer.Name, net))
+					pieces = group
+				}
+				for _, piece := range pieces {
+					piece.EnsureOrientation()
+					punched = append(punched, piece)
+					labels = append(labels, net)
+				}
+			}
+			if len(punched) == 0 {
+				d.Warn(fmt.Sprintf("Layer '%s': empty after drill subtraction, keeping original", layer.Name))
+				continue
+			}
+			before := len(layer.Shape)
+			layer.Shape = punched
+			layer.NetLabels = labels
+			d.Info(fmt.Sprintf("Step 2b sub: layer '%s' by net (%d polys - %d holes) -> %d polys in %v",
+				layer.Name, before, len(drillHoles), len(punched), time.Since(tLayer)))
 		}
 		d.Info(fmt.Sprintf("Step 2b (drill subtract all layers) done in %v", time.Since(tSub)))
 	}
@@ -202,30 +196,11 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	// 4. Build stackup
 	stackup := buildStackup(cfg.LayerCuThickness, layers)
 
-	// 4a. Infer net labels for each copper polygon from pad positions and tracks.
-	d.Info(fmt.Sprintf("Step 2 (board outline) done in %v", time.Since(t0)))
-	t0 = time.Now()
-	d.Info("Step 2b: Infer polygon nets")
+	// ODB++ already assigns every selected copper feature to its authoritative net.
+	d.Info("Step 2b: Use authoritative ODB++ polygon nets")
 	layerIDToName := make(map[int]string)
 	for _, lc := range cfg.Layers {
 		layerIDToName[lc.LayerID] = lc.Name
-	}
-
-	if ipcNetlist != nil {
-		sx, sy, ox, oy := alignIPC356AToGerber(ipcNetlist, outline)
-		d.Info(fmt.Sprintf("IPC-D-356A alignment: scale=(%.4f,%.4f), offset=(%.4f,%.4f)", sx, sy, ox, oy))
-		applyIPC356AOffset(ipcNetlist, ox, oy)
-		// Punch holes for pads/vias so they are not absorbed into a large copper
-		// pour during union; this keeps each net's copper separate for labelling.
-		punchIPC356APadHoles(layers, ipcNetlist, drillHoles, d)
-		ensureNetLabels(layers)
-		inferPolygonNetsFromIPC356A(layers, ipcNetlist, cfg.GndNet, d)
-		// Fall back to pad/track inference only for polygons the netlist did not label.
-		inferPolygonNets(layers, cfg.Pads, transform, d, true)
-		inferPolygonNetsFromTracks(layers, cfg.Tracks, layerIDToName, transform)
-	} else {
-		inferPolygonNets(layers, cfg.Pads, transform, d, false)
-		inferPolygonNetsFromTracks(layers, cfg.Tracks, layerIDToName, transform)
 	}
 	logLayerPolygonSummary(layers, d)
 
@@ -364,22 +339,15 @@ func Analyze(gerberZip []byte, configJSON string, ipc356aText string) (*solver.S
 	}
 	d.Info(fmt.Sprintf("Solve OK: ground_current=%.6e, residual=%.6e", gni, rn))
 
-	// Attach diagnostics context for later serialization
-	// Via overlay geometry comes from the drill files rather than the solved
-	// networks: cfg.Vias only carries vias on the analysed nets, so signal-net
-	// vias would otherwise be invisible in the viewer.
-	drillVias, err := geometry.ParseDrillPoints(gerberZip)
-	if err != nil {
-		d.Warn(fmt.Sprintf("Drill point parsing failed: %v", err))
-	} else {
-		var viaCount int
-		for _, p := range drillVias {
-			if p.Via {
-				viaCount++
-			}
+	// Attach diagnostics context and ODB++ drill overlay geometry.
+	drillVias := parsedODB.DrillPoints
+	var viaCount int
+	for _, p := range drillVias {
+		if p.Via {
+			viaCount++
 		}
-		d.Info(fmt.Sprintf("Drill points: %d total, %d from via drill files", len(drillVias), viaCount))
 	}
+	d.Info(fmt.Sprintf("ODB++ drill points: %d total, %d vias", len(drillVias), viaCount))
 
 	d.Info(fmt.Sprintf("Step 6 (solve + drill) done in %v, total=%v", time.Since(t0), time.Since(analyzeStart)))
 
@@ -398,29 +366,11 @@ type SolutionExtras struct {
 	Diagnostics *DiagCollector
 	Config      Config
 	Transform   *[4]float64
-	// DrillVias are every via hole found in the Excellon drill files, in Gerber
-	// space. They feed the viewer's via overlay, which must show vias on all
-	// nets — not just the analysed power/ground ones.
+	// DrillVias feed the viewer's all-net via overlay in ODB++ board space.
 	DrillVias []geometry.DrillPoint
 }
 
-func matchLayerName(layerName, filename string) bool {
-	return geometry.FuzzyMatchLayer(layerName, filename)
-}
-
-// normalizeName is retained for other call sites that strip whitespace/separators.
-func normalizeName(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if r == ' ' || r == '_' || r == '-' {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-func extractBoardOutline(layers map[string]geometry.GerberLayer) (geometry.MultiPolygon, string) {
+func extractBoardOutline(layers map[string]geometry.Layer) (geometry.MultiPolygon, string) {
 	for name, gl := range layers {
 		ln := strings.ToLower(name)
 		if strings.Contains(ln, "outline") || strings.Contains(ln, "edge") ||
@@ -465,8 +415,29 @@ func clipLayersWithOutline(layers []*problem.Layer, outline geometry.MultiPolygo
 	for _, layer := range layers {
 		origArea := layer.Area()
 		lb := layer.Bounds()
-		clipped, err := geometry.Intersect(layer.Shape, filled)
-		if err != nil || len(clipped) == 0 {
+		groups := make(map[string]geometry.MultiPolygon)
+		for i, polygon := range layer.Shape {
+			net := ""
+			if i < len(layer.NetLabels) {
+				net = layer.NetLabels[i]
+			}
+			groups[net] = append(groups[net], polygon)
+		}
+		var clipped geometry.MultiPolygon
+		var labels []string
+		for net, group := range groups {
+			pieces, err := geometry.Intersect(group, filled)
+			if err != nil {
+				d.Warn(fmt.Sprintf("Layer '%s' net '%s': outline clipping failed, keeping original", layer.Name, net))
+				pieces = group
+			}
+			for _, piece := range pieces {
+				piece.EnsureOrientation()
+				clipped = append(clipped, piece)
+				labels = append(labels, net)
+			}
+		}
+		if len(clipped) == 0 {
 			d.Warn(fmt.Sprintf("Layer '%s': empty after clipping, keeping original", layer.Name))
 			continue
 		}
@@ -478,10 +449,8 @@ func clipLayersWithOutline(layers []*problem.Layer, outline geometry.MultiPolygo
 		}
 		cb := clipped.Bounds()
 		layer.Shape = clipped
-		for i := range layer.Shape {
-			layer.Shape[i].EnsureOrientation()
-		}
-		d.Info(fmt.Sprintf("Layer '%s': clipped OK (%d polygons) area %.3f->%.3f bounds [%.2f,%.2f]x[%.2f,%.2f]->[%.2f,%.2f]x[%.2f,%.2f]",
+		layer.NetLabels = labels
+		d.Info(fmt.Sprintf("Layer '%s': clipped by net (%d polygons) area %.3f->%.3f bounds [%.2f,%.2f]x[%.2f,%.2f]->[%.2f,%.2f]x[%.2f,%.2f]",
 			layer.Name, len(clipped), origArea, newArea,
 			lb.MinX, lb.MaxX, lb.MinY, lb.MaxY,
 			cb.MinX, cb.MaxX, cb.MinY, cb.MaxY))

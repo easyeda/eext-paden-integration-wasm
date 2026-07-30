@@ -11,7 +11,7 @@ JLCEDA & EasyEDA Pro Extension — Extract PCB data and perform PDN Power Distri
 - Extract PCB traces, vias, pads, and copper pours from EasyEDA
 - User-configurable power rails (voltage sources, current loads, layer copper thickness)
 - Built-in Go/WebAssembly analysis engine — no separate backend runtime or service required
-- Gerber parsing with tracespace, polygon booleans/offsets with Clipper2-WASM, triangulation with earcut
+- Native ODB++ parsing of copper and authoritative net attribution, polygon booleans/offsets with Clipper2-WASM, constrained-Delaunay triangulation with Shewchuk Triangle (triangle-wasm)
 - WebGL voltage distribution and power density heatmap visualization
 - Multi-rail analysis support (1 combined solve + N individual solves)
 
@@ -30,9 +30,9 @@ EasyEDA PCB
                                          ┌─────────────────────────┐
                                          │  go-service/internal/   │
                                          │  pipeline               │
-                                         │  ├ Gerber parsing       │
+                                         │  ├ ODB++ parsing        │
                                          │  ├ Geometry (clipper2)  │
-                                         │  ├ Triangulation        │
+                                         │  ├ Triangulation (CDT)  │
                                          │  └ FEM solver           │
                                          └───────────┬─────────────┘
                                                      │
@@ -124,12 +124,12 @@ npm run build:wasm:dev
 │   ├── analyzing.html      # Analysis progress UI
 │   └── wasm-host.html      # Hidden Go/WASM host IFrame
 ├── go-service/             # Go/WebAssembly backend
-│   ├── main_wasm.go        # WASM entry exposing analyzeGerber JS API
+│   ├── main_wasm.go        # WASM entry exposing analyzeODB JS API
 │   ├── internal/pipeline/  # Full analysis pipeline
 │   ├── internal/problem/   # Problem definition (layers, networks, vias)
 │   ├── internal/solver/    # FEM solver and sparse matrices
 │   ├── internal/mesh/      # Mesh and triangulation interfaces
-│   ├── internal/geometry/  # Gerber parsing, Clipper2, earcut bridge
+│   ├── internal/geometry/  # ODB++ parsing, Clipper2, Triangle bridge
 │   └── internal/wasmapi/   # Result serialization
 ├── config/                 # esbuild configuration
 ├── scripts/                # build:wasm / build:wasm-host-bridge / copy-wasm-assets
@@ -142,8 +142,8 @@ npm run build:wasm:dev
 
 1. **Extract data** — Extract traces, vias, pads, and copper areas from the current PCB
 2. **Configure analysis** — Select power nets, set voltage sources and current loads
-3. **Gerber parsing** — The Go/WASM engine parses copper layer geometry from the Gerber ZIP via tracespace
-4. **Geometry processing** — Boolean operations and offsets with Clipper2-WASM, triangulation with earcut
+3. **ODB++ parsing** — The Go/WASM engine reads the ODB++ archive (`eda/data` + `layers/*/features`) and recovers the authoritative net for every copper polygon.
+4. **Geometry processing** — Boolean operations and offsets with Clipper2-WASM, constrained-Delaunay triangulation with Shewchuk Triangle.
 5. **FEM solving** — Build Laplacian matrix and solve voltage distribution
 6. **Visualization** — WebGL voltage heatmap with layer switching, mesh edges, via markers
 
@@ -153,9 +153,9 @@ npm run build:wasm:dev
 
 **Backend**: Go 1.26+, WebAssembly, `syscall/js`
 
-**Geometry/Mesh**: `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+**Geometry/Mesh**: `triangle-wasm` (Shewchuk Triangle CDT), `clipper2-wasm`, `earcut` (legacy fallback)
 
-**Dependencies**: `@jlceda/pro-api-types`, `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+**Dependencies**: `@jlceda/pro-api-types`, `triangle-wasm`, `clipper2-wasm`, `earcut`
 
 ## License
 

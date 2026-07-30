@@ -8,3 +8,6 @@
 debug.log
 __pycache__/
 *.pyc
+# Local WASM run outputs and Claude tooling
+/test/wasm_test*_result.json
+/.claude/worktrees/

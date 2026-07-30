@@ -52,7 +52,7 @@ export class PcbExtractor {
 		return results;
 	}
 
-	/** 提取网络信息（焊盘、过孔、层名），不提��几何（走线/铺铜由 Gerber 提供） */
+	/** 提取网络信息（焊盘、过孔、层名），不提��几何（走线/铺铜由 ODB++ 提供） */
 	async extractNetworkInfo(onProgress?: (percent: number) => void): Promise<EasyEDA_PcbData> {
 		const tracks: EasyEDA_Track[] = [];
 		const vias: EasyEDA_Via[] = [];
@@ -248,7 +248,7 @@ export class PcbExtractor {
 
 		onProgress?.(80);
 
-		// Gerber 流水线需要所有铜层：内层通过过孔连接，不一定有直接焊盘。
+		// ODB++ 流水线需要所有铜层：内层通过过孔连接，不一定有直接焊盘。
 		// 不过滤，全部保留。
 		const filteredLayerNames: Record<number, string> = {};
 		for (const [id, name] of Object.entries(layerNames)) {

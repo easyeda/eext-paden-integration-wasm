@@ -17,7 +17,7 @@ func main() {
 
 	padne := js.Global().Get("Object").New()
 	padne.Set("version", js.FuncOf(version))
-	padne.Set("analyzeGerber", js.FuncOf(analyzeGerber))
+	padne.Set("analyzeODB", js.FuncOf(analyzeODB))
 
 	js.Global().Set("padne", padne)
 
@@ -29,7 +29,7 @@ func version(this js.Value, args []js.Value) interface{} {
 	return js.ValueOf("1.0.0-wasm")
 }
 
-func analyzeGerber(this js.Value, args []js.Value) interface{} {
+func analyzeODB(this js.Value, args []js.Value) interface{} {
 	handler := js.FuncOf(func(this js.Value, p []js.Value) interface{} {
 		resolve := p[0]
 		reject := p[1]
@@ -43,30 +43,26 @@ func analyzeGerber(this js.Value, args []js.Value) interface{} {
 			}()
 
 			if len(args) < 2 {
-				reject.Invoke(js.Global().Get("Error").New("expected 2+ arguments: gerberZip ArrayBuffer, configJson string [, ipc356aText string]"))
+				reject.Invoke(js.Global().Get("Error").New("expected 2 arguments: odbTgz ArrayBuffer, configJson string"))
 				return
 			}
 
-			gerberJs := args[0]
+			odbJs := args[0]
 			// syscall/js CopyBytesToGo requires a Uint8Array view, not a raw ArrayBuffer.
-			if gerberJs.InstanceOf(js.Global().Get("ArrayBuffer")) {
-				gerberJs = js.Global().Get("Uint8Array").New(gerberJs)
+			if odbJs.InstanceOf(js.Global().Get("ArrayBuffer")) {
+				odbJs = js.Global().Get("Uint8Array").New(odbJs)
 			}
-			if !gerberJs.InstanceOf(js.Global().Get("Uint8Array")) && !gerberJs.InstanceOf(js.Global().Get("Uint8ClampedArray")) {
-				reject.Invoke(js.Global().Get("Error").New("gerberBytes must be Uint8Array or ArrayBuffer"))
+			if !odbJs.InstanceOf(js.Global().Get("Uint8Array")) && !odbJs.InstanceOf(js.Global().Get("Uint8ClampedArray")) {
+				reject.Invoke(js.Global().Get("Error").New("odbBytes must be Uint8Array or ArrayBuffer"))
 				return
 			}
-			gerberBytes := make([]byte, gerberJs.Get("byteLength").Int())
-			js.CopyBytesToGo(gerberBytes, gerberJs)
+			odbBytes := make([]byte, odbJs.Get("byteLength").Int())
+			js.CopyBytesToGo(odbBytes, odbJs)
 			configJson := args[1].String()
-			ipc356aText := ""
-			if len(args) >= 3 {
-				ipc356aText = args[2].String()
-			}
 
-			fmt.Printf("[PADEN WASM] analyzeGerber called: %d bytes, config length %d, ipc356a length %d\n", len(gerberBytes), len(configJson), len(ipc356aText))
+			fmt.Printf("[PADEN WASM] analyzeODB called: %d bytes, config length %d\n", len(odbBytes), len(configJson))
 
-			sol, d, err := pipeline.Analyze(gerberBytes, configJson, ipc356aText)
+			sol, d, err := pipeline.Analyze(odbBytes, configJson)
 			if err != nil {
 				errResult := map[string]interface{}{
 					"success":     false,

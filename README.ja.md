@@ -11,7 +11,7 @@ JLCEDA & EasyEDA Pro 拡張機能 — PCB データを抽出し、PDN 電源配�
 - EasyEDA から PCB トレース、ビア、パッド、銅箔 pour データを抽出
 - ユーザー設定可能な電源レール（電圧源、電流負荷、層銅厚）
 - 組み込み Go/WebAssembly 分析エンジン — 別途のバックエンドランタイムやサービスは不要
-- Gerber 解析は tracespace、多角形のブール/オフセットは Clipper2-WASM、三角分割は earcut
+- ネイティブ ODB++ 解析で銅箔と権威あるネット帰属を取得、多角形のブール/オフセットは Clipper2-WASM、制約付きドロネー三角分割は Shewchuk Triangle (triangle-wasm)
 - WebGL 電圧分布・電力密度ヒートマップ可視化
 - 複数電源レール分析のサポート（1 回の結合求解 + N 回の個別求解）
 
@@ -30,10 +30,10 @@ EasyEDA PCB
                                          ┌─────────────────────────┐
                                          │  go-service/internal/   │
                                          │  pipeline               │
-                                         │  ├ Gerber 解析          │
+                                         │  ├ ODB++ 解析           │
                                          │  ├ ジオメトリ処理        │
                                          │  │  (clipper2)          │
-                                         │  ├ 三角分割             │
+                                         │  ├ 三角分割 (Triangle)  │
                                          │  └ FEM ソルバー         │
                                          └───────────┬─────────────┘
                                                      │
@@ -125,12 +125,12 @@ npm run build:wasm:dev
 │   ├── analyzing.html      # 分析進捗 UI
 │   └── wasm-host.html      # 非表示の Go/WASM ホスト IFrame
 ├── go-service/             # Go/WebAssembly バックエンド
-│   ├── main_wasm.go        # WASM エントリ、analyzeGerber JS API を公開
+│   ├── main_wasm.go        # WASM エントリ、analyzeODB JS API を公開
 │   ├── internal/pipeline/  # 完全な分析パイプライン
 │   ├── internal/problem/   # 問題定義（層、ネットワーク、ビア）
 │   ├── internal/solver/    # FEM ソルバーと疎行列
 │   ├── internal/mesh/      # メッシュと三角分割インターフェース
-│   ├── internal/geometry/  # Gerber 解析、Clipper2、earcut ブリッジ
+│   ├── internal/geometry/  # ODB++ 解析、Clipper2、Triangle ブリッジ
 │   └── internal/wasmapi/   # 結果シリアライズ
 ├── config/                 # esbuild 設定
 ├── scripts/                # build:wasm / build:wasm-host-bridge / copy-wasm-assets
@@ -143,8 +143,8 @@ npm run build:wasm:dev
 
 1. **データ抽出** — 現在の PCB からトレース、ビア、パッド、銅箔エリアを抽出
 2. **分析設定** — 電源ネットを選択し、電圧源と電流負荷を設定
-3. **Gerber 解析** — Go/WASM エンジンが tracespace を介して Gerber ZIP から銅層ジオメトリを解析
-4. **ジオメトリ処理** — Clipper2-WASM でブール演算とオフセット、earcut で三角分割
+3. **ODB++ 解析** — Go/WASM エンジンが ODB++ アーカイブ（`eda/data` + `layers/*/features`）を読み取り、各銅箔ポリゴンのネット帰属を ODB++ から直接取得します
+4. **ジオメトリ処理** — Clipper2-WASM でブール演算とオフセット、Shewchuk Triangle (CDT) で三角分割
 5. **FEM 解析** — ラプラシアン行列を構築して電圧分布を求解
 6. **可視化** — WebGL 電圧ヒートマップ。レイヤー切替、メッシュエッジ表示、ビアマーカー対応
 
@@ -154,9 +154,9 @@ npm run build:wasm:dev
 
 **バックエンド**：Go 1.26+, WebAssembly, `syscall/js`
 
-**ジオメトリ/メッシュ**：`@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+**ジオメトリ/メッシュ**：`triangle-wasm` (Shewchuk Triangle CDT), `clipper2-wasm`, `earcut`（レガシーフォールバック）
 
-**依存関係**：`@jlceda/pro-api-types`, `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+**依存関係**：`@jlceda/pro-api-types`, `triangle-wasm`, `clipper2-wasm`, `earcut`
 
 ## ライセンス
 

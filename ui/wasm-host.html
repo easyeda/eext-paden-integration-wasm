@@ -89,6 +89,7 @@
         const [
           clipperJsUrl,
           clipperWasmUrl,
+          triangleWasmUrl,
           bridgeJsUrl,
           wasmExecUrl,
           padenWasmUrl,
@@ -96,6 +97,7 @@
         ] = await Promise.all([
           patchedClipperJsUrl(),
           objectUrlFor('/dist/clipper2z.wasm'),
+          objectUrlFor('/dist/triangle.out.wasm'),
           objectUrlFor('/dist/wasm-geometry-bridge.js'),
           objectUrlFor('/dist/wasm_exec.js'),
           objectUrlFor('/dist/paden.wasm'),
@@ -106,6 +108,7 @@
         const workerScript = workerSource
           .replace(/__CLIPPER_JS_URL__/g, clipperJsUrl)
           .replace(/__CLIPPER_WASM_URL__/g, clipperWasmUrl)
+          .replace(/__TRIANGLE_WASM_URL__/g, triangleWasmUrl)
           .replace(/__BRIDGE_JS_URL__/g, bridgeJsUrl)
           .replace(/__WASM_EXEC_URL__/g, wasmExecUrl)
           .replace(/__PADEN_WASM_URL__/g, padenWasmUrl);
@@ -168,7 +171,7 @@
 
         // Convert the various binary shapes that MessageBus may hand us into a
         // Uint8Array. We then transfer its ArrayBuffer to the worker.
-        function gerberToUint8Array(rawBytes) {
+        function odbToUint8Array(rawBytes) {
           if (rawBytes instanceof Uint8Array || rawBytes instanceof Uint8ClampedArray)
             return rawBytes;
           if (rawBytes instanceof ArrayBuffer)
@@ -191,7 +194,7 @@
             if (keys.length > 0)
               return new Uint8Array(keys.map(k => rawBytes[k]));
           }
-          throw new Error(`Unsupported gerberBytes type: ${typeof rawBytes}`);
+          throw new Error(`Unsupported odbBytes type: ${typeof rawBytes}`);
         }
 
         // Handle analyze requests from the extension.
@@ -200,28 +203,25 @@
           if (!replyTopic) return;
 
           try {
-            const rawBytes = msg.gerberBytes;
+            const rawBytes = msg.odbBytes;
             const configJson = msg.configJson;
-            const ipc356aText = msg.ipc356aText ?? '';
 
             console.log('[WASM Host] analyze request received:', {
               rawType: typeof rawBytes,
               constructor: rawBytes?.constructor?.name,
               byteLength: rawBytes?.byteLength ?? rawBytes?.length ?? 'N/A',
               configLength: typeof configJson === 'string' ? configJson.length : 'N/A',
-              ipc356aLength: ipc356aText.length,
             });
 
-            const gerberBytes = gerberToUint8Array(rawBytes);
-            const gerberBuffer = gerberBytes.buffer;
+            const odbBytes = odbToUint8Array(rawBytes);
+            const odbBuffer = odbBytes.buffer;
 
             worker.postMessage({
               type: 'analyze',
-              gerberBytes: gerberBuffer,
+              odbBytes: odbBuffer,
               configJson,
-              ipc356aText,
               replyTopic,
-            }, [gerberBuffer]);
+            }, [odbBuffer]);
           }
           catch (e) {
             console.error('[WASM Host] analyze failed:', e);

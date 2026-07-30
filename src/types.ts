@@ -282,7 +282,7 @@ export interface AnalysisResultEntry {
 	networkInfo: NetworkInfo[];
 	connectionPoints: Record<string, Array<{ x: number; y: number; is_source: boolean }>>;
 	layerBoundaries: Record<string, Array<{ exterior: number[][]; holes: number[][][] }>>;
-	/** 板上全部过孔位置，来自 Gerber 钻孔文件，与网络无关 */
+	/** 板上全部过孔位置，来自 ODB++ 钻孔层，与网络无关 */
 	viaPositions?: Array<{ x: number; y: number; diameter: number }>;
 	pcbContext: PcbContextData;
 	warningMessage?: string;

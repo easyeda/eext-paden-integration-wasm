@@ -463,7 +463,7 @@ let cmapTex;
 let ext32bit;
 
 let resultData, layerNames, connectionPoints, layerBoundaries, pcbContext;
-// Every via on the board, from the Gerber drill files. Net-agnostic, so unlike
+// Every via on the board, from the ODB++ drill layer. Net-agnostic, so unlike
 // connectionPoints it also covers vias on signal nets.
 let viaPositions = [];
 let currentResultWarnings = [];
@@ -1078,7 +1078,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
 
   // Via overlay geometry.
   //
-  // Source of truth is viaPositions (from the Gerber drill files), not
+  // Source of truth is viaPositions (from the ODB++ drill layer), not
   // connectionPoints: the latter only contains vias on analysed power/ground
   // nets, so signal-net vias would be missing even though they exist on the
   // board. Connection points are still used to tint the vias that take part in
@@ -1165,7 +1165,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   // Parallel buffer for the active-net overlay: only polygons matching
   // activeNetName, drawn on top of the base fill in a slightly deeper shade
   // so the analysed network's copper reads distinctly without losing the
-  // surrounding Gerber context.
+  // surrounding ODB++ copper context.
   const activeFillVerts = [];
   const activeFillIdx = [];
   // Parallel buffer for the GND-net overlay: polygons whose net name looks
@@ -1193,7 +1193,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
       }
       // GND overlay: filled with a distinct grey-purple shade so the GND
       // copper visually separates from the layer's VCC fill even when they
-      // share the same Gerber layer.
+      // share the same ODB++ layer.
       if (isGndNet(poly.net)) {
         const gndBase = gndFillVerts.length / 2;
         for (const pt of poly.vertices) gndFillVerts.push(pt[0], pt[1]);
@@ -1769,7 +1769,7 @@ function renderSingleLayer(li, mvp) {
     // Darken within the same hue: ×0.7 keeps the colour identity intact
     // (the active net still reads as this layer's copper) while making it
     // visibly deeper than the surrounding fill. Plugs gaps where the FEM
-    // mesh is sparser than the underlying Gerber outline.
+    // mesh is sparser than the underlying ODB++ outline.
     gl.uniform4f(lineProg.u.u_color, c[0] * 0.7, c[1] * 0.7, c[2] * 0.7, 1.0);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.activeFillIBO);
     gl.drawElements(gl.TRIANGLES, gd.activeFillTriCount, gd.activeFillIdxType, 0);

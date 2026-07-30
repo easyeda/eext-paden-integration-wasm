@@ -11,7 +11,7 @@
 - 从 EasyEDA 提取 PCB 走线、过孔、焊盘、铺铜数据
 - 用户配置电源轨道（电压源、电流负载、层铜厚）
 - 内置 Go/WebAssembly 分析引擎，无需额外安装后端运行时或服务
-- 使用 tracespace 解析 Gerber，Clipper2-WASM 进行多边形布尔/偏移，earcut 进行三角剖分
+- ODB++ 工程文件直接解析铜皮与网络归属，Clipper2-WASM 进行多边形布尔/偏移，Shewchuk Triangle (triangle-wasm) 进行 CDT 三角剖分
 - WebGL 可视化电压分布和功率密度热力图
 - 支持多电源网络分析（1 次合并求解 + N 次独立求解）
 
@@ -30,9 +30,9 @@ EasyEDA PCB
                                          ┌─────────────────────────┐
                                          │  go-service/internal/   │
                                          │  pipeline               │
-                                         │  ├ Gerber 解析           │
+                                         │  ├ ODB++ 解析 (odb.go)   │
                                          │  ├ 几何处理 (clipper2)   │
-                                         │  ├ 三角剖分 (earcut)     │
+                                         │  ├ 三角剖分 (Triangle)   │
                                          │  └ FEM 求解              │
                                          └───────────┬─────────────┘
                                                      │
@@ -124,12 +124,12 @@ npm run build:wasm:dev
 │   ├── analyzing.html      # 分析进度界面
 │   └── wasm-host.html      # Go/WASM 宿主 IFrame（隐藏）
 ├── go-service/             # Go/WebAssembly 后端
-│   ├── main_wasm.go        # WASM 入口，暴露 analyzeGerber 等 JS API
+│   ├── main_wasm.go        # WASM 入口，暴露 analyzeODB 等 JS API
 │   ├── internal/pipeline/  # 完整分析流水线
 │   ├── internal/problem/   # 问题定义（层、网络、过孔等）
 │   ├── internal/solver/    # FEM 求解器与稀疏矩阵
 │   ├── internal/mesh/      # 网格与三角剖分接口
-│   ├── internal/geometry/  # Gerber 解析、Clipper2、earcut 桥接
+│   ├── internal/geometry/  # ODB++ 解析、Clipper2、Triangle 桥接
 │   └── internal/wasmapi/   # 结果序列化
 ├── config/                 # esbuild 构建配置
 ├── scripts/                # build:wasm / build:wasm-host-bridge / copy-wasm-assets
@@ -142,8 +142,8 @@ npm run build:wasm:dev
 
 1. **提取数据** — 从当前 PCB 提取走线、过孔、焊盘、铺铜区域
 2. **配置分析** — 选择电源网络，设置电压源和电流负载
-3. **Gerber 解析** — Go/WASM 引擎通过 tracespace 解析 Gerber ZIP 中的铜层几何
-4. **几何处理** — 使用 Clipper2-WASM 进行布尔运算与偏移，earcut 进行三角剖分
+3. **ODB++ 解析** — Go/WASM 引擎读取 ODB++ 归档（`eda/data` + `layers/*/features`），由 ODB++ 直接给出每个铜皮多边形的网络归属
+4. **几何处理** — 使用 Clipper2-WASM 进行布尔运算与偏移，Shewchuk Triangle (CDT) 进行三角剖分
 5. **FEM 求解** — 构建拉普拉斯矩阵并求解电压分布
 6. **可视化** — WebGL 渲染电压分布热力图，支持层切换、网格边显示、过孔标记
 
@@ -153,9 +153,9 @@ npm run build:wasm:dev
 
 **后端**: Go 1.26+, WebAssembly, `syscall/js`
 
-**几何/网格**: `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+**几何/网格**: `triangle-wasm` (Shewchuk Triangle CDT), `clipper2-wasm`, `earcut` (legacy 兜底)
 
-**依赖**: `@jlceda/pro-api-types`, `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+**依赖**: `@jlceda/pro-api-types`, `triangle-wasm`, `clipper2-wasm`, `earcut`
 
 ## 开源许可
 

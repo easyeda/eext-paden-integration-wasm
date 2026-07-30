@@ -3,7 +3,7 @@
  *
  * This file is loaded by ui/wasm-host.html as a Blob URL with the following
  * placeholders injected at runtime:
- *   __CLIPPER_JS_URL__, __CLIPPER_WASM_URL__,
+ *   __CLIPPER_JS_URL__, __CLIPPER_WASM_URL__, __TRIANGLE_WASM_URL__,
  *   __BRIDGE_JS_URL__, __WASM_EXEC_URL__, __PADEN_WASM_URL__
  */
 
@@ -17,6 +17,7 @@ globalThis.window = globalThis;
 // Injected by the host at worker creation time.
 const CLIPPER_JS_URL = '__CLIPPER_JS_URL__';
 const CLIPPER_WASM_URL = '__CLIPPER_WASM_URL__';
+const TRIANGLE_WASM_URL = '__TRIANGLE_WASM_URL__';
 const BRIDGE_JS_URL = '__BRIDGE_JS_URL__';
 const WASM_EXEC_URL = '__WASM_EXEC_URL__';
 const PADEN_WASM_URL = '__PADEN_WASM_URL__';
@@ -73,6 +74,16 @@ async function initWASM() {
 	try {
 		await globalThis.padenGeometry.init();
 
+		// Initialise Shewchuk Triangle (used by padenGeometry.cdtTriangulate).
+		// The bridge exposes window.Triangle; init() loads triangle.out.wasm.
+		if (globalThis.Triangle && typeof globalThis.Triangle.init === 'function') {
+			await globalThis.Triangle.init(TRIANGLE_WASM_URL);
+			console.log('[WASM Worker] triangle-wasm ready');
+		}
+		else {
+			console.warn('[WASM Worker] window.Triangle not exposed by geometry bridge');
+		}
+
 		const response = await fetch(PADEN_WASM_URL);
 		if (!response.ok) {
 			throw new Error(`failed to fetch paden.wasm: ${response.status}`);
@@ -92,7 +103,7 @@ async function initWASM() {
 	}
 }
 
-function gerberToUint8Array(rawBytes) {
+function odbToUint8Array(rawBytes) {
 	if (rawBytes instanceof Uint8Array || rawBytes instanceof Uint8ClampedArray) {
 		return rawBytes;
 	}
@@ -117,22 +128,22 @@ function gerberToUint8Array(rawBytes) {
 			return new Uint8Array(keys.map(k => rawBytes[k]));
 		}
 	}
-	throw new Error(`Unsupported gerberBytes type: ${typeof rawBytes}`);
+	throw new Error(`Unsupported odbBytes type: ${typeof rawBytes}`);
 }
 
 async function handleAnalyze(msg) {
-	const { gerberBytes: rawBytes, configJson, ipc356aText, replyTopic } = msg;
+	const { odbBytes: rawBytes, configJson, replyTopic } = msg;
 	let progressTimer = null;
 	try {
 		if (initError)
 			throw initError;
 
-		if (!globalThis.padne || !globalThis.padne.analyzeGerber) {
+		if (!globalThis.padne || !globalThis.padne.analyzeODB) {
 			throw new Error('Go WASM not initialized');
 		}
 
-		const gerberBytes = gerberToUint8Array(rawBytes);
-		console.log('[WASM Worker] analyze start', replyTopic, 'bytes=', gerberBytes.length, 'ipc356a=', (ipc356aText || '').length);
+		const odbBytes = odbToUint8Array(rawBytes);
+		console.log('[WASM Worker] analyze start', replyTopic, 'bytes=', odbBytes.length);
 
 		// Heartbeat progress so the host UI knows the worker is still alive
 		// during long solves.
@@ -140,7 +151,7 @@ async function handleAnalyze(msg) {
 			globalThis.postMessage({ type: 'progress', progress: { alive: true } });
 		}, 1500);
 
-		const result = await globalThis.padne.analyzeGerber(gerberBytes, configJson, ipc356aText || '');
+		const result = await globalThis.padne.analyzeODB(odbBytes, configJson);
 		console.log('[WASM Worker] analyze done', replyTopic);
 		globalThis.postMessage({ type: 'analyze-result', replyTopic, result });
 	}

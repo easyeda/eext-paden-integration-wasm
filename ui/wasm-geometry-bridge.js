@@ -2,55 +2,37 @@
  * Geometry bridge loaded by ui/wasm-host.html.
  *
  * Exposes window.padenGeometry with:
- *   - gerberToPolygons(gerberText) -> MultiPolygon as nested arrays
  *   - clipperUnion(polygons) -> polygons
  *   - clipperDifference(subject, clip) -> polygons
  *   - clipperIntersect(a, b) -> polygons
  *   - clipperOffset(polygons, delta) -> polygons
  *   - clipperMorphologicalClose(polygons, delta) -> polygons
  *   - earcutTriangulate(polygon) -> { vertices: Float64Array, triangles: Uint32Array }
+ *   - cdtTriangulate(polygon, seedPoints, options)
+ *       -> { vertices: Float64Array, triangles: Uint32Array }
  *
  * All polygons use the format:
  *   [ [ [{x,y}, ...], hole, hole, ... ], ... ] ]
+ *
+ * ODB++ parsing happens natively in Go; this bridge only handles the
+ * polygon operations and the two triangulators.
  */
 
-// Dependencies are loaded by the host as modules and exposed as globals.
+// Clipper2 factory and the earcut / Triangle triangulators are injected on
+// window by ui/wasm-geometry-entry.js before this module loads.
 const CLIPPER_PRECISION = 6;
 const CLIPPER_ARC_TOLERANCE = 0.005; // mm; smaller = smoother round caps/arcs
 
 let clipperModule = null;
 
-function getClipperFactory() {
-	return window.Clipper2ZFactory;
-}
-
 function getEarcut() {
 	return window.earcut;
-}
-
-function getParse() {
-	return window.tracespaceParser?.parse;
-}
-
-function parseSource(text) {
-	const createParser = window.tracespaceParser?.createParser;
-	if (!createParser)
-		return getParse()(text);
-	const parser = createParser();
-	const chunkSize = 1024 * 1024;
-	for (let offset = 0; offset < text.length; offset += chunkSize)
-		parser.feed(text.slice(offset, offset + chunkSize));
-	return parser.result();
-}
-
-function getPlot() {
-	return window.tracespacePlotter?.plot;
 }
 
 async function initClipper() {
 	if (clipperModule)
 		return clipperModule;
-	const factory = getClipperFactory();
+	const factory = window.Clipper2ZFactory;
 	if (!factory) {
 		throw new Error('Clipper2ZFactory not available on window');
 	}
@@ -68,6 +50,23 @@ function toClipperPaths(polygons) {
 		}
 	}
 	return paths;
+}
+
+function fromClipperPaths(paths) {
+	const rings = [];
+	const n = paths.size();
+	for (let i = 0; i < n; i++) {
+		const path = paths.get(i);
+		const ring = [];
+		const m = path.size();
+		for (let j = 0; j < m; j++) {
+			const pt = path.get(j);
+			ring.push({ x: pt.x, y: pt.y });
+		}
+		rings.push(ring);
+	}
+
+	return groupRingsIntoPolygons(rings);
 }
 
 function ringSignedArea(ring) {
@@ -225,463 +224,10 @@ function groupRingsIntoPolygons(rings) {
 	return polygons;
 }
 
-function fromClipperPaths(paths) {
-	const rings = [];
-	const n = paths.size();
-	for (let i = 0; i < n; i++) {
-		const path = paths.get(i);
-		const ring = [];
-		const m = path.size();
-		for (let j = 0; j < m; j++) {
-			const pt = path.get(j);
-			ring.push({ x: pt.x, y: pt.y });
-		}
-		rings.push(ring);
-	}
-
-	return groupRingsIntoPolygons(rings);
-}
-
 function ensureModule() {
 	if (!clipperModule) {
 		throw new Error('Clipper2 module not initialized');
 	}
-}
-
-function interpolateArc(start, end, center, radius) {
-	const points = [];
-	const startAngle = Math.atan2(start[1] - center[1], start[0] - center[0]);
-	const endAngle = Math.atan2(end[1] - center[1], end[0] - center[0]);
-	let sweep = endAngle - startAngle;
-	while (sweep <= -Math.PI) sweep += 2 * Math.PI;
-	while (sweep > Math.PI) sweep -= 2 * Math.PI;
-	// Finer angular step (~5.6 deg) so round caps and arcs look smooth after offset.
-	const maxSteps = 128;
-	const steps = Math.min(maxSteps, Math.max(8, Math.ceil(Math.abs(sweep) / (Math.PI / 32))));
-	for (let i = 0; i <= steps; i++) {
-		const t = i / steps;
-		const angle = startAngle + sweep * t;
-		points.push({
-			x: center[0] + radius * Math.cos(angle),
-			y: center[1] + radius * Math.sin(angle),
-		});
-	}
-	return points;
-}
-
-function pathSegmentsToPoints(segments) {
-	if (!segments || segments.length === 0)
-		return [];
-	const points = [{ x: segments[0].start[0], y: segments[0].start[1] }];
-	for (const seg of segments) {
-		if (seg.type === 'line') {
-			points.push({ x: seg.end[0], y: seg.end[1] });
-		}
-		else if (seg.type === 'arc') {
-			const arcPoints = interpolateArc(seg.start, seg.end, seg.center, seg.radius);
-			for (const p of arcPoints.slice(1)) {
-				points.push(p);
-			}
-		}
-	}
-	return points;
-}
-
-// tracespace may group several disjoint strokes (separated by D02 moves) into a
-// single imagePath.  Split the segment list into connected polylines so each
-// stroke is offset independently.
-function pathSegmentsToConnectedPolylines(segments) {
-	if (!segments || segments.length === 0)
-		return [];
-	const polylines = [];
-	let current = [{ x: segments[0].start[0], y: segments[0].start[1] }];
-	function pushSeg(seg) {
-		if (seg.type === 'line') {
-			current.push({ x: seg.end[0], y: seg.end[1] });
-		}
-		else if (seg.type === 'arc') {
-			const arcPoints = interpolateArc(seg.start, seg.end, seg.center, seg.radius);
-			for (const p of arcPoints.slice(1))
-				current.push(p);
-		}
-	}
-	pushSeg(segments[0]);
-	for (let i = 1; i < segments.length; i++) {
-		const prev = segments[i - 1];
-		const seg = segments[i];
-		const dx = seg.start[0] - prev.end[0];
-		const dy = seg.start[1] - prev.end[1];
-		if (Math.hypot(dx, dy) > 1e-9) {
-			polylines.push(current);
-			current = [{ x: seg.start[0], y: seg.start[1] }];
-		}
-		pushSeg(seg);
-	}
-	polylines.push(current);
-	return polylines;
-}
-
-function pointsSignedArea(pts) {
-	let a = 0;
-	const n = pts.length;
-	for (let i = 0; i < n; i++) {
-		const j = (i + 1) % n;
-		a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
-	}
-	return a / 2;
-}
-
-// tracespace's macro vector-line primitive (codes 2/20) offsets the segment
-// corners along the segment *tangent* instead of its normal, so every vector
-// line collapses into a zero-area 4-point polygon. EasyEDA's `RoundRect`
-// aperture macro (used for all rounded SMD pads) is built from four corner
-// circles plus four vector lines, so the sides vanish and the pad degrades
-// into a bare rectangle with corner bumps.
-//
-// The collapsed quad still carries enough information to rebuild the stroke:
-//   p0 = A + t, p1 = B + t, p2 = B - t, p3 = A - t   (|t| == width / 2)
-// so the centerline endpoints are the midpoints of (p0,p3) and (p1,p2), and
-// the stroke width is |p0 - p3|. Rebuild the quad with a proper normal.
-function collapsedVectorLineToQuad(pts) {
-	if (!Array.isArray(pts) || pts.length !== 4)
-		return null;
-	const [p0, p1, p2, p3] = pts;
-	const width = Math.hypot(p0[0] - p3[0], p0[1] - p3[1]);
-	const widthAlt = Math.hypot(p1[0] - p2[0], p1[1] - p2[1]);
-	if (width <= 1e-9 || Math.abs(width - widthAlt) > 1e-6)
-		return null;
-	const start = { x: (p0[0] + p3[0]) / 2, y: (p0[1] + p3[1]) / 2 };
-	const end = { x: (p1[0] + p2[0]) / 2, y: (p1[1] + p2[1]) / 2 };
-	const dx = end.x - start.x;
-	const dy = end.y - start.y;
-	const len = Math.hypot(dx, dy);
-	if (len <= 1e-9)
-		return null;
-	// Only rebuild genuinely collapsed quads; leave real polygons untouched.
-	const scale = Math.max(width, len);
-	if (Math.abs(pointsSignedArea(pts)) > 1e-6 * scale * scale)
-		return null;
-	const nx = (-dy / len) * (width / 2);
-	const ny = (dx / len) * (width / 2);
-	return [
-		{ x: start.x + nx, y: start.y + ny },
-		{ x: end.x + nx, y: end.y + ny },
-		{ x: end.x - nx, y: end.y - ny },
-		{ x: start.x - nx, y: start.y - ny },
-	];
-}
-
-function shapeToPolygons(shape) {
-	const polygons = [];
-	if (shape.type === 'circle') {
-		const { cx, cy, r } = shape;
-		const ring = [];
-		// ~0.05 mm chord tolerance, capped to avoid exploding large outlines.
-		const maxSteps = 128;
-		const steps = Math.min(maxSteps, Math.max(32, Math.ceil((2 * Math.PI * r) / 0.05)));
-		for (let i = 0; i < steps; i++) {
-			const angle = (i / steps) * 2 * Math.PI;
-			ring.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
-		}
-		polygons.push([ring]);
-	}
-	else if (shape.type === 'rectangle') {
-		// tracespace flattens OBROUND into a rectangle with an `r` corner-radius
-		// attribute; without honouring `r` the outline loses all rounded
-		// corners and ends up as a sharp polygon. Build an outline shape with
-		// proper quarter arcs at each corner when r is non-zero.
-		const { x, y, xSize, ySize, r: cornerR } = shape;
-		if (cornerR && cornerR > 0) {
-			const eps = 1e-9;
-			const halfX = xSize / 2;
-			const halfY = ySize / 2;
-			// Stadium rotated horizontally: xSize > ySize, cornerR == halfY
-			if (Math.abs(cornerR - halfY) < eps && cornerR < halfX - eps) {
-				const cxL = x + cornerR;
-				const cxR = x + xSize - cornerR;
-				const cy = y + halfY;
-				polygons.push([[
-					{ x: cxL, y },
-					{ x: cxR, y },
-					...interpolateArc({ x: cxR, y }, { x: cxR, y: y + ySize }, { x: cxR, y: cy }, cornerR).slice(1),
-					{ x: cxR, y: y + ySize },
-					{ x: cxL, y: y + ySize },
-					...interpolateArc({ x: cxL, y: y + ySize }, { x: cxL, y }, { x: cxL, y: cy }, cornerR).slice(1),
-				]]);
-			}
-			// Stadium rotated vertically: ySize > xSize, cornerR == halfX
-			else if (Math.abs(cornerR - halfX) < eps && cornerR < halfY - eps) {
-				const cx = x + halfX;
-				const cyT = y + cornerR;
-				const cyB = y + ySize - cornerR;
-				polygons.push([[
-					{ x: x + xSize, y: cyT },
-					{ x: x + xSize, y: cyB },
-					...interpolateArc({ x: x + xSize, y: cyB }, { x, y: cyB }, { x: cx, y: cyB }, cornerR).slice(1),
-					{ x, y: cyB },
-					{ x, y: cyT },
-					...interpolateArc({ x, y: cyT }, { x: x + xSize, y: cyT }, { x: cx, y: cyT }, cornerR).slice(1),
-				]]);
-			}
-			// Rounded rectangle: cornerR < min(halfX, halfY)
-			else if (cornerR < Math.min(halfX, halfY) - eps) {
-				const cr = Math.min(cornerR, halfX, halfY);
-				const x0 = x;
-				const x1 = x + xSize;
-				const y0 = y;
-				const y1 = y + ySize;
-				const cx0 = x + cr;
-				const cy0 = y + cr;
-				const cx1 = x + xSize - cr;
-				const cy1 = y + ySize - cr;
-				polygons.push([[
-					{ x: cx0, y: y0 },
-					{ x: cx1, y: y0 },
-					...interpolateArc({ x: cx1, y: y0 }, { x: x1, y: cy0 }, { x: cx1, y: cy0 }, cr).slice(1),
-					{ x: x1, y: cy0 },
-					{ x: x1, y: cy1 },
-					...interpolateArc({ x: x1, y: cy1 }, { x: cx1, y: y1 }, { x: cx1, y: cy1 }, cr).slice(1),
-					{ x: cx1, y: y1 },
-					{ x: cx0, y: y1 },
-					...interpolateArc({ x: cx0, y: y1 }, { x: x0, y: cy1 }, { x: cx0, y: cy1 }, cr).slice(1),
-					{ x: x0, y: cy1 },
-					{ x: x0, y: cy0 },
-					...interpolateArc({ x: x0, y: cy0 }, { x: cx0, y: y0 }, { x: cx0, y: cy0 }, cr).slice(1),
-				]]);
-			}
-			else {
-				// cornerR spans the whole side — degenerate, fall back to sharp rectangle.
-				polygons.push([[
-					{ x, y },
-					{ x: x + xSize, y },
-					{ x: x + xSize, y: y + ySize },
-					{ x, y: y + ySize },
-				]]);
-			}
-		}
-		else {
-			polygons.push([[
-				{ x, y },
-				{ x: x + xSize, y },
-				{ x: x + xSize, y: y + ySize },
-				{ x, y: y + ySize },
-			]]);
-		}
-	}
-	else if (shape.type === 'polygon') {
-		// Drop malformed points (tracespace can emit [null, null] for some
-		// macro primitives) before doing anything else.
-		const pts = (shape.points || []).filter(p =>
-			Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
-		if (pts.length >= 3) {
-			const repaired = collapsedVectorLineToQuad(pts);
-			if (repaired)
-				polygons.push([repaired]);
-			else
-				polygons.push([pts.map(p => ({ x: p[0], y: p[1] }))]);
-		}
-	}
-	else if (shape.type === 'outline') {
-		const pts = pathSegmentsToPoints(shape.segments);
-		if (pts.length >= 3)
-			polygons.push([pts]);
-	}
-	else if (shape.type === 'layeredShape') {
-		for (const sub of shape.shapes || []) {
-			const subPolys = shapeToPolygons(sub);
-			if (sub.erase) {
-				// Holes are handled by clipping; for now return as separate polygons.
-				// The caller should use clipperDifference to apply erasures.
-				subPolys.forEach(p => p._erase = true);
-			}
-			polygons.push(...subPolys);
-		}
-	}
-	return polygons;
-}
-
-function imageGraphicToPolygons(graphic) {
-	let polys = [];
-	if (graphic.type === 'imageShape') {
-		polys = shapeToPolygons(graphic.shape);
-	}
-	else if (graphic.type === 'imageRegion') {
-		const pts = pathSegmentsToPoints(graphic.segments);
-		if (pts.length >= 3) {
-			// tracespace returns a region's outer boundary and holes as one long
-			// chain of segments that may self-intersect. Clipper2's UnionSelfD
-			// normalizes this into a clean polygon with holes.
-			try {
-				polys = clipperUnion([[pts]]);
-			}
-			catch {
-				polys = [[pts]];
-			}
-		}
-	}
-	else if (graphic.type === 'imagePath') {
-		// Stroke with width: convert to polygon by offsetting each connected
-		// sub-path independently.  tracespace groups disjoint D01 strokes under
-		// one imagePath, so concatenating them creates self-intersecting garbage.
-		const polylines = pathSegmentsToConnectedPolylines(graphic.segments);
-		for (const pts of polylines) {
-			if (pts.length < 2)
-				continue;
-			const linePoly = [[pts]];
-			try {
-				polys.push(...clipperOffsetOpen(linePoly, graphic.width / 2));
-			}
-			catch {
-				// ignore single failed stroke
-			}
-		}
-	}
-
-	// tracespace plotter uses graphic.polarity === 'clear' for negative geometry
-	// (e.g. tracks/pads carved out of a copper pour).  Mark these so they are
-	// subtracted from the dark polygons later.
-	if ((graphic.polarity === 'clear' || graphic.polarity === 'erase') && polys.length > 0) {
-		polys.forEach(p => p._erase = true);
-	}
-
-	return polys;
-}
-
-function flattenLayeredErasures(polygons) {
-	let result = [];
-	const erasePolys = [];
-	for (const p of polygons) {
-		if (p._erase) {
-			delete p._erase;
-			erasePolys.push(p);
-		}
-		else {
-			result.push(p);
-		}
-	}
-	if (erasePolys.length > 0) {
-		result = clipperDifference(result, erasePolys);
-	}
-	return result;
-}
-
-function gerberToPolygons(gerberText) {
-	console.warn('[geometry bridge] ===== bridge v20260709-hole-grouping =====');
-	const parseFn = getParse();
-	const plotFn = getPlot();
-
-	// EasyEDA's Gerber generator inserts non-breaking spaces (U+00A0) in comments.
-	// tracespace's lexer only recognizes regular spaces/tabs as whitespace, so NBSP
-	// is treated as an unexpected token and aborts parsing. Normalize it first.
-	gerberText = (gerberText ?? '').replace(/\xA0/g, ' ');
-
-	const headLines = gerberText.split('\n').slice(0, 40).join('\n');
-	console.warn('[geometry bridge] gerberToPolygons input length:', gerberText?.length, 'parseFn:', typeof parseFn, 'plotFn:', typeof plotFn);
-	console.warn(`[geometry bridge] gerberText head:\n${headLines}`);
-	if (!parseFn || !plotFn) {
-		throw new Error('tracespace parser/plotter not available on window');
-	}
-	let tree;
-	try {
-		tree = parseSource(gerberText);
-	}
-	catch (e) {
-		console.error('[geometry bridge] tracespace parse error:', e);
-		throw e;
-	}
-	console.warn('[geometry bridge] parsed tree:', { type: tree?.type, filetype: tree?.filetype, childrenCount: tree?.children?.length });
-	if (tree?.children) {
-		for (let i = 0; i < Math.min(tree.children.length, 20); i++) {
-			const c = tree.children[i];
-			console.warn('[geometry bridge] tree child', i, { type: c?.type, graphic: c?.graphic, code: c?.code, name: c?.name, comment: c?.comment });
-		}
-	}
-	let image;
-	try {
-		image = plotFn(tree);
-	}
-	catch (e) {
-		console.error('[geometry bridge] tracespace plot error:', e);
-		throw e;
-	}
-	console.warn('[geometry bridge] plotted image:', { type: image?.type, units: image?.units, size: image?.size, childrenCount: image?.children?.length });
-
-	let darkCount = 0;
-	let eraseCount = 0;
-	let all = [];
-	for (const child of image.children || []) {
-		const childPolys = imageGraphicToPolygons(child);
-		const isErase = childPolys.some(p => p._erase);
-		if (isErase)
-			eraseCount += childPolys.length;
-		else
-			darkCount += childPolys.length;
-		console.warn('[geometry bridge] image child:', { type: child?.type, shapeType: child?.shape?.type, region: child?.region, width: child?.width, polarity: child?.polarity, polygons: childPolys.length, isErase });
-		all.push(...childPolys);
-	}
-	console.warn('[geometry bridge] raw graphics:', { darkCount, eraseCount, total: all.length });
-
-	all = flattenLayeredErasures(all);
-	console.warn('[geometry bridge] after erasure subtraction:', { totalPolygons: all.length });
-
-	// tracespace returns a flat list of single-ring polygons whose nesting may be
-	// ambiguous (holes touching their outer boundary). Use Clipper2's UnionSelfD
-	// to normalise winding and produce clean polygons with holes.
-	const rings = [];
-	for (const poly of all) {
-		for (const ring of poly)
-			rings.push(ring);
-	}
-	try {
-		all = clipperUnion([rings]);
-	}
-	catch {
-		all = groupRingsIntoPolygons(rings);
-	}
-	console.warn('[geometry bridge] after hole grouping:', { totalPolygons: all.length, totalRings: rings.length });
-	for (let i = 0; i < all.length; i++) {
-		const poly = all[i];
-		const bounds = polygonBounds(poly);
-		const area = polygonSignedArea(poly);
-		console.warn(`[geometry bridge] grouped poly[${i}]: rings=${poly.length} area=${area.toFixed(3)} bounds=[${bounds.minX.toFixed(2)},${bounds.maxX.toFixed(2)}]x[${bounds.minY.toFixed(2)},${bounds.maxY.toFixed(2)}]`);
-	}
-
-	return all;
-}
-
-function polygonBounds(poly) {
-	let minX = Infinity;
-	let minY = Infinity;
-	let maxX = -Infinity;
-	let maxY = -Infinity;
-	for (const ring of poly) {
-		for (const p of ring) {
-			if (p.x < minX)
-				minX = p.x;
-			if (p.x > maxX)
-				maxX = p.x;
-			if (p.y < minY)
-				minY = p.y;
-			if (p.y > maxY)
-				maxY = p.y;
-		}
-	}
-	return { minX, minY, maxX, maxY };
-}
-
-function polygonSignedArea(poly) {
-	let area = 0;
-	for (let i = 0; i < poly.length; i++) {
-		const ring = poly[i];
-		let a = 0;
-		const n = ring.length;
-		for (let j = 0; j < n; j++) {
-			const k = (j + 1) % n;
-			a += ring[j].x * ring[k].y - ring[k].x * ring[j].y;
-		}
-		area += (i === 0 ? 1 : -1) * a / 2;
-	}
-	return area;
 }
 
 function clipperUnion(polygonsA, polygonsB) {
@@ -788,44 +334,6 @@ function clipperOffsetOpen(polylines, delta) {
 	return fromClipperPaths(result);
 }
 
-function drillToPolygons(drillText) {
-	const parseFn = getParse();
-	const plotFn = getPlot();
-
-	// Same NBSP normalization as Gerber parsing.
-	drillText = (drillText ?? '').replace(/\xA0/g, ' ');
-	if (!parseFn || !plotFn) {
-		throw new Error('tracespace parser/plotter not available on window');
-	}
-	let tree;
-	try {
-		tree = parseSource(drillText);
-	}
-	catch (e) {
-		console.error('[geometry bridge] drill parse error:', e);
-		throw e;
-	}
-	console.warn('[geometry bridge] drill parsed tree:', { type: tree?.type, filetype: tree?.filetype, childrenCount: tree?.children?.length });
-	let image;
-	try {
-		image = plotFn(tree);
-	}
-	catch (e) {
-		console.error('[geometry bridge] drill plot error:', e);
-		throw e;
-	}
-	console.warn('[geometry bridge] drill plotted image:', { type: image?.type, units: image?.units, size: image?.size, childrenCount: image?.children?.length });
-
-	const holes = [];
-	for (const child of image.children || []) {
-		const childPolys = imageGraphicToPolygons(child);
-		console.warn('[geometry bridge] drill image child:', { type: child?.type, shapeType: child?.shape?.type, polarity: child?.polarity, polygons: childPolys.length });
-		holes.push(...childPolys);
-	}
-	console.warn('[geometry bridge] drill holes:', holes.length);
-	return holes;
-}
-
 function earcutTriangulate(polygon) {
 	const earcutFn = getEarcut();
 	if (!earcutFn) {
@@ -847,10 +355,102 @@ function earcutTriangulate(polygon) {
 	};
 }
 
+// cdtTriangulate runs Shewchuk Triangle (via triangle-wasm) to produce a
+// constrained Delaunay triangulation of one polygon (with optional holes) at
+// exact-arithmetic precision. Seed points (e.g. pad centres) are added as
+// forced Steiner vertices so boundary conditions line up exactly. Triangle's
+// `-j` switch drops coincident input vertices, replacing the old Go-side
+// dedupNearVertices heuristic. `-q` enforces a minimum interior angle and
+// `-a` an upper area bound, eliminating the sliver faces that broke the
+// earlier earcut pipeline.
+//
+// Inputs (all coordinates are in mm):
+//   polygon    : [[ringExterior, hole, hole, ...], ...]
+//   seedPoints : [{x, y}, ...]
+//   options    : { minAngle: number, maxArea: number }
+//
+// Returns: { vertices: Float64Array, triangles: Uint32Array }
+async function cdtTriangulate(polygon, seedPoints, options) {
+	const Triangle = window.Triangle;
+	if (!Triangle || typeof Triangle.triangulate !== 'function') {
+		throw new Error('triangle-wasm not initialised on window.Triangle');
+	}
+	const polys = Array.isArray(polygon) ? polygon : [polygon];
+	const pointlist = [];
+	const segmentlist = [];
+	const holelist = [];
+
+	for (const poly of polys) {
+		if (!Array.isArray(poly) || poly.length === 0)
+			continue;
+		const exterior = poly[0];
+		const extBase = pointlist.length / 2;
+		const extIdx = [];
+		for (const p of exterior) {
+			if (!Number.isFinite(p.x) || !Number.isFinite(p.y))
+				continue;
+			pointlist.push(p.x, p.y);
+			extIdx.push(extBase + extIdx.length);
+		}
+		if (extIdx.length < 3)
+			continue;
+		for (let i = 0; i < extIdx.length; i++) {
+			segmentlist.push(extIdx[i], extIdx[(i + 1) % extIdx.length]);
+		}
+		for (let h = 1; h < poly.length; h++) {
+			const hole = poly[h];
+			const holeBase = pointlist.length / 2;
+			const hIdx = [];
+			let cx = 0;
+			let cy = 0;
+			for (const p of hole) {
+				if (!Number.isFinite(p.x) || !Number.isFinite(p.y))
+					continue;
+				pointlist.push(p.x, p.y);
+				hIdx.push(holeBase + hIdx.length);
+				cx += p.x;
+				cy += p.y;
+			}
+			if (hIdx.length < 3)
+				continue;
+			for (let i = 0; i < hIdx.length; i++) {
+				segmentlist.push(hIdx[i], hIdx[(i + 1) % hIdx.length]);
+			}
+			holelist.push(cx / hole.length, cy / hole.length);
+		}
+	}
+	for (const sp of seedPoints || []) {
+		if (!sp || !Number.isFinite(sp.x) || !Number.isFinite(sp.y))
+			continue;
+		pointlist.push(sp.x, sp.y);
+	}
+	const minAngle = options && Number.isFinite(options.minAngle) ? options.minAngle : 20;
+	const maxArea = options && Number.isFinite(options.maxArea) ? options.maxArea : 1.5;
+	const input = Triangle.makeIO({ pointlist, segmentlist, holelist });
+	const output = Triangle.makeIO();
+	Triangle.triangulate(
+		{
+			pslg: true,
+			quality: minAngle,
+			area: maxArea,
+			jettison: true,
+			quiet: true,
+			bndMarkers: false,
+		},
+		input,
+		output,
+	);
+	// The output arrays are subarray views onto the WASM heap; copy them out
+	// before freeIO invalidates the underlying buffer.
+	const vertices = new Float64Array(output.pointlist);
+	const triangles = new Uint32Array(output.trianglelist);
+	Triangle.freeIO(input, true);
+	Triangle.freeIO(output);
+	return { vertices, triangles };
+}
+
 window.padenGeometry = {
 	init: initClipper,
-	gerberToPolygons,
-	drillToPolygons,
 	clipperUnion,
 	clipperDifference,
 	clipperIntersect,
@@ -858,4 +458,5 @@ window.padenGeometry = {
 	clipperMorphologicalClose,
 	clipperOffsetOpen,
 	earcutTriangulate,
+	cdtTriangulate,
 };

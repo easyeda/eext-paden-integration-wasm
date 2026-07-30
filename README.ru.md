@@ -11,7 +11,7 @@
 - Извлечение трасс, переходных отверстий, контактных площадок и медных заливок из EasyEDA
 - Пользовательская конфигурация шин питания (источники напряжения, токовые нагрузки, толщина меди слоёв)
 - Встроенный аналитический движок Go/WebAssembly — не требуется отдельный бэкенд или сервис
-- Парсинг Gerber через tracespace, булевы операции/офсеты многоугольников через Clipper2-WASM, триангуляция через earcut
+- Нативный разбор ODB++ для меди и авторитетной привязки к сетям, булевы операции/офсеты многоугольников через Clipper2-WASM, ограниченная триангуляция Делоне через Shewchuk Triangle (triangle-wasm)
 - WebGL-визуализация распределения напряжения и тепловой карты плотности мощности
 - Поддержка анализа нескольких шин питания (1 комбинированное решение + N индивидуальных решений)
 
@@ -30,10 +30,10 @@ EasyEDA PCB
                                          ┌─────────────────────────┐
                                          │  go-service/internal/   │
                                          │  pipeline               │
-                                         │  ├ Парсинг Gerber       │
+                                         │  ├ Парсинг ODB++        │
                                          │  ├ Геометрия            │
                                          │  │  (clipper2)          │
-                                         │  ├ Триангуляция         │
+                                         │  ├ Триангуляция (CDT)   │
                                          │  └ FEM-решатель         │
                                          └───────────┬─────────────┘
                                                      │
@@ -125,12 +125,12 @@ npm run build:wasm:dev
 │   ├── analyzing.html      # UI прогресса анализа
 │   └── wasm-host.html      # Скрытый Go/WASM хост IFrame
 ├── go-service/             # Go/WebAssembly бэкенд
-│   ├── main_wasm.go        # Вход WASM, предоставляет JS API analyzeGerber
+│   ├── main_wasm.go        # Вход WASM, предоставляет JS API analyzeODB
 │   ├── internal/pipeline/  # Полный аналитический pipeline
 │   ├── internal/problem/   # Определение задачи (слои, сети, переходные отверстия)
 │   ├── internal/solver/    # FEM-решатель и разреженные матрицы
 │   ├── internal/mesh/      # Интерфейсы сетки и триангуляции
-│   ├── internal/geometry/  # Парсинг Gerber, Clipper2, мост earcut
+│   ├── internal/geometry/  # Парсинг ODB++, Clipper2, мост Triangle
 │   └── internal/wasmapi/   # Сериализация результатов
 ├── config/                 # Конфигурация esbuild
 ├── scripts/                # build:wasm / build:wasm-host-bridge / copy-wasm-assets
@@ -143,8 +143,8 @@ npm run build:wasm:dev
 
 1. **Извлечение данных** — Извлечение трасс, переходных отверстий, площадок и медных областей из текущего PCB
 2. **Конфигурация анализа** — Выбор цепей питания, настройка источников напряжения и токовых нагрузок
-3. **Парсинг Gerber** — Движок Go/WASM разбирает геометрию медных слоёв из Gerber ZIP через tracespace
-4. **Геометрическая обработка** — Булевы операции и офсеты через Clipper2-WASM, триангуляция через earcut
+3. **Парсинг ODB++** — Движок Go/WASM читает архив ODB++ (`eda/data` + `layers/*/features`) и получает авторитетную привязку каждого медного полигона к сети непосредственно из ODB++.
+4. **Геометрическая обработка** — Булевы операции и офсеты через Clipper2-WASM, ограниченная триангуляция Делоне через Shewchuk Triangle
 5. **FEM-решение** — Построение матрицы Лапласа и решение распределения напряжения
 6. **Визуализация** — Тепловая карта напряжения WebGL с переключением слоёв, отображением рёбер сетки и маркерами VIA
 
@@ -154,9 +154,9 @@ npm run build:wasm:dev
 
 **Backend**: Go 1.26+, WebAssembly, `syscall/js`
 
-**Геометрия/сетка**: `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+**Геометрия/сетка**: `triangle-wasm` (Shewchuk Triangle CDT), `clipper2-wasm`, `earcut` (устаревший резерв)
 
-**Зависимости**: `@jlceda/pro-api-types`, `@tracespace/parser`, `@tracespace/plotter`, `clipper2-wasm`, `earcut`
+**Зависимости**: `@jlceda/pro-api-types`, `triangle-wasm`, `clipper2-wasm`, `earcut`
 
 ## Лицензия
 

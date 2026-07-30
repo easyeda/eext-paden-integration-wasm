@@ -8,11 +8,11 @@ import type {
 } from './types';
 
 /**
- * convert.ts - PDN Data Conversion Module
+ * convert.ts - PDN 数据转换模块
  *
- * Gerber-based pipeline: geometry comes from Gerber files,
- * this module only builds declarative config (vias, pads, sources, loads)
- * and handles solution deserialization for display.
+ * ODB++ pipeline: geometry comes from the ODB++ archive (authoritative
+ * nets), this module only builds the declarative config (vias, pads,
+ * sources, loads) and handles solution deserialization for display.
  */
 export class PcbDataConverter {
 	readonly diagnostics: string[] = [];
@@ -67,15 +67,15 @@ export class PcbDataConverter {
 	private readonly MIL_TO_MM = 0.0254;
 
 	// ============================================================
-	// Gerber Config Builder
+	// ODB++ Config Builder
 	// ============================================================
 
 	/**
-	 * Build declarative config JSON for the Python backend.
-	 * The backend handles all geometry (from Gerber), via punching,
+	 * Build declarative config JSON for the Go WASM backend.
+	 * The backend handles all geometry (from ODB++), via punching,
 	 * and network construction from this config.
 	 */
-	buildGerberConfig(
+	buildODBConfig(
 		easyedaData: EasyEDA_PcbData,
 		config: PdnConfig,
 	): Record<string, any> {
@@ -280,9 +280,9 @@ export class PcbDataConverter {
 			}
 		}
 
-		// ── EasyEDA bounding box (for coordinate transform to Gerber coords) ──
+		// ── EasyEDA bounding box (for coordinate transform to ODB++ coords) ──
 		// Must use ALL pads/vias from the PCB, not just analyzed-net ones,
-		// because the backend aligns centers with Gerber geometry.
+		// because the backend aligns centers with ODB++ geometry.
 		// Using only analyzed pads produces a shifted center if those pads
 		// are clustered in a corner of the board.
 		let easyedaBounds: Record<string, number> | undefined;
@@ -301,7 +301,7 @@ export class PcbDataConverter {
 			};
 		}
 
-		this.diag(`buildGerberConfig: ${layerConfigs.length} layers, ${vias.length} vias, `
+		this.diag(`buildODBConfig: ${layerConfigs.length} layers, ${vias.length} vias, `
 			+ `${pads.length} pads, ${sources.length} sources, ${loads.length} loads, ${easyedaData.tracks.length} tracks`);
 
 		// 转换走线数据为后端格式（EasyEDA 宽度单位是 mil，需要转换为 mm）

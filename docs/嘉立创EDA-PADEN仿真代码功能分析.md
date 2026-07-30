@@ -1,5 +1,7 @@
 # PADEN 仿真扩展 - 代码详细分析文档
 
+> **历史文档**: 本文档分析 1.0.x 时代 Python 后端（FastAPI + Shapely + PyGerber）。1.1.0 起已切到 Go/WebAssembly + ODB++ 解析 + Shewchuk Triangle CDT。当前架构请见 [CLAUDE.md](../CLAUDE.md)。
+
 ## 项目概述
 
 **项目名称**: PADEN 仿真 (eext-paden-integration)

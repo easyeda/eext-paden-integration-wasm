@@ -1,3 +1,13 @@
+# 1.1.0
+
+## 变更
+
+1. 几何与网络数据从 Gerber ZIP 切换为 ODB++ 归档（`eda.pcb_ManufactureData.getOpenDatabaseDoublePlusFile()`），由 Go 端 `internal/geometry/odb.go` 原生解析 `eda/data` + `layers/*/features`，网络归属由 ODB++ 直接给出
+2. 前端桥接移除 `@tracespace/parser` / `@tracespace/plotter` 与全部 Gerber 解析 JS；Go 端 `jsclipper2.go` 保留 Clipper2 布尔桥接
+3. 网格剖分主路径切换为 Shewchuk Triangle CDT（`triangle-wasm`），通过 `cdtTriangulate` 桥接；`earcut` 仅作为兜底
+4. 钻孔/过孔数据从 ODB++ drill 层与 `tools` 字段获取，含 `Via` 分类
+5. 文档（CLAUDE.md、README.*、ui/results.html）更新为 ODB++ 描述
+
 # 1.0.7
 
 ## 变更

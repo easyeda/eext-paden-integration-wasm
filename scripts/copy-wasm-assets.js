@@ -63,6 +63,16 @@ function main() {
 	else {
 		console.warn('[copy-wasm-assets] clipper2-wasm ES build not found; skip');
 	}
+
+	// Shewchuk Triangle compiled to WASM (used by the geometry bridge for
+	// constrained Delaunay triangulation with quality bounds).
+	const triangleWasmSrc = path.join(repoRoot, 'node_modules', 'triangle-wasm', 'triangle.out.wasm');
+	if (fs.existsSync(triangleWasmSrc)) {
+		copyFile(triangleWasmSrc, path.join(distDir, 'triangle.out.wasm'));
+	}
+	else {
+		console.warn('[copy-wasm-assets] triangle-wasm not found; skip');
+	}
 }
 
 main();

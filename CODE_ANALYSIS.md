@@ -4,6 +4,8 @@
 > **生成日期**: 2026-06-04
 > **项目**: eext-paden-integration
 > **许可**: Apache-2.0
+>
+> **注意**: 本文档描述 1.0.x 时代的 Python 后端实现（FastAPI + Shapely + PyGerber）。当前仓库（1.1.0 起）已切换为 Go/WebAssembly 单二进制，ODB++ 直接解析，Shewchuk Triangle CDT 网格剖分；本历史文档仅作参考。最新架构请见 [CLAUDE.md](./CLAUDE.md)。
 
 ---
 

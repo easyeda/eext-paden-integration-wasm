@@ -35,3 +35,25 @@ func pointInRingMesh(p geometry.Point, ring geometry.Ring) bool {
 	}
 	return inside
 }
+
+// pointInsidePolygonRings reports whether pt sits in any of the polygon's
+// rings (outer or hole). Used to detect pad centres that fall inside drilled
+// holes after anti-pad subtraction.
+func pointInsidePolygonRings(p geometry.Point, poly geometry.Polygon) bool {
+	for _, ring := range poly {
+		if pointInRingMesh(p, ring) {
+			return true
+		}
+	}
+	return false
+}
+
+// transformPoint maps an EasyEDA-space point into geometry space using the
+// [scaleX, scaleY, offsetX, offsetY] tuple computed by computeCoordinateTransform.
+// A nil transform passes the point through unchanged.
+func transformPoint(x, y float64, transform *[4]float64) geometry.Point {
+	if transform == nil {
+		return geometry.Point{X: x, Y: y}
+	}
+	return geometry.Point{X: x*transform[0] + transform[2], Y: y*transform[1] + transform[3]}
+}
