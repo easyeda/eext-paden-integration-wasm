@@ -103,7 +103,7 @@ func main() {
 			}
 			var islands []island
 			for _, ri := range allRings {
-				if ri.area >= 0 || ri.absArea < 0.5 {
+				if ri.area >= 0 || ri.absArea < 0.01 {
 					continue
 				}
 				vs := ri.face.Vertices()
@@ -114,7 +114,7 @@ func main() {
 				islands = append(islands, island{ext: extPts})
 			}
 			for _, ri := range allRings {
-				if ri.area <= 0 || ri.absArea < 0.5 {
+				if ri.area <= 0 || ri.absArea < 0.01 {
 					continue
 				}
 				vs := ri.face.Vertices()

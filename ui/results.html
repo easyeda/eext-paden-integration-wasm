@@ -229,6 +229,7 @@
   <button id="btn-outline" title="轮廓 (O)">轮廓</button>
   <button id="btn-vias" title="过孔 (C)">过孔</button>
   <button id="btn-flow" title="电流流向 (F)">电流</button>
+  <button id="btn-disc" title="孤立铜皮 (I)">孤立</button>
   <select id="arrow-density" title="箭头密度 (D)" style="margin:0 4px;display:none">
     <option value="0.25">稀疏</option>
     <option value="0.5">较疏</option>
@@ -514,7 +515,7 @@ function _log(tag, ...args) {
 let viewCX, viewCY, viewZoom;
 let isDrag = false, lastMX = 0, lastMY = 0;
 
-let showEdges = false, showOutline = true, showVias = false;
+let showEdges = false, showOutline = true, showVias = false, showDisconnected = true;
 let showCurrentFlow = false;
 let currentViewMode = 'voltage'; // 'voltage' | 'power' | 'gnd_power' | 'copper_coverage'
 
@@ -1281,10 +1282,14 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glData.boardQuadIBO);
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2, 0,2,3]), gl.STATIC_DRAW);
 
-  // Disconnected meshes
+  // Disconnected meshes — real copper islands that the solver did not connect
+  // to the source/load network. We render them with a distinct warm-amber tint
+  // plus a thin outline so the user can see at a glance which copper is
+  // excluded from the FEM solve.
   const discMeshes = ls.disconnectedMeshes || [];
   if (discMeshes.length > 0) {
     let discPos = [], discIdx = [], discOff = 0;
+    let discOutlinePos = [];
     for (const dm of discMeshes) {
       const dn = dm.vertices?.length || 0;
       for (let i = 0; i < dn; i++) {
@@ -1294,6 +1299,34 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
         const v = Array.isArray(tri) ? tri : (tri.vertices || tri);
         if (!v || v.length < 3) continue;
         discIdx.push(v[0]+discOff, v[1]+discOff, v[2]+discOff);
+      }
+      // Per-mesh outline: walk the unique outer boundary of the triangles by
+      // counting edge occurrences. Outer edges appear once, inner (shared)
+      // edges appear twice. We emit a separate GL_LINES buffer per disconnected
+      // mesh so the outlines stack cleanly under triangular fills.
+      const edgeCount = new Map();
+      const ek = (a, b) => a < b ? a + '_' + b : b + '_' + a;
+      for (const tri of (dm.triangles || [])) {
+        const v = Array.isArray(tri) ? tri : (tri.vertices || tri);
+        if (!v || v.length < 3) continue;
+        for (let e = 0; e < 3; e++) {
+          const k = ek(v[e], v[(e + 1) % 3]);
+          edgeCount.set(k, (edgeCount.get(k) || 0) + 1);
+        }
+      }
+      for (const tri of (dm.triangles || [])) {
+        const v = Array.isArray(tri) ? tri : (tri.vertices || tri);
+        if (!v || v.length < 3) continue;
+        for (let e = 0; e < 3; e++) {
+          const k = ek(v[e], v[(e + 1) % 3]);
+          if (edgeCount.get(k) === 1) {
+            const p1 = dm.vertices[v[e]];
+            const p2 = dm.vertices[v[(e + 1) % 3]];
+            if (p1 && p2) {
+              discOutlinePos.push(vx(p1), vy(p1), vx(p2), vy(p2));
+            }
+          }
+        }
       }
       discOff += dn;
     }
@@ -1309,6 +1342,14 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
       glData.discIdxType = dNeed32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
       glData.discTriCount = discIdx.length;
     }
+    if (discOutlinePos.length > 0) {
+      glData.discOutlineVBO = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, glData.discOutlineVBO);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(discOutlinePos), gl.STATIC_DRAW);
+      glData.discOutlineCount = discOutlinePos.length / 2;
+    }
+    glData.discCount = discMeshes.length;
+    glData.discTris = discMeshes.reduce((s, dm) => s + (dm.triangles?.length || 0), 0);
   }
 
   // === Early return if no connected mesh data ===
@@ -1871,18 +1912,28 @@ function renderSingleLayer(li, mvp) {
 
   }
 
-  // 1.5) Disconnected meshes — render with the same color as the copper
-  // context fill so they blend seamlessly. These are small copper polygons
-  // isolated during same-net union, with no solver data.
-  if (gd.discVBO && gd.discIBO) {
+  // 1.5) Disconnected meshes — real copper islands that did not connect to
+  // the source/load network. Rendered with a warm amber tint + outline so the
+  // user can visually separate them from the gradient-coloured solved copper.
+  if (showDisconnected && gd.discVBO && gd.discIBO) {
     gl.useProgram(lineProg.prog);
     gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
-    gl.uniform4f(lineProg.u.u_color, 0.22, 0.32, 0.25, 1.0); // Same as context fill
+    gl.uniform4f(lineProg.u.u_color, 0.46, 0.32, 0.18, 0.55);
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.discVBO);
     gl.enableVertexAttribArray(lineProg.a.a_pos);
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.discIBO);
     gl.drawElements(gl.TRIANGLES, gd.discTriCount, gd.discIdxType, 0);
+    gl.disableVertexAttribArray(lineProg.a.a_pos);
+  }
+  if (showDisconnected && gd.discOutlineVBO) {
+    gl.useProgram(lineProg.prog);
+    gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
+    gl.uniform4f(lineProg.u.u_color, 0.78, 0.52, 0.22, 0.9);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gd.discOutlineVBO);
+    gl.enableVertexAttribArray(lineProg.a.a_pos);
+    gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.LINES, 0, gd.discOutlineCount);
     gl.disableVertexAttribArray(lineProg.a.a_pos);
   }
 
@@ -1998,6 +2049,7 @@ function setupInteraction() {
     if (e.key === 'r' || e.key === 'R') { resetView(); render(); }
     if (e.key === 'c' || e.key === 'C') { showVias = !showVias; updateToggles(); render(); }
     if (e.key === 'f' || e.key === 'F') { showCurrentFlow = !showCurrentFlow; updateToggles(); render(); }
+    if (e.key === 'i' || e.key === 'I') { showDisconnected = !showDisconnected; updateToggles(); render(); }
     if (e.key === 'd' || e.key === 'D') {
       // 循环切换箭头密度: 0.25 -> 0.5 -> 1 -> 2 -> 4 -> 0.25
       const densityLevels = [0.25, 0.5, 1, 2, 4];
@@ -2266,19 +2318,54 @@ function pickValueAtLayer(wx, wy, layerIdx) {
       }
     }
   }
+  // Disconnected meshes: real copper islands the solver did not connect to the
+  // source/load network (no potentials to interpolate from). Return a sentinel
+  // so the tooltip can label them instead of hiding.
+  const dms = ls.disconnected_meshes || [];
+  for (let di = 0; di < dms.length; di++) {
+    const dm = dms[di];
+    if (hitTestMesh(wx, wy, dm.vertices, dm.triangles)) {
+      return { __disconnected: true, meshIndex: di };
+    }
+  }
   return null;
 }
 
+// Barycentric point-in-triangle scan (independent of which mesh is hovered).
+function hitTestMesh(wx, wy, vertices, triangles) {
+  if (!vertices || !triangles) return false;
+  for (let i = 0; i < triangles.length; i++) {
+    const tri = triangles[i];
+    const tv = Array.isArray(tri) ? tri : (tri.vertices || tri);
+    if (!tv || tv.length < 3) continue;
+    const a = vertices[tv[0]], b = vertices[tv[1]], c = vertices[tv[2]];
+    if (!a || !b || !c) continue;
+    const ax = vx(a), ay = vy(a);
+    const bx = vx(b), by = vy(b);
+    const cx = vx(c), cy = vy(c);
+    if (wx < Math.min(ax,bx,cx) || wx > Math.max(ax,bx,cx) ||
+        wy < Math.min(ay,by,cy) || wy > Math.max(ay,by,cy)) continue;
+    const denom = (by-cy)*(ax-cx) + (cx-bx)*(ay-cy);
+    if (Math.abs(denom) < 1e-12) continue;
+    const la = ((by-cy)*(wx-cx) + (cx-bx)*(wy-cy)) / denom;
+    const lb = ((cy-ay)*(wx-cx) + (ax-cx)*(wy-cy)) / denom;
+    if (la >= -0.001 && lb >= -0.001 && (1 - la - lb) >= -0.001) return true;
+  }
+  return false;
+}
+
 let tooltipEvent = null;
-function updateTooltip(voltage, w) {
+function updateTooltip(value, w) {
   const el = document.getElementById('tooltip');
   if (!tooltipEvent || !resultData) { el.style.display = 'none'; return; }
-  if (voltage != null && isFinite(voltage)) {
+  if (value && typeof value === 'object' && value.__disconnected) {
+    el.innerHTML = `孤立铜皮<br><span style="color:#f0883e">未连入电源网络</span><br><span style="color:#8b949e">X: ${w.x.toFixed(3)} Y: ${w.y.toFixed(3)}</span>`;
+  } else if (value != null && isFinite(value)) {
     let valStr;
     if (currentViewMode === 'power' || currentViewMode === 'gnd_power') {
-      valStr = `VCC: ${voltage.toExponential(4)} W/mm²`;
+      valStr = `VCC: ${value.toExponential(4)} W/mm²`;
     } else {
-      valStr = `VCC: ${voltage.toFixed(6)} V`;
+      valStr = `VCC: ${value.toFixed(6)} V`;
     }
 
     // Try to find network name by matching mesh voltage
@@ -2289,11 +2376,11 @@ function updateTooltip(voltage, w) {
     }
 
     el.innerHTML = `${valStr}${netInfo}<br><span style="color:#8b949e">X: ${w.x.toFixed(3)} Y: ${w.y.toFixed(3)}</span>`;
-    el.style.display = '';
   } else {
     el.style.display = 'none';
     return;
   }
+  el.style.display = '';
   const rect = canvas.getBoundingClientRect();
   const ox = tooltipEvent.clientX - rect.left + 14;
   const oy = tooltipEvent.clientY - rect.top - 10;
@@ -2306,6 +2393,7 @@ function updateToggles() {
   document.getElementById('btn-outline').classList.toggle('active', showOutline);
   document.getElementById('btn-vias').classList.toggle('active', showVias);
   document.getElementById('btn-flow').classList.toggle('active', showCurrentFlow);
+  document.getElementById('btn-disc').classList.toggle('active', showDisconnected);
   document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
   document.getElementById('btn-gndpower').classList.toggle('active', currentViewMode === 'gnd_power');
   document.getElementById('btn-copper').classList.toggle('active', currentViewMode === 'copper_coverage');
@@ -2423,6 +2511,7 @@ function setupUI() {
   document.getElementById('btn-edges').addEventListener('click', () => { showEdges = !showEdges; updateToggles(); render(); });
   document.getElementById('btn-outline').addEventListener('click', () => { showOutline = !showOutline; updateToggles(); render(); });
   document.getElementById('btn-vias').addEventListener('click', () => { showVias = !showVias; updateToggles(); render(); });
+  document.getElementById('btn-disc').addEventListener('click', () => { showDisconnected = !showDisconnected; updateToggles(); render(); });
   document.getElementById('btn-flow').addEventListener('click', () => {
     showCurrentFlow = !showCurrentFlow;
     updateToggles();
@@ -2497,6 +2586,17 @@ function buildSidebar() {
     name.textContent = layerNamesList[i];
     name.title = layerNamesList[i];
 
+    const discBadge = document.createElement('span');
+    discBadge.className = 'disc-badge';
+    const discCount = resultData.layerSolutions[i]?.disconnectedMeshes?.length || 0;
+    if (discCount > 0) {
+      discBadge.textContent = discCount;
+      discBadge.title = `${discCount} 个孤立铜皮 (未连入电源网络)`;
+      discBadge.style.cssText = 'background:#f0883e;color:#1c1c1c;border-radius:9px;padding:1px 6px;font-size:10px;font-weight:600;font-family:monospace;margin-left:auto;flex-shrink:0';
+    } else {
+      discBadge.style.display = 'none';
+    }
+
     const eye = document.createElement('button');
     eye.className = 'layer-eye' + (layerVisible[i] ? '' : ' hidden');
     eye.innerHTML = '&#128065;'; // 始终显示眼睛图标
@@ -2512,6 +2612,7 @@ function buildSidebar() {
 
     item.appendChild(dot);
     item.appendChild(name);
+    if (discCount > 0) item.appendChild(discBadge);
     item.appendChild(eye);
     item.addEventListener('click', () => {
       currentLayerIdx = i;
