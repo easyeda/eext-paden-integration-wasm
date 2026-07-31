@@ -643,6 +643,53 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 		}
 	}
 
+	// Propagate connected status across networks (especially vias). A via may
+	// land inside a drilled hole, so its snapped connection point might not hit
+	// the polygon in the layer above/below. If any endpoint of a network is in a
+	// connected component, all endpoints are connected.
+	for changed := true; changed; {
+		changed = false
+		for _, net := range prob.Networks {
+			anyConnected := false
+			for _, conn := range net.Connections {
+				if conn.Layer == nil {
+					continue
+				}
+				li, ok := layerIdx[conn.Layer]
+				if !ok || li >= len(layerGeoms) {
+					continue
+				}
+				for _, gi := range probeCandidates(buildPointProbeGrid(layerGeoms[li]), conn.Point) {
+					if pointHitsGeom(conn.Point, layerGeoms[li][gi]) {
+						if connectedComps[component[[2]int{li, gi}]] {
+							anyConnected = true
+						}
+					}
+				}
+			}
+			if anyConnected {
+				for _, conn := range net.Connections {
+					if conn.Layer == nil {
+						continue
+					}
+					li, ok := layerIdx[conn.Layer]
+					if !ok || li >= len(layerGeoms) {
+						continue
+					}
+					for _, gi := range probeCandidates(buildPointProbeGrid(layerGeoms[li]), conn.Point) {
+						if pointHitsGeom(conn.Point, layerGeoms[li][gi]) {
+							comp := component[[2]int{li, gi}]
+							if !connectedComps[comp] {
+								connectedComps[comp] = true
+								changed = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Mark every polygon in a connected component as connected.
 	for li, geoms := range layerGeoms {
 		for gi := range geoms {

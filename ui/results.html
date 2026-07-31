@@ -36,8 +36,11 @@
   .info-panel .diag-link { color: #58a6ff; cursor: pointer; text-decoration: underline; pointer-events: auto; }
 
   :root { --sidebar-width: 220px; }
-  .layer-sidebar { width: var(--sidebar-width); background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; min-width: 160px; }
-  .sidebar-resizer { width: 4px; background: #30363d; cursor: col-resize; flex-shrink: 0; transition: background 0.15s; position: relative; }
+  /* Sidebar and resizer live in-flow next to the main canvas area so the
+     WebGL view is centered in the visible canvas region, not hidden
+     underneath the sidebar. */
+  .layer-sidebar { position: relative; width: var(--sidebar-width); background: rgba(22, 27, 34, 0.88); backdrop-filter: blur(6px); border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; min-width: 160px; z-index: 5; pointer-events: auto; }
+  .sidebar-resizer { position: relative; width: 4px; background: #30363d; cursor: col-resize; flex-shrink: 0; transition: background 0.15s; z-index: 6; }
   .sidebar-resizer::before { content: ''; position: absolute; inset: 0 -3px; }
   .sidebar-resizer:hover, .sidebar-resizer.dragging { background: #1f6feb; }
   .sidebar-header { padding: 8px 10px; font-size: 12px; font-weight: 600; color: #8b949e; border-bottom: 1px solid #30363d; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between; }
@@ -229,7 +232,6 @@
   <button id="btn-outline" title="轮廓 (O)">轮廓</button>
   <button id="btn-vias" title="过孔 (C)">过孔</button>
   <button id="btn-flow" title="电流流向 (F)">电流</button>
-  <button id="btn-disc" title="孤立铜皮 (I)">孤立</button>
   <select id="arrow-density" title="箭头密度 (D)" style="margin:0 4px;display:none">
     <option value="0.25">稀疏</option>
     <option value="0.5">较疏</option>
@@ -314,9 +316,7 @@
 // PLASMA colormap (from matplotlib, 256 samples)
 // ============================================================
 const PLASMA=[
-// First entry replaced with copper-context fill color so GND (0V) mesh
-// triangles blend seamlessly with the stencil-fill background.
-[0.22,0.32,0.25],[0.063536,0.028426,0.533124],[0.075353,0.027206,0.538007],
+[0.050383,0.029803,0.527975],[0.063536,0.028426,0.533124],[0.075353,0.027206,0.538007],
 [0.086222,0.026125,0.542658],[0.096379,0.025165,0.547103],[0.10598,0.024309,0.551368],
 [0.115124,0.023556,0.555468],[0.123903,0.022878,0.559423],[0.132381,0.022258,0.56325],
 [0.140603,0.021687,0.566959],[0.148607,0.021154,0.570562],[0.156421,0.020651,0.574065],
@@ -463,7 +463,7 @@ let meshProg, lineProg;
 let cmapTex;
 let ext32bit;
 
-let resultData, layerNames, connectionPoints, layerBoundaries, pcbContext;
+let resultData, layerNames, connectionPoints, layerBoundaries, layerOutlines;
 // Every via on the board, from the ODB++ drill layer. Net-agnostic, so unlike
 // connectionPoints it also covers vias on signal nets.
 let viaPositions = [];
@@ -515,7 +515,7 @@ function _log(tag, ...args) {
 let viewCX, viewCY, viewZoom;
 let isDrag = false, lastMX = 0, lastMY = 0;
 
-let showEdges = false, showOutline = true, showVias = false, showDisconnected = true;
+let showEdges = false, showOutline = false, showVias = false, showDisconnected = true;
 let showCurrentFlow = false;
 let currentViewMode = 'voltage'; // 'voltage' | 'power' | 'gnd_power' | 'copper_coverage'
 
@@ -661,7 +661,7 @@ function loadResult(idx) {
   connectionPoints = entry.connectionPoints || {};
   viaPositions = entry.viaPositions || [];
   layerBoundaries = entry.layerBoundaries || {};
-  pcbContext = entry.pcbContext || null;
+  layerOutlines = entry.layerOutlines || {};
   // Pull PCB layer colors from the entry if display.ts fetched them. Fall back to a
   // hex→rgb map derived from default LAYER_COLORS so older payloads still render.
   if (entry.layerColors && typeof entry.layerColors === 'object') pcbLayerColors = entry.layerColors;
@@ -719,8 +719,10 @@ function loadResult(idx) {
   _log('loadResult', 'layerSolutions=' + resultData.layerSolutions.length);
 
   layerNamesList = resultData.layerSolutions.map((ls, i) => ls.layerName || layerNames[i] || ('Layer ' + i));
-  layerVisible = layerNamesList.map(() => true);
+  // 默认只显示当前激活层，避免多层铜皮/热力图重叠导致"混在一起"；
+  // 用户仍可通过侧边栏眼睛图标手动打开其他层作为参考。
   currentLayerIdx = 0;
+  layerVisible = layerNamesList.map((_, i) => i === currentLayerIdx);
 
 
   let bx0=Infinity, bx1=-Infinity, by0=Infinity, by1=-Infinity;
@@ -756,22 +758,6 @@ function loadResult(idx) {
   }
   _log('loadResult', 'bounds X=[' + bx0.toFixed(2) + ',' + bx1.toFixed(2) + '] Y=[' + by0.toFixed(2) + ',' + by1.toFixed(2) + ']');
   bounds = { minX: bx0, maxX: bx1, minY: by0, maxY: by1 };
-
-  if (pcbContext) {
-    for (const t of (pcbContext.contextTracks || [])) {
-      if (t.x1 < bounds.minX) bounds.minX = t.x1; if (t.x1 > bounds.maxX) bounds.maxX = t.x1;
-      if (t.y1 < bounds.minY) bounds.minY = t.y1; if (t.y1 > bounds.maxY) bounds.maxY = t.y1;
-      if (t.x2 < bounds.minX) bounds.minX = t.x2; if (t.x2 > bounds.maxX) bounds.maxX = t.x2;
-      if (t.y2 < bounds.minY) bounds.minY = t.y2; if (t.y2 > bounds.maxY) bounds.maxY = t.y2;
-    }
-    for (const p of (pcbContext.contextPads || [])) {
-      const hw = p.width / 2, hh = p.height / 2;
-      if (p.x - hw < bounds.minX) bounds.minX = p.x - hw;
-      if (p.x + hw > bounds.maxX) bounds.maxX = p.x + hw;
-      if (p.y - hh < bounds.minY) bounds.minY = p.y - hh;
-      if (p.y + hh > bounds.maxY) bounds.maxY = p.y + hh;
-    }
-  }
 
   if (useWebGL) {
     try {
@@ -1103,8 +1089,14 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     const VIA_SEGS = 24;
     for (const v of viaPositions) {
       const outerR = Math.max(v.diameter || 0.5, 1e-4) / 2;
-      // Barrel wall: the plated ring between the drill and the pad edge.
-      const innerR = outerR * 0.55;
+      // Use the actual drill size when available so the annulus hole matches
+      // the real via barrel. Fall back to a plated-ring estimate for older
+      // payloads that do not carry hole_diameter.
+      let innerR = outerR * 0.55;
+      if (v.hole_diameter != null && v.hole_diameter > 0) {
+        innerR = v.hole_diameter / 2;
+      }
+      if (innerR >= outerR) innerR = outerR * 0.55;
       const base = viaVerts.length / 2;
       for (let s = 0; s < VIA_SEGS; s++) {
         const a = (s / VIA_SEGS) * 2 * Math.PI;
@@ -1135,10 +1127,11 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     glData.viaPlainCount = plainIdx.length;
   }
 
-  // Outlines
-  const polys = layerBoundaries[lname] || [];
+  // Outlines use the pre-computed outermost copper contour (layer_outlines);
+  // fall back to per-polygon boundaries for older payloads.
+  const outlinePolys = (layerOutlines[lname] || layerBoundaries[lname] || []);
   const outlineVerts = [];
-  for (const poly of polys) {
+  for (const poly of outlinePolys) {
     const ext = poly.exterior;
     if (!ext || !Array.isArray(ext)) continue;
     for (let i = 0; i < ext.length - 1; i++) {
@@ -1158,8 +1151,9 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     glData.outlineCount = outlineVerts.length / 4;
   }
 
-  // Board copper fill: direct triangle fill using pre-triangulated boundaries.
-  // Falls back to TRIANGLE_FAN only if the backend did not supply triangles.
+  // Board copper fill: use the per-polygon ODB++ boundaries (layer_boundaries)
+  // so only real copper is filled. The outer-contour outline is separate.
+  const boardFillPolys = (layerBoundaries[lname] || []);
   const boardFillVerts = [];
   const boardFillIdx = [];
   const boardFillFans = [];
@@ -1176,7 +1170,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   const gndFillVerts = [];
   const gndFillIdx = [];
   const isGndNet = (n) => typeof n === 'string' && n.toUpperCase().includes('GND');
-  for (const poly of polys) {
+  for (const poly of boardFillPolys) {
     const hasTris = poly.triangles && poly.triangles.length > 0 && poly.vertices && poly.vertices.length > 0;
     if (hasTris) {
       const base = boardFillVerts.length / 2;
@@ -1271,6 +1265,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
     glData.gndFillIdxType = need32g ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
     glData.gndFillTriCount = gndFillIdx.length;
   }
+  console.log('[Results] board fill layer=' + li + ' polys=' + boardFillPolys.length + ' tris=' + (glData.boardFillTriCount || 0) + ' fans=' + (glData.boardFillFans?.length || 0) + ' active=' + (glData.activeFillTriCount || 0) + ' gnd=' + (glData.gndFillTriCount || 0));
   // Bounding box quad for stencil fill
   const bMargin = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) * 0.05;
   const bx0 = bounds.minX - bMargin, by0 = bounds.minY - bMargin;
@@ -1289,7 +1284,6 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   const discMeshes = ls.disconnectedMeshes || [];
   if (discMeshes.length > 0) {
     let discPos = [], discIdx = [], discOff = 0;
-    let discOutlinePos = [];
     for (const dm of discMeshes) {
       const dn = dm.vertices?.length || 0;
       for (let i = 0; i < dn; i++) {
@@ -1299,34 +1293,6 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
         const v = Array.isArray(tri) ? tri : (tri.vertices || tri);
         if (!v || v.length < 3) continue;
         discIdx.push(v[0]+discOff, v[1]+discOff, v[2]+discOff);
-      }
-      // Per-mesh outline: walk the unique outer boundary of the triangles by
-      // counting edge occurrences. Outer edges appear once, inner (shared)
-      // edges appear twice. We emit a separate GL_LINES buffer per disconnected
-      // mesh so the outlines stack cleanly under triangular fills.
-      const edgeCount = new Map();
-      const ek = (a, b) => a < b ? a + '_' + b : b + '_' + a;
-      for (const tri of (dm.triangles || [])) {
-        const v = Array.isArray(tri) ? tri : (tri.vertices || tri);
-        if (!v || v.length < 3) continue;
-        for (let e = 0; e < 3; e++) {
-          const k = ek(v[e], v[(e + 1) % 3]);
-          edgeCount.set(k, (edgeCount.get(k) || 0) + 1);
-        }
-      }
-      for (const tri of (dm.triangles || [])) {
-        const v = Array.isArray(tri) ? tri : (tri.vertices || tri);
-        if (!v || v.length < 3) continue;
-        for (let e = 0; e < 3; e++) {
-          const k = ek(v[e], v[(e + 1) % 3]);
-          if (edgeCount.get(k) === 1) {
-            const p1 = dm.vertices[v[e]];
-            const p2 = dm.vertices[v[(e + 1) % 3]];
-            if (p1 && p2) {
-              discOutlinePos.push(vx(p1), vy(p1), vx(p2), vy(p2));
-            }
-          }
-        }
       }
       discOff += dn;
     }
@@ -1341,12 +1307,6 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, dIdx, gl.STATIC_DRAW);
       glData.discIdxType = dNeed32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
       glData.discTriCount = discIdx.length;
-    }
-    if (discOutlinePos.length > 0) {
-      glData.discOutlineVBO = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, glData.discOutlineVBO);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(discOutlinePos), gl.STATIC_DRAW);
-      glData.discOutlineCount = discOutlinePos.length / 2;
     }
     glData.discCount = discMeshes.length;
     glData.discTris = discMeshes.reduce((s, dm) => s + (dm.triangles?.length || 0), 0);
@@ -1677,7 +1637,14 @@ function resetView() {
   viewCY = (bounds.minY + bounds.maxY) / 2;
   const w = bounds.maxX - bounds.minX || 1;
   const h = bounds.maxY - bounds.minY || 1;
-  viewZoom = Math.min(1.8 / w, 1.8 / h) * 0.92;
+  // World mm → NDC: 横 = s/aspect, 纵 = s (see computeMVP). PCB 横占 NDC =
+  // w*s/aspect, 纵占 NDC = h*s. Fit-to-canvas with a 10% margin (1.8 NDC
+  // width) requires s ≤ 1.8*aspect/w and s ≤ 1.8/h — taking the min fits
+  // the longer board axis regardless of board-vs-canvas aspect.
+  const cw = canvas.clientWidth || canvas.width || 1;
+  const ch = canvas.clientHeight || canvas.height || 1;
+  const aspect = cw / ch;
+  viewZoom = Math.min(1.8 * aspect / w, 1.8 / h) * 0.92;
 }
 
 function computeMVP() {
@@ -1737,27 +1704,82 @@ function render() {
 
 }
 
-// Look up the EasyEDA display color for a given layer. Falls back to the
-// built-in LAYER_COLORS palette when the runtime color map is unavailable.
-function copperFillColor(layerName) {
-  if (pcbLayerColors && pcbLayerColors[layerName]) {
-    const hex = pcbLayerColors[layerName];
-    if (/^#?[0-9a-fA-F]{6}$/.test(hex)) {
-      const h = hex.startsWith('#') ? hex.slice(1) : hex;
+// Parse a colour string from EasyEDA into [r,g,b,1]. Handles #RRGGBB,
+// 0xAARRGGBB / 0xRRGGBB, and rgb(r,g,b). Returns null on failure.
+function parseColor(str) {
+  if (!str) return null;
+  const s = String(str).trim();
+  // 0xAARRGGBB or 0xRRGGBB (EasyEDA sometimes ships ARGB hex)
+  const ox = s.match(/^0x([0-9a-fA-F]{8})$/);
+  if (ox) {
+    const h = ox[1];
+    return [
+      parseInt(h.slice(2, 4), 16) / 255,
+      parseInt(h.slice(4, 6), 16) / 255,
+      parseInt(h.slice(6, 8), 16) / 255,
+      1.0,
+    ];
+  }
+  const ox6 = s.match(/^0x([0-9a-fA-F]{6})$/);
+  if (ox6) {
+    const h = ox6[1];
+    return [
+      parseInt(h.slice(0, 2), 16) / 255,
+      parseInt(h.slice(2, 4), 16) / 255,
+      parseInt(h.slice(4, 6), 16) / 255,
+      1.0,
+    ];
+  }
+  // #RRGGBB or #RGB
+  const m = s.match(/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/);
+  if (m) {
+    const h = m[1];
+    if (h.length === 3) {
       return [
-        parseInt(h.slice(0, 2), 16) / 255,
-        parseInt(h.slice(2, 4), 16) / 255,
-        parseInt(h.slice(4, 6), 16) / 255,
+        parseInt(h[0] + h[0], 16) / 255,
+        parseInt(h[1] + h[1], 16) / 255,
+        parseInt(h[2] + h[2], 16) / 255,
         1.0,
       ];
     }
+    return [
+      parseInt(h.slice(0, 2), 16) / 255,
+      parseInt(h.slice(2, 4), 16) / 255,
+      parseInt(h.slice(4, 6), 16) / 255,
+      1.0,
+    ];
   }
-  return LAYER_COLORS[0].concat([1.0]);
+  // rgb(r, g, b)
+  const rgb = s.match(/rgba?\(\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)/i);
+  if (rgb) {
+    return [
+      parseInt(rgb[1], 10) / 255,
+      parseInt(rgb[2], 10) / 255,
+      parseInt(rgb[3], 10) / 255,
+      1.0,
+    ];
+  }
+  return null;
+}
+
+// Look up the EasyEDA display colour for a given layer. Falls back to the
+// built-in LAYER_COLORS palette when the runtime colour map is unavailable.
+function copperFillColor(layerName) {
+  if (pcbLayerColors && pcbLayerColors[layerName]) {
+    const c = parseColor(pcbLayerColors[layerName]);
+    if (c) return c;
+  }
+  // Deterministic fallback so each layer gets a distinct colour.
+  let hash = 0;
+  for (let i = 0; i < layerName.length; i++) hash = (hash * 31 + layerName.charCodeAt(i)) >>> 0;
+  return LAYER_COLORS[hash % LAYER_COLORS.length].concat([1.0]);
 }
 
 function renderSingleLayer(li, mvp) {
   const gd = layerGL[li];
-  if (!gd || (!gd.meshVBO && !gd.boardFillVBO)) return;
+  if (!gd || (!gd.meshVBO && !gd.boardFillVBO && !gd.discVBO)) return;
+
+  const isActive = (li === currentLayerIdx);
 
   // 0) Copper pour fill — drawn for every visible layer so the user can see
   // each layer's contribution stacked in z-order (active layer on top). The
@@ -1771,13 +1793,14 @@ function renderSingleLayer(li, mvp) {
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
 
     if (currentViewMode === 'copper_coverage') {
-      gl.uniform4f(lineProg.u.u_color, 0.15, 0.18, 0.22, 1.0); // Cold gray
+      // 非激活层用低透明度，防止多层铜皮叠在一起"花屏".
+      gl.uniform4f(lineProg.u.u_color, 0.15, 0.18, 0.22, isActive ? 0.95 : 0.25);
     } else {
       const c = copperFillColor(gd.layerName);
-      // Non-active layers render slightly dimmer so the active layer reads as
-      // "in front" without hiding the back-side context.
-      const dim = (li === currentLayerIdx) ? 1.0 : 0.55;
-      gl.uniform4f(lineProg.u.u_color, c[0] * dim, c[1] * dim, c[2] * dim, c[3]);
+      // 非激活层只作为淡色参考，避免和当前层的热力图/铜皮混在一起。
+      const dim = isActive ? 1.0 : 0.65;
+      const alpha = isActive ? 0.95 : 0.22;
+      gl.uniform4f(lineProg.u.u_color, c[0] * dim, c[1] * dim, c[2] * dim, alpha);
     }
 
     if (gd.boardFillIBO && gd.boardFillTriCount > 0) {
@@ -1791,6 +1814,22 @@ function renderSingleLayer(li, mvp) {
     }
 
     gl.disableVertexAttribArray(lineProg.a.a_pos);
+  }
+
+  // 非激活层只保留淡色铜皮和轮廓参考，不绘制热力图/断连岛/过孔等，
+  // 否则多层数据会叠在一起分不清楚。
+  if (!isActive) {
+    if (showOutline && gd.outlineVBO) {
+      gl.useProgram(lineProg.prog);
+      gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
+      gl.uniform4f(lineProg.u.u_color, 0.0, 0.83, 1.0, 0.4);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gd.outlineVBO);
+      gl.enableVertexAttribArray(lineProg.a.a_pos);
+      gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.LINES, 0, gd.outlineCount * 2);
+      gl.disableVertexAttribArray(lineProg.a.a_pos);
+    }
+    return;
   }
 
   // 0b) Active-net overlay — drawn only on the current layer for the
@@ -1831,7 +1870,8 @@ function renderSingleLayer(li, mvp) {
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
     // Muted purple-grey gives a clear visual separation from any PCB layer
     // colour while keeping the overall scene readable on dark backgrounds.
-    gl.uniform4f(lineProg.u.u_color, 0.36, 0.30, 0.42, 1.0);
+    // Use a low alpha so the layer's own copper colour remains visible.
+    gl.uniform4f(lineProg.u.u_color, 0.36, 0.30, 0.42, 0.30);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.gndFillIBO);
     gl.drawElements(gl.TRIANGLES, gd.gndFillTriCount, gd.gndFillIdxType, 0);
     gl.disableVertexAttribArray(lineProg.a.a_pos);
@@ -1910,30 +1950,24 @@ function renderSingleLayer(li, mvp) {
 
     gl.disableVertexAttribArray(meshProg.a.a_val);
 
+  } else {
+    console.log('[Results] layer=' + li + ' no mesh drawn: meshVBO=' + !!gd.meshVBO + ', perMeshIdxRanges=' + (gd.perMeshIdxRanges ? gd.perMeshIdxRanges.length : 'null'));
   }
 
   // 1.5) Disconnected meshes — real copper islands that did not connect to
-  // the source/load network. Rendered with a warm amber tint + outline so the
-  // user can visually separate them from the gradient-coloured solved copper.
+  // the source/load network. Rendered as low-saturation grey with no outline
+  // so they recede into the background and don't compete visually with the
+  // gradient-coloured solved copper. The sidebar badge still reports the
+  // count, so the user knows the islands are present.
   if (showDisconnected && gd.discVBO && gd.discIBO) {
     gl.useProgram(lineProg.prog);
     gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
-    gl.uniform4f(lineProg.u.u_color, 0.46, 0.32, 0.18, 0.55);
+    gl.uniform4f(lineProg.u.u_color, 0.35, 0.35, 0.38, 0.30);
     gl.bindBuffer(gl.ARRAY_BUFFER, gd.discVBO);
     gl.enableVertexAttribArray(lineProg.a.a_pos);
     gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gd.discIBO);
     gl.drawElements(gl.TRIANGLES, gd.discTriCount, gd.discIdxType, 0);
-    gl.disableVertexAttribArray(lineProg.a.a_pos);
-  }
-  if (showDisconnected && gd.discOutlineVBO) {
-    gl.useProgram(lineProg.prog);
-    gl.uniformMatrix4fv(lineProg.u.u_mvp, false, mvp);
-    gl.uniform4f(lineProg.u.u_color, 0.78, 0.52, 0.22, 0.9);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gd.discOutlineVBO);
-    gl.enableVertexAttribArray(lineProg.a.a_pos);
-    gl.vertexAttribPointer(lineProg.a.a_pos, 2, gl.FLOAT, false, 0, 0);
-    gl.drawArrays(gl.LINES, 0, gd.discOutlineCount);
     gl.disableVertexAttribArray(lineProg.a.a_pos);
   }
 
@@ -2049,7 +2083,6 @@ function setupInteraction() {
     if (e.key === 'r' || e.key === 'R') { resetView(); render(); }
     if (e.key === 'c' || e.key === 'C') { showVias = !showVias; updateToggles(); render(); }
     if (e.key === 'f' || e.key === 'F') { showCurrentFlow = !showCurrentFlow; updateToggles(); render(); }
-    if (e.key === 'i' || e.key === 'I') { showDisconnected = !showDisconnected; updateToggles(); render(); }
     if (e.key === 'd' || e.key === 'D') {
       // 循环切换箭头密度: 0.25 -> 0.5 -> 1 -> 2 -> 4 -> 0.25
       const densityLevels = [0.25, 0.5, 1, 2, 4];
@@ -2188,6 +2221,11 @@ function updateStatus(mx, my) {
   if (!gd) { updateTooltip(null, w); return; }
 
   const value = pickValue(w.x, w.y);
+  const nowPick = performance.now();
+  if (!window.__pickLogLast || nowPick - window.__pickLogLast > 500) {
+    window.__pickLogLast = nowPick;
+    console.log('[Results] pick layer=' + currentLayerIdx + ' mode=' + currentViewMode + ' value=' + (typeof value === 'object' ? 'disconnected' : value));
+  }
   if (value != null && isFinite(value)) {
     if (currentViewMode === 'power' || currentViewMode === 'gnd_power') {
       document.getElementById('st-voltage').textContent = `功率密度: ${value.toExponential(4)} W/mm²`;
@@ -2321,7 +2359,7 @@ function pickValueAtLayer(wx, wy, layerIdx) {
   // Disconnected meshes: real copper islands the solver did not connect to the
   // source/load network (no potentials to interpolate from). Return a sentinel
   // so the tooltip can label them instead of hiding.
-  const dms = ls.disconnected_meshes || [];
+  const dms = ls.disconnectedMeshes || [];
   for (let di = 0; di < dms.length; di++) {
     const dm = dms[di];
     if (hitTestMesh(wx, wy, dm.vertices, dm.triangles)) {
@@ -2359,7 +2397,7 @@ function updateTooltip(value, w) {
   const el = document.getElementById('tooltip');
   if (!tooltipEvent || !resultData) { el.style.display = 'none'; return; }
   if (value && typeof value === 'object' && value.__disconnected) {
-    el.innerHTML = `孤立铜皮<br><span style="color:#f0883e">未连入电源网络</span><br><span style="color:#8b949e">X: ${w.x.toFixed(3)} Y: ${w.y.toFixed(3)}</span>`;
+    el.innerHTML = `孤立铜皮<br><span style="color:#9a9da2">未连入电源网络</span><br><span style="color:#8b949e">X: ${w.x.toFixed(3)} Y: ${w.y.toFixed(3)}</span>`;
   } else if (value != null && isFinite(value)) {
     let valStr;
     if (currentViewMode === 'power' || currentViewMode === 'gnd_power') {
@@ -2393,7 +2431,6 @@ function updateToggles() {
   document.getElementById('btn-outline').classList.toggle('active', showOutline);
   document.getElementById('btn-vias').classList.toggle('active', showVias);
   document.getElementById('btn-flow').classList.toggle('active', showCurrentFlow);
-  document.getElementById('btn-disc').classList.toggle('active', showDisconnected);
   document.getElementById('btn-viewmode').classList.toggle('active', currentViewMode === 'power');
   document.getElementById('btn-gndpower').classList.toggle('active', currentViewMode === 'gnd_power');
   document.getElementById('btn-copper').classList.toggle('active', currentViewMode === 'copper_coverage');
@@ -2511,7 +2548,6 @@ function setupUI() {
   document.getElementById('btn-edges').addEventListener('click', () => { showEdges = !showEdges; updateToggles(); render(); });
   document.getElementById('btn-outline').addEventListener('click', () => { showOutline = !showOutline; updateToggles(); render(); });
   document.getElementById('btn-vias').addEventListener('click', () => { showVias = !showVias; updateToggles(); render(); });
-  document.getElementById('btn-disc').addEventListener('click', () => { showDisconnected = !showDisconnected; updateToggles(); render(); });
   document.getElementById('btn-flow').addEventListener('click', () => {
     showCurrentFlow = !showCurrentFlow;
     updateToggles();
@@ -2586,17 +2622,6 @@ function buildSidebar() {
     name.textContent = layerNamesList[i];
     name.title = layerNamesList[i];
 
-    const discBadge = document.createElement('span');
-    discBadge.className = 'disc-badge';
-    const discCount = resultData.layerSolutions[i]?.disconnectedMeshes?.length || 0;
-    if (discCount > 0) {
-      discBadge.textContent = discCount;
-      discBadge.title = `${discCount} 个孤立铜皮 (未连入电源网络)`;
-      discBadge.style.cssText = 'background:#f0883e;color:#1c1c1c;border-radius:9px;padding:1px 6px;font-size:10px;font-weight:600;font-family:monospace;margin-left:auto;flex-shrink:0';
-    } else {
-      discBadge.style.display = 'none';
-    }
-
     const eye = document.createElement('button');
     eye.className = 'layer-eye' + (layerVisible[i] ? '' : ' hidden');
     eye.innerHTML = '&#128065;'; // 始终显示眼睛图标
@@ -2612,7 +2637,6 @@ function buildSidebar() {
 
     item.appendChild(dot);
     item.appendChild(name);
-    if (discCount > 0) item.appendChild(discBadge);
     item.appendChild(eye);
     item.addEventListener('click', () => {
       currentLayerIdx = i;
@@ -2905,15 +2929,18 @@ function startUI() {
 
   // WebGL 渲染 — 只要有任意层有数据即可，自动切到第一个有数据的层
   if (useWebGL) {
-    // 当前层没有连通 mesh 时，自动切换到第一个有 meshVBO 的层
-    if (!layerGL[currentLayerIdx] || !layerGL[currentLayerIdx].meshVBO) {
+    // 当前层没有连通 mesh 且没有断连 mesh 时，自动切换到第一个有 meshVBO 或 discVBO 的层
+    function layerHasData(g) { return g && (g.meshVBO || g.discVBO); }
+    if (!layerHasData(layerGL[currentLayerIdx])) {
       for (let li = 0; li < layerNamesList.length; li++) {
-        if (layerGL[li] && layerGL[li].meshVBO) {
+        if (layerHasData(layerGL[li])) {
           currentLayerIdx = li;
           break;
         }
       }
     }
+    // 自动切换到首个有数据的层后，同步可见性：只显示当前激活层。
+    layerVisible = layerNamesList.map((_, i) => i === currentLayerIdx);
     try {
       setupUI();
       setupInteraction();

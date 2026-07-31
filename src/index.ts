@@ -1,4 +1,4 @@
-import type { AnalysisResultEntry, AnalysisResultSet, EasyEDA_Pad, EasyEDA_Track, NetworkInfo, PcbContextData, PdnConfig } from './types';
+import type { AnalysisResultEntry, AnalysisResultSet, EasyEDA_Pad, NetworkInfo, PdnConfig } from './types';
 import * as extensionConfig from '../extension.json';
 import { PcbDataConverter } from './convert';
 import { ResultDisplay } from './display';
@@ -95,6 +95,7 @@ export async function runPdnAnalysis(): Promise<void> {
 				const solutionData = converter.deserializeSolution(solution, Object.values(layerNames));
 				const connectionPoints = (solution as any).connection_points ?? {};
 				const layerBoundaries = (solution as any).layer_boundaries ?? {};
+				const layerOutlines = (solution as any).layer_outlines ?? {};
 				const currentWarnings = (solution as any).current_warnings ?? [];
 				const viaPositions = (solution as any).via_positions ?? [];
 				const warningMessage = solution.success === false && solution.message ? solution.message : undefined;
@@ -109,8 +110,8 @@ export async function runPdnAnalysis(): Promise<void> {
 					networkInfo: buildNetworkInfo(runConfig),
 					connectionPoints,
 					layerBoundaries,
+					layerOutlines,
 					viaPositions,
-					pcbContext: buildPcbContext(easyedaData.tracks, easyedaData.pads, runConfig),
 					warningMessage,
 					currentWarnings,
 					extractorDiagnostics: extractor.diagnostics,
@@ -289,42 +290,6 @@ function openConfigPanel(pads: EasyEDA_Pad[], layerNames: Record<number, string>
 }
 
 const MIL_TO_MM = 0.0254;
-
-function buildPcbContext(
-	allTracks: EasyEDA_Track[],
-	allPads: EasyEDA_Pad[],
-	config: PdnConfig,
-): PcbContextData {
-	const analyzedNets = new Set(config.rails.map(r => r.net));
-	for (const rail of config.rails) {
-		if (rail.gnd_net)
-			analyzedNets.add(rail.gnd_net);
-	}
-	return {
-		contextTracks: allTracks
-			.filter(t => !analyzedNets.has(t.net))
-			.map(t => ({
-				x1: t.x1 * MIL_TO_MM,
-				y1: t.y1 * MIL_TO_MM,
-				x2: t.x2 * MIL_TO_MM,
-				y2: t.y2 * MIL_TO_MM,
-				width: t.width * MIL_TO_MM,
-				layer: t.layer,
-				net: t.net,
-			})),
-		contextPads: allPads.filter(p => analyzedNets.has(p.net)).map(p => ({
-			x: p.x * MIL_TO_MM,
-			y: p.y * MIL_TO_MM,
-			width: p.width * MIL_TO_MM,
-			height: p.height * MIL_TO_MM,
-			hole_diameter: p.hole_diameter * MIL_TO_MM,
-			layer: p.layer,
-			net: p.net,
-			ref_des: p.ref_des,
-			pad_number: p.pad_number,
-		})),
-	};
-}
 
 function buildNetworkInfo(config: PdnConfig): NetworkInfo[] {
 	return config.rails.map(rail => ({

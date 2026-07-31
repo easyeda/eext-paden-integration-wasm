@@ -341,10 +341,14 @@ func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet 
 	return best.pt, true
 }
 
-// findViaSnapPoint skips isolated annular-ring polygons when snapping a via to its pour.
+// findViaSnapPoint snaps a via to same-net copper on a layer. It first accepts
+// any polygon that actually contains the via point (even tiny pads), then
+// falls back to the nearest boundary point on a polygon large enough to be a
+// real pour. The area filter only applies to the fallback so that vias on
+// small-but-real islands (e.g. connector pin pads) are not discarded.
 func findViaSnapPoint(pt geometry.Point, layer *problem.Layer, targetNet string) (geometry.Point, bool) {
 	for i, poly := range layer.Shape {
-		if !polygonMatchesNet(layer, i, targetNet) || polygonArea(poly) < viaMinPolygonAreaMM2 {
+		if !polygonMatchesNet(layer, i, targetNet) {
 			continue
 		}
 		if pointInPolygonMesh(pt, poly) {

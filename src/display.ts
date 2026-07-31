@@ -1,4 +1,4 @@
-import type { AnalysisImages, AnalysisResultSet, NetworkInfo, PcbContextData, SolutionData } from './types';
+import type { AnalysisImages, AnalysisResultSet, NetworkInfo, SolutionData } from './types';
 
 /**
  * display.ts - 结果展示模块
@@ -29,7 +29,6 @@ export class ResultDisplay {
 		connectionPoints?: Record<string, Array<{ x: number; y: number; is_source: boolean }>>,
 		layerBoundaries?: Record<string, Array<{ exterior: number[][]; holes: number[][][] }>>,
 		warningMessage?: string,
-		pcbContext?: PcbContextData,
 		networkInfo?: NetworkInfo[],
 	): Promise<'close' | 'reanalyze'> {
 		// Wrap single result into a result set for backward compatibility
@@ -40,7 +39,6 @@ export class ResultDisplay {
 				networkInfo: networkInfo || [],
 				connectionPoints: connectionPoints || {},
 				layerBoundaries: layerBoundaries || {},
-				pcbContext: pcbContext || { contextTracks: [], contextPads: [] },
 				warningMessage,
 			}],
 		};

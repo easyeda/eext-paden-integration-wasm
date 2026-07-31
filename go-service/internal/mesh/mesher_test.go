@@ -361,3 +361,26 @@ func clampTest(v, lo, hi float64) float64 {
 	}
 	return v
 }
+
+// Triangles whose vertices are within 1 µm of each other (effectively
+// coincident, e.g. the residue of earcut on a PSLG with near-duplicate
+// boundary points). The safety filter must drop them — they would otherwise
+// poison the FEM matrix with 1e-6-area entries and render as bright
+// "wedge" lines in the WebGL viewer.
+func TestFilterMeshSafetyDropsNearCoincidentVertices(t *testing.T) {
+	pts := []Point{
+		{0, 0}, {10, 0}, {0, 10}, // valid
+		{32.7670, 2.2883}, {32.7678, 2.2878}, {32.7660, 2.2880}, // ≈ 0.001 mm apart
+	}
+	tris := [][3]int{
+		{0, 1, 2},     // valid
+		{3, 4, 5},     // all three vertices < 1 µm apart → drop
+		{0, 1, 4},     // one short edge (4→5 ≈ 1 µm), one long → drop
+		{0, 3, 1},     // one short edge (3→4 ≈ 1 µm), two long → drop
+	}
+	poly := geometry.Polygon{geometry.Ring{{-1, -1}, {11, -1}, {11, 11}, {-1, 11}}}
+	kept := filterMeshSafety(pts, tris, poly)
+	if len(kept) != 1 || kept[0] != [3]int{0, 1, 2} {
+		t.Fatalf("kept %v, want only {0,1,2}", kept)
+	}
+}

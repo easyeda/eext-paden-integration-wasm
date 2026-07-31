@@ -199,40 +199,6 @@ export interface AnalysisImages {
 }
 
 // ============================================================
-// PCB 上下文数据（用于热力图与 PCB 叠加显示）
-// ============================================================
-
-/** 上下文走线（非分析网络的走线，已转换为 mm） */
-export interface ContextTrack {
-	x1: number;
-	y1: number;
-	x2: number;
-	y2: number;
-	width: number;
-	layer: number;
-	net: string;
-}
-
-/** 上下文焊盘（已转换为 mm） */
-export interface ContextPad {
-	x: number;
-	y: number;
-	width: number;
-	height: number;
-	hole_diameter: number;
-	layer?: number;
-	net: string;
-	ref_des?: string;
-	pad_number: string;
-}
-
-/** PCB 上下文数据，传递给 results.html 用于叠加显示 */
-export interface PcbContextData {
-	contextTracks: ContextTrack[];
-	contextPads: ContextPad[];
-}
-
-// ============================================================
 // 网络切换类型
 // ============================================================
 
@@ -282,9 +248,10 @@ export interface AnalysisResultEntry {
 	networkInfo: NetworkInfo[];
 	connectionPoints: Record<string, Array<{ x: number; y: number; is_source: boolean }>>;
 	layerBoundaries: Record<string, Array<{ exterior: number[][]; holes: number[][][] }>>;
+	/** 各层铜皮的联合最外轮廓，用于只显示铜皮外框 */
+	layerOutlines?: Record<string, Array<{ exterior: number[][]; holes: number[][][] }>>;
 	/** 板上全部过孔位置，来自 ODB++ 钻孔层，与网络无关 */
-	viaPositions?: Array<{ x: number; y: number; diameter: number }>;
-	pcbContext: PcbContextData;
+	viaPositions?: Array<{ x: number; y: number; diameter: number; hole_diameter?: number }>;
 	warningMessage?: string;
 	currentWarnings?: CurrentCheckWarning[];
 	extractorDiagnostics?: string[];

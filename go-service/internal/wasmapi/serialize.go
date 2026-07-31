@@ -69,6 +69,7 @@ type AnalyzeResponse struct {
 	SolverInfo       *SolverInfoOutput            `json:"solver_info"`
 	ConnectionPoints map[string][]ConnectionPoint `json:"connection_points"`
 	LayerBoundaries  map[string][]BoundaryPolygon `json:"layer_boundaries"`
+	LayerOutlines    map[string][]BoundaryPolygon `json:"layer_outlines"`
 	Diagnostics      []string                     `json:"diagnostics"`
 	CurrentWarnings  []CurrentCheckOutput         `json:"current_warnings"`
 	ViaPositions     []ViaPosition                `json:"via_positions"`
@@ -78,9 +79,10 @@ type AnalyzeResponse struct {
 // ConnectionPoint these are net-agnostic: the viewer's via overlay shows every
 // via on the board, including signal nets that take no part in the PDN solve.
 type ViaPosition struct {
-	X        float64 `json:"x"`
-	Y        float64 `json:"y"`
-	Diameter float64 `json:"diameter"`
+	X            float64 `json:"x"`
+	Y            float64 `json:"y"`
+	Diameter     float64 `json:"diameter"`
+	HoleDiameter float64 `json:"hole_diameter"`
 }
 
 // ConnectionPoint is a single connection point entry.
@@ -119,7 +121,8 @@ func SerializeSolution(sol *solver.Solution) ([]byte, error) {
 		LayerSolutions:   serializeLayerSolutions(sol, extras.Transform),
 		SolverInfo:       &SolverInfoOutput{GroundNodeCurrent: sanitizeFloat(sol.SolverInfo.GroundNodeCurrent), ResidualNorm: sanitizeFloat(sol.SolverInfo.ResidualNorm)},
 		ConnectionPoints: serializeConnectionPoints(sol, extras.Transform),
-		LayerBoundaries:  serializeLayerBoundaries(sol, extras.Transform),
+		LayerBoundaries:  serializeLayerBoundaries(sol, extras),
+		LayerOutlines:    serializeLayerOutlines(sol, extras, extras.Transform),
 		Diagnostics:      extras.Diagnostics.Lines,
 		CurrentWarnings:  checkCurrentCapacities(sol, extras.Config),
 		ViaPositions:     serializeViaPositions(extras.DrillVias, extras.Transform),
@@ -201,10 +204,17 @@ func serializeViaPositions(pts []geometry.DrillPoint, transform *[4]float64) []V
 		if dia <= 0 {
 			dia = 0.3
 		}
+		// Use the same annular-ring estimate as the solver via specs so the
+		// overlay matches the real pad size rather than the bare drill hole.
+		outer := dia + 0.4
+		if outer < 0.5 {
+			outer = 0.5
+		}
 		out = append(out, ViaPosition{
-			X:        sanitizeFloat(x),
-			Y:        sanitizeFloat(y),
-			Diameter: sanitizeFloat(dia + 0.2),
+			X:            sanitizeFloat(x),
+			Y:            sanitizeFloat(y),
+			Diameter:     sanitizeFloat(outer),
+			HoleDiameter: sanitizeFloat(dia),
 		})
 	}
 	return out
@@ -275,33 +285,62 @@ func sanitizeHoles(holes [][][]float64) [][][]float64 {
 	return holes
 }
 
-func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[string][]BoundaryPolygon {
+func serializeLayerBoundaries(sol *solver.Solution, extras *pipeline.SolutionExtras) map[string][]BoundaryPolygon {
 	out := make(map[string][]BoundaryPolygon)
-	for i, layer := range sol.Problem.Layers {
+	// Use the full-board ODB++ copper stencil (now drill-subtracted in the
+	// pipeline) so the viewer shows every copper polygon, not just the nets
+	// being solved, and the board fill respects pad/via holes.
+	var sourceLayers []*problem.Layer
+	if len(extras.AllCopper) > 0 {
+		for name, gl := range extras.AllCopper {
+			sourceLayers = append(sourceLayers, &problem.Layer{
+				Name:      name,
+				Shape:     gl.Polygons,
+				NetLabels: gl.NetLabels,
+			})
+		}
+	} else {
+		for _, l := range sol.Problem.Layers {
+			sourceLayers = append(sourceLayers, l)
+		}
+	}
+	if extras.Diagnostics != nil {
+		totalPolys, totalHoles := 0, 0
+		for _, l := range sourceLayers {
+			totalPolys += len(l.Shape)
+			for _, p := range l.Shape {
+				if len(p) > 1 {
+					totalHoles += len(p) - 1
+				}
+			}
+		}
+		extras.Diagnostics.Info(fmt.Sprintf("serializeLayerBoundaries: %d layers, %d polygons, %d holes", len(sourceLayers), totalPolys, totalHoles))
+	}
+	for _, layer := range sourceLayers {
 		var polys []BoundaryPolygon
-		// Use the original Gerber polygon structure for the copper-fill stencil.
+		// Use the original ODB++ polygon structure for the copper-fill stencil.
 		// It already has holes grouped with their exterior, so the stencil fill
 		// matches the PCB canvas exactly. The solved mesh is drawn on top.
 		//
 		// The polygons are NOT simplified here: the solver-side mesh path
 		// already runs a much finer (≈0.0012 mm) Douglas-Peucker pass for
 		// numerical stability, and applying a coarser pass to the boundary
-		// stencil visually turns Gerber circles into polygons and opens
-		// sub-mm gaps between adjacent copper pours. With results now
+		// stencil visually turns Gerber circles into polygonal edges and
+		// opens sub-mm gaps between adjacent copper pours. With results now
 		// delivered via sys_MessageBus there is no longer a 1 MB payload
 		// cap to fight, so the simplification is unnecessary.
-		netLabels := sol.Problem.Layers[i].NetLabels
-		for pi, poly := range sol.Problem.Layers[i].Shape {
+		netLabels := layer.NetLabels
+		for pi, poly := range layer.Shape {
 			if len(poly) == 0 || len(poly[0]) < 3 {
 				continue
 			}
 
-			exterior := toPointSlice(poly[0], transform)
+			exterior := toPointSlice(poly[0], extras.Transform)
 			var holes [][][]float64
 			flatVerts := make([][]float64, 0, len(exterior))
 			flatVerts = append(flatVerts, exterior...)
 			for hi := 1; hi < len(poly); hi++ {
-				hole := toPointSlice(poly[hi], transform)
+				hole := toPointSlice(poly[hi], extras.Transform)
 				holes = append(holes, hole)
 				flatVerts = append(flatVerts, hole...)
 			}
@@ -328,6 +367,56 @@ func serializeLayerBoundaries(sol *solver.Solution, transform *[4]float64) map[s
 			})
 		}
 		out[layer.Name] = polys
+	}
+	return out
+}
+
+// serializeLayerOutlines returns the unioned outer contour of each layer's
+// copper. This gives the viewer a single clean outline instead of drawing the
+// edges of every internal polygon/trace that happens to touch the analysed
+// net, which is what the per-polygon LayerBoundaries are for.
+func serializeLayerOutlines(sol *solver.Solution, extras *pipeline.SolutionExtras, transform *[4]float64) map[string][]BoundaryPolygon {
+	out := make(map[string][]BoundaryPolygon)
+	var sourceLayers []*problem.Layer
+	if len(extras.AllCopper) > 0 {
+		for name, gl := range extras.AllCopper {
+			sourceLayers = append(sourceLayers, &problem.Layer{
+				Name:      name,
+				Shape:     gl.Polygons,
+				NetLabels: gl.NetLabels,
+			})
+		}
+	} else {
+		for _, l := range sol.Problem.Layers {
+			sourceLayers = append(sourceLayers, l)
+		}
+	}
+	for _, layer := range sourceLayers {
+		if len(layer.Shape) == 0 {
+			continue
+		}
+		unioned, err := geometry.Union(layer.Shape, nil)
+		if err != nil || len(unioned) == 0 {
+			continue
+		}
+		var polys []BoundaryPolygon
+		for _, poly := range unioned {
+			if len(poly) == 0 || len(poly[0]) < 3 {
+				continue
+			}
+			exterior := toPointSlice(poly[0], transform)
+			var holes [][][]float64
+			for hi := 1; hi < len(poly); hi++ {
+				holes = append(holes, toPointSlice(poly[hi], transform))
+			}
+			polys = append(polys, BoundaryPolygon{
+				Exterior: sanitizePointSlice(exterior),
+				Holes:    sanitizeHoles(holes),
+			})
+		}
+		if len(polys) > 0 {
+			out[layer.Name] = polys
+		}
 	}
 	return out
 }

@@ -91,16 +91,25 @@ func (m *Mesher) PolygonToMesh(poly geometry.Polygon, seedPoints []Point) (*Mesh
 	return FromTriangleSoup(pts, tris), nil
 }
 
+// minEdgeLen rejects triangles whose vertices are effectively coincident.
+// Anything below this threshold is the result of a polygon outline that the
+// triangulator could not resolve cleanly (e.g. earcut on a PSLG with
+// near-duplicate boundary points). 1 µm is well below CDT's min-edge in
+// practice, so this never trims a useful face.
+const minEdgeLen = 1e-3
+
 // filterMeshSafety removes only triangles that cannot safely participate in the
 // FEM mesh. Quality problems are handled by Triangle's -q / -a switches; the
 // safety filter only rejects degenerate inputs (NaN/Inf vertices, zero-area
-// triangles, repeated indices, and triangles outside the polygon outline).
+// triangles, repeated indices, near-coincident vertices, and triangles outside
+// the polygon outline).
 func filterMeshSafety(points []Point, triangles [][3]int, poly geometry.Polygon) [][3]int {
 	box := poly.Bounds()
 	charLen := math.Hypot(box.MaxX-box.MinX, box.MaxY-box.MinY)
 	minArea := math.Max(1e-12, charLen*charLen*1e-12)
 	filtered := make([][3]int, 0, len(triangles))
 	dropped := 0
+	shortEdge := 0
 	for _, t := range triangles {
 		if t[0] < 0 || t[1] < 0 || t[2] < 0 || t[0] >= len(points) || t[1] >= len(points) || t[2] >= len(points) ||
 			t[0] == t[1] || t[1] == t[2] || t[2] == t[0] {
@@ -112,6 +121,12 @@ func filterMeshSafety(points []Point, triangles [][3]int, poly geometry.Polygon)
 			dropped++
 			continue
 		}
+		if math.Hypot(b.X-a.X, b.Y-a.Y) < minEdgeLen ||
+			math.Hypot(c.X-b.X, c.Y-b.Y) < minEdgeLen ||
+			math.Hypot(a.X-c.X, a.Y-c.Y) < minEdgeLen {
+			shortEdge++
+			continue
+		}
 		area2 := math.Abs((b.X-a.X)*(c.Y-a.Y) - (c.X-a.X)*(b.Y-a.Y))
 		if area2 <= minArea || !pointInPolygon(centroid(a, b, c), poly) {
 			dropped++
@@ -119,8 +134,8 @@ func filterMeshSafety(points []Point, triangles [][3]int, poly geometry.Polygon)
 		}
 		filtered = append(filtered, t)
 	}
-	if dropped > 0 {
-		fmt.Printf("[PADEN mesh] dropped %d/%d unsafe triangles\n", dropped, len(triangles))
+	if dropped+shortEdge > 0 {
+		fmt.Printf("[PADEN mesh] dropped %d/%d unsafe triangles (short_edge=%d)\n", dropped+shortEdge, len(triangles), shortEdge)
 	}
 	return filtered
 }

@@ -187,6 +187,27 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 		d.Info(fmt.Sprintf("Step 2b (drill subtract all layers) done in %v", time.Since(tSub)))
 	}
 
+	// 2c. Subtract the same drill holes from the full-board copper stencil used
+	// by the viewer. This keeps the board-fill context complete while also
+	// punching pad/via holes through it.
+	if len(drillHoles) > 0 {
+		tAllCopper := time.Now()
+		for name, gl := range parsedODB.AllLayers {
+			if len(gl.Polygons) == 0 {
+				continue
+			}
+			polygons, labels, err := subtractDrillHolesFromCopper(gl.Polygons, gl.NetLabels, drillHoles)
+			if err != nil {
+				d.Warn(fmt.Sprintf("AllCopper layer '%s': drill subtraction failed, keeping original", name))
+				continue
+			}
+			gl.Polygons = polygons
+			gl.NetLabels = labels
+			parsedODB.AllLayers[name] = gl
+		}
+		d.Info(fmt.Sprintf("Step 2c (AllCopper drill subtract) done in %v", time.Since(tAllCopper)))
+	}
+
 	// 3. Coordinate transform
 	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, cfg, outline, d)
 	if transform != nil {
@@ -254,6 +275,10 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 	d.Info(fmt.Sprintf("Step 2b (infer nets) done in %v", time.Since(t0)))
 	t0 = time.Now()
 	d.Info("Step 3: Via specs")
+	// Convert ODB++ drill points that are marked as vias into via specs so
+	// natural board vias participate in layer-to-layer connectivity even when
+	// the frontend does not send explicit via geometry.
+	cfg.Vias = append(cfg.Vias, drillPointsToVias(parsedODB.DrillPoints, cfg.Layers)...)
 	viaSpecs := extractViaSpecs(cfg.Vias, layerDict, transform)
 	d.Info(fmt.Sprintf("Via specs: %d", len(viaSpecs)))
 
@@ -356,6 +381,7 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 		Config:      cfg,
 		Transform:   transform,
 		DrillVias:   drillVias,
+		AllCopper:   parsedODB.AllLayers,
 	}
 
 	return sol, d, nil
@@ -368,6 +394,9 @@ type SolutionExtras struct {
 	Transform   *[4]float64
 	// DrillVias feed the viewer's all-net via overlay in ODB++ board space.
 	DrillVias []geometry.DrillPoint
+	// AllCopper stores every copper polygon on the configured layers so the
+	// viewer can render the full board context, not just the solved nets.
+	AllCopper map[string]geometry.Layer
 }
 
 func extractBoardOutline(layers map[string]geometry.Layer) (geometry.MultiPolygon, string) {
@@ -786,4 +815,73 @@ func buildStackup(thickness map[string]float64, layers []*problem.Layer) []float
 		}
 	}
 	return stackup
+}
+
+// subtractDrillHolesFromCopper returns a new copy of the copper polygons with
+// all drill holes punched out. Net labels are preserved per input polygon.
+func subtractDrillHolesFromCopper(polygons geometry.MultiPolygon, netLabels []string, drillHoles geometry.MultiPolygon) (geometry.MultiPolygon, []string, error) {
+	if len(drillHoles) == 0 {
+		return polygons, netLabels, nil
+	}
+	groups := make(map[string]geometry.MultiPolygon)
+	for i, polygon := range polygons {
+		net := ""
+		if i < len(netLabels) {
+			net = netLabels[i]
+		}
+		groups[net] = append(groups[net], polygon)
+	}
+	var punched geometry.MultiPolygon
+	var labels []string
+	for net, group := range groups {
+		pieces, err := geometry.Difference(group, drillHoles)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, piece := range pieces {
+			piece.EnsureOrientation()
+			punched = append(punched, piece)
+			labels = append(labels, net)
+		}
+	}
+	return punched, labels, nil
+}
+
+// drillPointsToVias turns ODB++ drill points that are marked as vias into
+// generic Via records. The frontend only sends user-defined vias; the ODB++
+// archive already contains every physical via hole, so we derive the missing
+// via geometry from it. Net inference (via inferViaNet) samples the copper
+// around each hole, allowing natural board vias to stitch layers for the nets
+// that flow through them.
+func drillPointsToVias(drillPoints []geometry.DrillPoint, layerConfigs []LayerConfig) []Via {
+	if len(drillPoints) == 0 || len(layerConfigs) == 0 {
+		return nil
+	}
+	var layerNames []string
+	for _, lc := range layerConfigs {
+		layerNames = append(layerNames, lc.Name)
+	}
+	var vias []Via
+	for _, dp := range drillPoints {
+		if !dp.Via {
+			continue
+		}
+		// Typical annular ring is ~0.1–0.15 mm per side; use a conservative
+		// pad diameter so net inference and snapping can reach the copper
+		// ring around the drilled hole.
+		outer := dp.Diameter + 0.4
+		if outer < 0.3 {
+			outer = 0.3
+		}
+		vias = append(vias, Via{
+			X:            dp.X,
+			Y:            dp.Y,
+			HoleDiameter: dp.Diameter,
+			Diameter:     outer,
+			LayerNames:   layerNames,
+			Net:          "",
+			ViaType:      "through",
+		})
+	}
+	return vias
 }
