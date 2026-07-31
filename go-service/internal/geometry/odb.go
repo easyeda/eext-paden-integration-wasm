@@ -1154,21 +1154,6 @@ func boxesOverlap(a, b Box) bool {
 }
 
 func polygonsTouch(a, b Polygon) bool {
-	// Quick centroid inside check for overlap/nesting. Use exterior-only
-	// containment so a pad/polygon sitting inside a copper-pour hole is still
-	// considered connected to the pour (same net).
-	if len(a) > 0 && len(a[0]) > 0 {
-		c := centroid(a[0])
-		if ringContainsPoint(b[0], c) {
-			return true
-		}
-	}
-	if len(b) > 0 && len(b[0]) > 0 {
-		c := centroid(b[0])
-		if ringContainsPoint(a[0], c) {
-			return true
-		}
-	}
 	// Edge/vertex intersection for touching polygons.
 	for _, ar := range a {
 		for i := 0; i < len(ar); i++ {

@@ -89,3 +89,25 @@ func TestParseODBAuthoritativeNetGeometry(t *testing.T) {
 		t.Fatal("drill geometry was not parsed")
 	}
 }
+
+func TestParseODB3V3Area(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "test", "test-3.tgz"))
+	if err != nil {
+		t.Skipf("ODB++ fixture unavailable: %v", err)
+	}
+	parsed, err := ParseODB(data, []string{"Top Layer", "Bottom Layer"}, map[string]bool{"3V3": true})
+	if err != nil {
+		t.Fatalf("ParseODB: %v", err)
+	}
+	top, ok := parsed.Layers["Top Layer"]
+	if !ok {
+		t.Fatal("Top Layer missing")
+	}
+	var area float64
+	for i, p := range top.Polygons {
+		if top.NetLabels[i] == "3V3" {
+			area += p.Area()
+		}
+	}
+	t.Logf("Top Layer 3V3 polygons: %d, total area: %f", len(top.Polygons), area)
+}
