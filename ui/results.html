@@ -1170,6 +1170,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   const gndFillVerts = [];
   const gndFillIdx = [];
   const isGndNet = (n) => typeof n === 'string' && n.toUpperCase().includes('GND');
+  const netMatch = (a, b) => typeof a === 'string' && typeof b === 'string' && a.trim().toUpperCase() === b.trim().toUpperCase();
   for (const poly of boardFillPolys) {
     const hasTris = poly.triangles && poly.triangles.length > 0 && poly.vertices && poly.vertices.length > 0;
     if (hasTris) {
@@ -1179,7 +1180,7 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
         if (tri.length >= 3) boardFillIdx.push(base + tri[0], base + tri[1], base + tri[2]);
       }
       // Active overlay (only when net matches and we have a triangulated poly)
-      if (activeNetName && poly.net === activeNetName) {
+      if (activeNetName && netMatch(poly.net, activeNetName)) {
         const activeBase = activeFillVerts.length / 2;
         for (const pt of poly.vertices) activeFillVerts.push(pt[0], pt[1]);
         for (const tri of poly.triangles) {

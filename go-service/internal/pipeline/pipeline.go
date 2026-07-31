@@ -209,7 +209,7 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 	}
 
 	// 3. Coordinate transform
-	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, cfg, outline, d)
+	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, parsedODB.AllLayers, cfg, outline, d)
 	if transform != nil {
 		d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.2f,%.2f)", transform[0], transform[1], transform[2], transform[3]))
 	}
@@ -666,37 +666,89 @@ func logLayerPolygonSummary(layers []*problem.Layer, d *DiagCollector) {
 	}
 }
 
-func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, cfg Config, outline geometry.MultiPolygon, d *DiagCollector) *[4]float64 {
+func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, allCopper map[string]geometry.Layer, cfg Config, outline geometry.MultiPolygon, d *DiagCollector) *[4]float64 {
 	if bounds == nil || len(layers) == 0 {
 		return nil
 	}
-	allBounds := layers[0].Bounds()
-	for i := 1; i < len(layers); i++ {
-		b := layers[i].Bounds()
-		if b.MinX < allBounds.MinX {
-			allBounds.MinX = b.MinX
+
+	// Prefer the full-board copper stencil when available; it covers every
+	// polygon on every layer and gives a board-level bounding box comparable
+	// to the old Gerber flow. Fall back to the selected-net layers.
+	var allBounds geometry.Box
+	hasBounds := false
+	if len(allCopper) > 0 {
+		for _, gl := range allCopper {
+			if len(gl.Polygons) == 0 {
+				continue
+			}
+			b := gl.Polygons.Bounds()
+			if !hasBounds {
+				allBounds = b
+				hasBounds = true
+				continue
+			}
+			if b.MinX < allBounds.MinX {
+				allBounds.MinX = b.MinX
+			}
+			if b.MinY < allBounds.MinY {
+				allBounds.MinY = b.MinY
+			}
+			if b.MaxX > allBounds.MaxX {
+				allBounds.MaxX = b.MaxX
+			}
+			if b.MaxY > allBounds.MaxY {
+				allBounds.MaxY = b.MaxY
+			}
 		}
-		if b.MinY < allBounds.MinY {
-			allBounds.MinY = b.MinY
-		}
-		if b.MaxX > allBounds.MaxX {
-			allBounds.MaxX = b.MaxX
-		}
-		if b.MaxY > allBounds.MaxY {
-			allBounds.MaxY = b.MaxY
+	}
+	if !hasBounds {
+		allBounds = layers[0].Bounds()
+		for i := 1; i < len(layers); i++ {
+			b := layers[i].Bounds()
+			if b.MinX < allBounds.MinX {
+				allBounds.MinX = b.MinX
+			}
+			if b.MinY < allBounds.MinY {
+				allBounds.MinY = b.MinY
+			}
+			if b.MaxX > allBounds.MaxX {
+				allBounds.MaxX = b.MaxX
+			}
+			if b.MaxY > allBounds.MaxY {
+				allBounds.MaxY = b.MaxY
+			}
 		}
 	}
 
-	// EasyEDA PCB primitives, Gerber and IPC-D-356A exports use the same
-	// millimetre coordinate system. Aligning their unrelated bounding-box centres
-	// shifts pads and vias whenever the placed components are not board-centred.
+	easyedaCx := (bounds.MinX + bounds.MaxX) / 2
+	easyedaCy := (bounds.MinY + bounds.MaxY) / 2
+	copperCx := (allBounds.MinX + allBounds.MaxX) / 2
+	copperCy := (allBounds.MinY + allBounds.MaxY) / 2
+	ox := copperCx - easyedaCx
+	oy := copperCy - easyedaCy
+
+	// EasyEDA PCB primitives and ODB++ exports are both supposed to live in the
+	// same millimetre coordinate system. In practice some ODB++ exporters shift
+	// the board away from the design origin, in which case aligning the copper
+	// centroid with the EasyEDA pad/via centroid brings the overlay back onto
+	// the PCB canvas. If the centroids already agree (within tolerance) keep
+	// the transform identity to avoid jittering perfectly aligned boards.
+	tol := 0.001
+	if math.Abs(ox) < tol && math.Abs(oy) < tol {
+		d.Info(fmt.Sprintf("EasyEDA bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
+			bounds.MinX, bounds.MaxX, bounds.MinY, bounds.MaxY))
+		d.Info(fmt.Sprintf("ODB bounds:    X=[%.2f,%.2f] Y=[%.2f,%.2f]",
+			allBounds.MinX, allBounds.MaxX, allBounds.MinY, allBounds.MaxY))
+		d.Info("Transform: shared EasyEDA/ODB coordinates, using identity")
+		return &[4]float64{1, 1, 0, 0}
+	}
+
 	d.Info(fmt.Sprintf("EasyEDA bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		bounds.MinX, bounds.MaxX, bounds.MinY, bounds.MaxY))
-	d.Info(fmt.Sprintf("Gerber bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
+	d.Info(fmt.Sprintf("ODB bounds:    X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		allBounds.MinX, allBounds.MaxX, allBounds.MinY, allBounds.MaxY))
-	d.Info("Transform: shared EasyEDA/Gerber coordinates, using identity")
-
-	return &[4]float64{1, 1, 0, 0}
+	d.Info(fmt.Sprintf("Transform: scale=(1.0000,1.0000), offset=(%.4f,%.4f)", ox, oy))
+	return &[4]float64{1, 1, ox, oy}
 }
 
 type orientPoint struct {
