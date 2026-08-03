@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"math"
+
 	"github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
 )
 
@@ -56,4 +58,22 @@ func transformPoint(x, y float64, transform *[4]float64) geometry.Point {
 		return geometry.Point{X: x, Y: y}
 	}
 	return geometry.Point{X: x*transform[0] + transform[2], Y: y*transform[1] + transform[3]}
+}
+
+// distanceToSegment returns the shortest Euclidean distance from p to the
+// line segment a-b.
+func distanceToSegment(p, a, b geometry.Point) float64 {
+	dx := b.X - a.X
+	dy := b.Y - a.Y
+	if dx == 0 && dy == 0 {
+		return math.Hypot(p.X-a.X, p.Y-a.Y)
+	}
+	t := ((p.X-a.X)*dx + (p.Y-a.Y)*dy) / (dx*dx + dy*dy)
+	if t < 0 {
+		return math.Hypot(p.X-a.X, p.Y-a.Y)
+	}
+	if t > 1 {
+		return math.Hypot(p.X-b.X, p.Y-b.Y)
+	}
+	return math.Hypot(p.X-(a.X+t*dx), p.Y-(a.Y+t*dy))
 }

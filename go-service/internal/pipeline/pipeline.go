@@ -73,8 +73,32 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 	if err != nil {
 		return nil, d, fmt.Errorf("ODB++ parse failed: %w", err)
 	}
-	parsed := parsedODB.Layers
 
+	// Build the layer ID -> name map early; it is needed by the live-geometry
+	// net-label override below.
+	layerIDToName := make(map[int]string)
+	for _, lc := range cfg.Layers {
+		layerIDToName[lc.LayerID] = lc.Name
+	}
+
+	// 2. Coordinate transform.  Compute it as soon as ODB++ bounds are available
+	// so live EasyEDA geometry can be aligned with ODB++ polygons for net
+	// label override.
+	transform := computeCoordinateTransform(cfg.EasyEDABounds, nil, parsedODB.AllLayers, cfg, nil, d)
+	if transform != nil {
+		d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.2f,%.2f)", transform[0], transform[1], transform[2], transform[3]))
+	}
+
+	// 2a. Override ODB++ net labels using live copper pour geometry from the
+	// EasyEDA canvas.  ODB++ only annotates a subset of features; the override
+	// labels otherwise-unlabeled polygons that fall inside a live pour so the
+	// preview and solver see the correct net.
+	overrideNetLabelsWithLiveGeometry(parsedODB, cfg.CopperPours, cfg.Pads, cfg.Tracks, layerIDToName, transform, d)
+	// Re-propagate so the newly-seeded labels spread to touching polygons.
+	repropagateNetLabels(parsedODB, layerNames, targetNets, d)
+
+	// Now build the solver layers from the (possibly corrected) ODB++ data.
+	parsed := parsedODB.Layers
 	var layers []*problem.Layer
 	for _, lc := range cfg.Layers {
 		gl, ok := parsed[lc.Name]
@@ -208,21 +232,11 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 		d.Info(fmt.Sprintf("Step 2c (AllCopper drill subtract) done in %v", time.Since(tAllCopper)))
 	}
 
-	// 3. Coordinate transform
-	transform := computeCoordinateTransform(cfg.EasyEDABounds, layers, parsedODB.AllLayers, cfg, outline, d)
-	if transform != nil {
-		d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.2f,%.2f)", transform[0], transform[1], transform[2], transform[3]))
-	}
-
 	// 4. Build stackup
 	stackup := buildStackup(cfg.LayerCuThickness, layers)
 
 	// ODB++ already assigns every selected copper feature to its authoritative net.
 	d.Info("Step 2b: Use authoritative ODB++ polygon nets")
-	layerIDToName := make(map[int]string)
-	for _, lc := range cfg.Layers {
-		layerIDToName[lc.LayerID] = lc.Name
-	}
 	logLayerPolygonSummary(layers, d)
 
 	// Merge polygons that share the same inferred net so electrically connected
@@ -667,7 +681,7 @@ func logLayerPolygonSummary(layers []*problem.Layer, d *DiagCollector) {
 }
 
 func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, allCopper map[string]geometry.Layer, cfg Config, outline geometry.MultiPolygon, d *DiagCollector) *[4]float64 {
-	if bounds == nil || len(layers) == 0 {
+	if bounds == nil || (len(layers) == 0 && len(allCopper) == 0) {
 		return nil
 	}
 
@@ -897,6 +911,207 @@ func subtractDrillHolesFromCopper(polygons geometry.MultiPolygon, netLabels []st
 		}
 	}
 	return punched, labels, nil
+}
+
+// transformPointRing maps every point of a ring from EasyEDA space to geometry
+// space using the transform tuple computed by computeCoordinateTransform.
+func transformPointRing(ring geometry.Ring, transform *[4]float64) geometry.Ring {
+	if transform == nil {
+		return ring
+	}
+	out := make(geometry.Ring, len(ring))
+	for i, p := range ring {
+		out[i] = transformPoint(p.X, p.Y, transform)
+	}
+	return out
+}
+
+// overrideNetLabelsWithLiveGeometry labels otherwise-unlabeled ODB++ polygons
+// using live copper pour geometry from EasyEDA.  This fixes preview/solver
+// mismatches when the ODB++ exporter omits net labels for some features.
+func overrideNetLabelsWithLiveGeometry(
+	odb *geometry.ODBData,
+	copperPours []CopperPour,
+	pads []Pad,
+	tracks []Track,
+	layerIDToName map[int]string,
+	transform *[4]float64,
+	d *DiagCollector,
+) {
+	if len(copperPours) == 0 && len(pads) == 0 && len(tracks) == 0 {
+		return
+	}
+
+	type livePour struct {
+		net  string
+		poly geometry.Polygon
+	}
+	poursByLayer := make(map[string][]livePour)
+	for _, cp := range copperPours {
+		layerName := layerIDToName[cp.Layer]
+		if layerName == "" {
+			continue
+		}
+		path := transformPointRing(cp.Path, transform)
+		holes := make([]geometry.Ring, len(cp.Holes))
+		for i, h := range cp.Holes {
+			holes[i] = transformPointRing(h, transform)
+		}
+		poly := append(geometry.Polygon{path}, holes...)
+		poursByLayer[layerName] = append(poursByLayer[layerName], livePour{net: cp.Net, poly: poly})
+	}
+
+	type padHint struct {
+	net string
+	pt  geometry.Point
+	 tol float64
+	}
+	padsByLayer := make(map[string][]padHint)
+	for _, p := range pads {
+		layerName := p.Layer
+		if layerName == "" {
+			continue
+		}
+		pt := transformPoint(p.X, p.Y, transform)
+		padsByLayer[layerName] = append(padsByLayer[layerName], padHint{net: p.Net, pt: pt, tol: 0.25})
+	}
+
+	type trackHint struct {
+	net    string
+	a      geometry.Point
+	b      geometry.Point
+	radius float64
+	}
+	tracksByLayer := make(map[string][]trackHint)
+	for _, t := range tracks {
+		layerName := layerIDToName[t.Layer]
+		if layerName == "" {
+			continue
+		}
+		a := transformPoint(t.X1, t.Y1, transform)
+		b := transformPoint(t.X2, t.Y2, transform)
+		tracksByLayer[layerName] = append(tracksByLayer[layerName], trackHint{net: t.Net, a: a, b: b, radius: t.Width / 2})
+	}
+
+	overrideLayer := func(name string, layer *geometry.Layer) {
+		pours := poursByLayer[name]
+		ps := padsByLayer[name]
+		trs := tracksByLayer[name]
+		if len(pours) == 0 && len(ps) == 0 && len(trs) == 0 {
+			return
+		}
+		if layer.NetLabels == nil {
+			layer.NetLabels = make([]string, len(layer.Polygons))
+		}
+		updated := 0
+		for i, poly := range layer.Polygons {
+			if i < len(layer.NetLabels) && layer.NetLabels[i] != "" {
+				continue
+			}
+			pt := polygonCentroid(poly)
+			label := ""
+			for _, pour := range pours {
+				if pointInPolygonMesh(pt, pour.poly) {
+					label = pour.net
+					break
+				}
+			}
+			if label == "" {
+				for _, p := range ps {
+					if math.Hypot(pt.X-p.pt.X, pt.Y-p.pt.Y) <= p.tol {
+						label = p.net
+						break
+					}
+				}
+			}
+			if label == "" {
+				for _, t := range trs {
+					dist := distanceToSegment(pt, t.a, t.b)
+					if dist <= t.radius+0.05 {
+						label = t.net
+						break
+					}
+				}
+			}
+			if label != "" {
+				layer.NetLabels[i] = label
+				updated++
+			}
+		}
+		if updated > 0 && d != nil {
+			d.Info(fmt.Sprintf("Live geometry override: layer '%s' labeled %d polygon(s)", name, updated))
+		}
+	}
+
+	for name, layer := range odb.AllLayers {
+		overrideLayer(name, &layer)
+		odb.AllLayers[name] = layer
+	}
+	for name, layer := range odb.Layers {
+		overrideLayer(name, &layer)
+		odb.Layers[name] = layer
+	}
+}
+
+// repropagateNetLabels re-runs net label propagation after live-geometry seeds
+// have been added, then rebuilds the selected-net Layers from AllLayers using
+// the target net filter.
+func repropagateNetLabels(odb *geometry.ODBData, layerNames []string, targetNets map[string]bool, d *DiagCollector) {
+	if len(layerNames) == 0 {
+		return
+	}
+	polys := make(map[string]geometry.MultiPolygon)
+	labels := make(map[string][]string)
+	for _, name := range layerNames {
+		layer, ok := odb.AllLayers[name]
+		if !ok {
+			continue
+		}
+		polys[name] = layer.Polygons
+		labels[name] = layer.NetLabels
+	}
+	newLabels := geometry.PropagateNetLabelsWithVias(layerNames, polys, labels, odb.DrillPoints, nil)
+	for _, name := range layerNames {
+		layer, ok := odb.AllLayers[name]
+		if !ok {
+			continue
+		}
+		layer.NetLabels = newLabels[name]
+		odb.AllLayers[name] = layer
+	}
+
+	// Rebuild Layers from the corrected AllLayers, filtering by target nets.
+	for _, name := range layerNames {
+		allLayer, ok := odb.AllLayers[name]
+		if !ok {
+			continue
+		}
+		var selectedPolys geometry.MultiPolygon
+		var selectedLabels []string
+		for i, poly := range allLayer.Polygons {
+			label := ""
+			if i < len(allLayer.NetLabels) {
+				label = allLayer.NetLabels[i]
+			}
+			if targetNets != nil && !targetNets[label] {
+				continue
+			}
+			selectedPolys = append(selectedPolys, poly)
+			selectedLabels = append(selectedLabels, label)
+		}
+		if len(selectedPolys) > 0 {
+			odb.Layers[name] = geometry.Layer{
+				Name:      name,
+				Polygons:  selectedPolys,
+				NetLabels: selectedLabels,
+			}
+		} else {
+			delete(odb.Layers, name)
+		}
+	}
+	if d != nil {
+		d.Info(fmt.Sprintf("Re-propagated net labels across %d layer(s)", len(layerNames)))
+	}
 }
 
 // drillPointsToVias turns ODB++ drill points that are marked as vias into

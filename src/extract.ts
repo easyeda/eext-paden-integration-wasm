@@ -246,6 +246,16 @@ export class PcbExtractor {
 		}
 		catch {}
 
+		// 提取实时铜皮几何，用于后端覆盖/修正 ODB++ 网络标签
+		onProgress?.(75);
+		try {
+			await this.extractCopperPours(copperPours);
+			this.diag(`extractCopperPours: ${copperPours.length} 块铜皮`);
+		}
+		catch (e) {
+			this.diag(`extractCopperPours 异常: ${e}`);
+		}
+
 		onProgress?.(80);
 
 		// ODB++ 流水线需要所有铜层：内层通过过孔连接，不一定有直接焊盘。

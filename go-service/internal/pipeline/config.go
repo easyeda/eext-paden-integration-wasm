@@ -1,6 +1,8 @@
 // Package pipeline implements the Gerber-to-solution analysis pipeline.
 package pipeline
 
+import "github.com/easyeda/eext-paden-integration/go-service/internal/geometry"
+
 // LayerConfig describes a copper layer from the frontend.
 type LayerConfig struct {
 	Name        string  `json:"name"`
@@ -68,6 +70,16 @@ type Bounds struct {
 	MaxY float64 `json:"maxY"`
 }
 
+// CopperPour describes live copper geometry read from the EasyEDA canvas.  It
+// is used to override/fix ODB++ polygon net labels when the ODB++ exporter
+// leaves features unlabeled or assigns the wrong net.
+type CopperPour struct {
+	Net   string          `json:"net"`
+	Layer int             `json:"layer"`
+	Path  geometry.Ring   `json:"vertices"`
+	Holes []geometry.Ring `json:"holes"`
+}
+
 // Config is the full frontend configuration.
 type Config struct {
 	ProjectName      string                   `json:"project_name"`
@@ -82,6 +94,7 @@ type Config struct {
 	TempRise         float64                  `json:"temp_rise"`
 	LayerCuThickness map[string]float64       `json:"layer_cu_thickness"`
 	EasyEDABounds    *Bounds                  `json:"easyeda_bounds"`
+	CopperPours      []CopperPour             `json:"copper_pours"`
 }
 
 // EffectiveConductance returns the configured conductance or a default.

@@ -316,6 +316,15 @@ export class PcbDataConverter {
 		}));
 		this.diag(`走线数据转换: ${tracksData.length} 条，第一条: net=${tracksData[0]?.net}, width=${tracksData[0]?.width}mm (原始=${easyedaData.tracks[0]?.width}mil), layer=${tracksData[0]?.layer}`);
 
+		// 实时铜皮几何：用于覆盖/修正 ODB++ 网络标签（mil → mm）
+		const copperPoursData = easyedaData.copperPours.map(cp => ({
+			net: cp.net,
+			layer: cp.layer,
+			vertices: cp.vertices.map(v => ({ x: v.x * this.MIL_TO_MM, y: v.y * this.MIL_TO_MM })),
+			holes: cp.holes.map(h => h.map(v => ({ x: v.x * this.MIL_TO_MM, y: v.y * this.MIL_TO_MM }))),
+		}));
+		this.diag(`铜皮数据转换: ${copperPoursData.length} 块`);
+
 		return {
 			layers: layerConfigs,
 			vias,
@@ -326,6 +335,7 @@ export class PcbDataConverter {
 			gnd_net: gndNet,
 			easyeda_bounds: easyedaBounds,
 			layer_cu_thickness: layerCuThickness,
+			copper_pours: copperPoursData,
 			temp_rise: config.tempRise ?? 10, // 默认 10°C 温升
 			project_name: easyedaData.pads[0]?.net ?? 'pdn-project',
 			generate_images: false,

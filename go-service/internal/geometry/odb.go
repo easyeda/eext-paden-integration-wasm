@@ -143,7 +143,7 @@ func ParseODB(tgzBytes []byte, layerNames []string, targetNets map[string]bool) 
 	// surrounding copper pours and via-connected islands are usually unlabeled.
 	// Without propagation the solver drops large areas of the analysed net and
 	// the viewer omits via-connected islands.
-	propagatedLabels := propagateNetLabelsWithVias(configuredLayers, tmpPolygons, tmpLabels, result.DrillPoints, nil)
+	propagatedLabels := PropagateNetLabelsWithVias(configuredLayers, tmpPolygons, tmpLabels, result.DrillPoints, nil)
 
 	// AllLayers: every copper polygon on the requested layers, with its propagated
 	// net label. Unlabeled copper remains empty-string so the viewer can still
@@ -847,7 +847,7 @@ func propagateNetLabels(polygons MultiPolygon, labels []string) []string {
 // labels a few representative features (pads/traces) with a net name; the
 // surrounding copper pours and via-connected islands on other layers would
 // otherwise be left unlabeled and dropped from the solve / viewer.
-func propagateNetLabelsWithVias(layers []string, polygons map[string]MultiPolygon, labels map[string][]string, drills []DrillPoint, allowedNets map[string]bool) map[string][]string {
+func PropagateNetLabelsWithVias(layers []string, polygons map[string]MultiPolygon, labels map[string][]string, drills []DrillPoint, allowedNets map[string]bool) map[string][]string {
 	type compKey struct {
 		layerIdx int
 		compIdx  int
