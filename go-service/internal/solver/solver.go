@@ -22,7 +22,11 @@ type SolverInfo struct {
 
 // LayerSolution holds solution data for one layer.
 type LayerSolution struct {
-	CompactMeshes       []*mesh.CompactMesh
+	CompactMeshes []*mesh.CompactMesh
+	// MeshNets is parallel to CompactMeshes: the net each mesh belongs to, or ""
+	// when the polygon it came from carried no label. The viewer needs this to
+	// colour only the analysed net instead of the whole copper layer.
+	MeshNets            []string
 	Potentials          [][]float64
 	PowerDensities      [][]float64
 	CurrentDensities    [][][]float64
@@ -284,7 +288,7 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 	logNetworkPotentials(prob, nodeIndexer, v)
 
 	// Produce layer solutions
-	layerSols := produceLayerSolutions(prob, vindex, meshes, meshToLayer, v, disconnected, globalToNew)
+	layerSols := produceLayerSolutions(prob, vindex, meshes, meshToLayer, meshToGeom, v, disconnected, globalToNew)
 	fmt.Printf("[PADEN solver] produceLayerSolutions: %v\n", time.Since(tSolve))
 	fmt.Printf("[PADEN solver] Solve total: %v\n", time.Since(solveStart))
 
@@ -1296,7 +1300,7 @@ func findBestGroundNode(prob *problem.Problem, ni *nodeIndexer) int {
 	return groundIdx
 }
 
-func produceLayerSolutions(prob *problem.Problem, vindex *vertexIndexer, meshes []*mesh.Mesh, meshToLayer []int, v []float64, disconnected [][]*mesh.CompactMesh, globalToNew []int) []*LayerSolution {
+func produceLayerSolutions(prob *problem.Problem, vindex *vertexIndexer, meshes []*mesh.Mesh, meshToLayer []int, meshToGeom [][2]int, v []float64, disconnected [][]*mesh.CompactMesh, globalToNew []int) []*LayerSolution {
 	layerSols := make([]*LayerSolution, len(prob.Layers))
 	for li := range prob.Layers {
 		layerSols[li] = &LayerSolution{}
@@ -1312,6 +1316,14 @@ func produceLayerSolutions(prob *problem.Problem, vindex *vertexIndexer, meshes 
 			potentials[vi] = v[globalToNew[giOrig]]
 		}
 		pd, cd := computePowerCurrent(cm.VertexXY, cm.Triangles, potentials, prob.Layers[li].Conductance)
+		// Carry the net through so the viewer can colour only the analysed rail.
+		meshNet := ""
+		if mi < len(meshToGeom) {
+			if gi := meshToGeom[mi][1]; gi >= 0 && gi < len(prob.Layers[li].NetLabels) {
+				meshNet = prob.Layers[li].NetLabels[gi]
+			}
+		}
+		layerSols[li].MeshNets = append(layerSols[li].MeshNets, meshNet)
 		layerSols[li].CompactMeshes = append(layerSols[li].CompactMeshes, cm)
 		layerSols[li].Potentials = append(layerSols[li].Potentials, potentials)
 		layerSols[li].PowerDensities = append(layerSols[li].PowerDensities, pd)
@@ -1340,6 +1352,45 @@ func produceLayerSolutions(prob *problem.Problem, vindex *vertexIndexer, meshes 
 		}
 		fmt.Printf("[PADEN solver] layer %d result meshes=%d triangles=%d disconnected=%d vrange=[%.4f,%.4f]\n",
 			li, len(ls.CompactMeshes), totalTris, len(ls.DisconnectedCompact), vMin, vMax)
+
+		// Per-net breakdown with each net's own voltage span. The viewer colours
+		// by net now, so this is what tells us whether a rail actually carries a
+		// gradient or is sitting at one flat potential.
+		type netStat struct {
+			meshes   int
+			vLo, vHi float64
+		}
+		stats := map[string]*netStat{}
+		order := []string{}
+		for mi := range ls.CompactMeshes {
+			net := "(unlabeled)"
+			if mi < len(ls.MeshNets) && ls.MeshNets[mi] != "" {
+				net = ls.MeshNets[mi]
+			}
+			s, ok := stats[net]
+			if !ok {
+				s = &netStat{vLo: math.Inf(1), vHi: math.Inf(-1)}
+				stats[net] = s
+				order = append(order, net)
+			}
+			s.meshes++
+			if mi < len(ls.Potentials) {
+				for _, p := range ls.Potentials[mi] {
+					if p < s.vLo {
+						s.vLo = p
+					}
+					if p > s.vHi {
+						s.vHi = p
+					}
+				}
+			}
+		}
+		sort.Strings(order)
+		for _, net := range order {
+			s := stats[net]
+			fmt.Printf("[PADEN solver] layer %d net '%s': meshes=%d vrange=[%.4f,%.4f]\n",
+				li, net, s.meshes, s.vLo, s.vHi)
+		}
 	}
 
 	return layerSols

@@ -87,6 +87,8 @@ export interface MeshTriangle {
 export interface SerializedMesh {
 	vertices: SerializedPoint[];
 	triangles: MeshTriangle[];
+	/** 网格所属网络，空串表示未知 */
+	net?: string;
 	potentials: number[];
 	power_densities: number[];
 	current_densities?: [number, number][];
@@ -127,6 +129,8 @@ export interface SerializedSolution {
 export interface MeshData {
 	vertices: Point[];
 	triangles: [number, number, number][];
+	/** 网格所属网络，空串表示未知；结果页据此只渲染目标网络 */
+	net?: string;
 	potentials: number[];
 	powerDensities: number[];
 	currentDensities?: [number, number][];

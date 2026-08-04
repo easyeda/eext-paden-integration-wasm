@@ -472,6 +472,34 @@ let networkInfoData = [];
 let pcbLayerColors = {}; // EasyEDA layer name → 'RRGGBB' for copper context fill
 let activeNetName = null; // name of the currently analysed net; null = "全部" view (no overlay)
 let vccVoltage = 1.2;
+
+const sameNetName = (a, b) => typeof a === 'string' && typeof b === 'string'
+  && a.trim().toUpperCase() === b.trim().toUpperCase();
+
+// Does this mesh carry the rail being analysed, as opposed to the ground return?
+//
+// Prefer the net label the backend now attaches to every mesh. The old test --
+// "max potential below 30% of Vcc means ground" -- infers the net from the very
+// numbers it is meant to help interpret, so it fails in both directions: a short
+// lifted the ground plane to 1.99 V and it got painted as rail copper, and an
+// unpowered rail sitting at 0 V disappeared entirely. Fall back to the heuristic
+// only for results serialised before the net field existed.
+function meshIsRail(m, vcc) {
+  const net = m && typeof m.net === 'string' ? m.net.trim() : '';
+  if (net !== '') {
+    if (activeNetName) return sameNetName(net, activeNetName);
+    // "全部" view: every configured rail counts, the ground return does not.
+    for (const ni of networkInfoData) {
+      if (ni && sameNetName(net, ni.name)) return true;
+    }
+    return false;
+  }
+  let mMax = -Infinity;
+  for (const p of (m && m.potentials ? m.potentials : [])) {
+    if (p != null && isFinite(p) && p > mMax) mMax = p;
+  }
+  return mMax >= vcc * 0.3;
+}
 let currentLayerIdx = 0;
 let layerNamesList = [];
 let layerVisible = [];
@@ -831,17 +859,13 @@ function buildAllLayerBuffers() {
     return;  // Skip WebGL buffer building
   }
 
-  // Compute global voltage range across ALL layers — exclude GND meshes
+  // Compute global voltage range over rail meshes only, so the colour scale
+  // spans the actual IR drop rather than the whole 0 V..Vcc gap between rail
+  // and ground return.
   let globalVMin = Infinity, globalVMax = -Infinity;
   for (let li = 0; li < resultData.layerSolutions.length; li++) {
     for (const m of resultData.layerSolutions[li].meshes) {
-      // Use max potential to decide whether a mesh belongs to a GND net.
-      // Averaging hides mixed source/GND meshes whose max is still above GND.
-      let mMax = -Infinity;
-      for (const p of m.potentials) {
-        if (p != null && isFinite(p) && p > mMax) mMax = p;
-      }
-      if (mMax < vccVoltage * 0.3) continue;
+      if (!meshIsRail(m, vccVoltage)) continue;
       for (const p of m.potentials) {
         if (p != null && isFinite(p)) {
           if (p < globalVMin) globalVMin = p;
@@ -853,15 +877,11 @@ function buildAllLayerBuffers() {
   meshDiagLines.push(`[电压范围计算] VCC电压=${vccVoltage.toFixed(2)}V, 全局电压范围=[${globalVMin === Infinity ? '未计算' : globalVMin.toFixed(4)}, ${globalVMax === -Infinity ? '未计算' : globalVMax.toFixed(4)}]V, 网络数量=${networkInfoData.length}`);
   if (globalVMin === Infinity) { globalVMin = 0; globalVMax = 1; }
 
-  // Compute global power density range across ALL layers — exclude GND meshes
+  // Compute global power density range across ALL layers — rail meshes only
   let globalPdMin = Infinity, globalPdMax = -Infinity;
   for (let li = 0; li < resultData.layerSolutions.length; li++) {
     for (const m of resultData.layerSolutions[li].meshes) {
-      let mMax = -Infinity;
-      for (const p of m.potentials) {
-        if (p != null && isFinite(p) && p > mMax) mMax = p;
-      }
-      if (mMax < vccVoltage * 0.3) continue;
+      if (!meshIsRail(m, vccVoltage)) continue;
       const pd = m.powerDensities || [];
       for (const v of pd) {
         if (v != null && isFinite(v) && v > 0) {
@@ -873,13 +893,11 @@ function buildAllLayerBuffers() {
   }
   if (globalPdMin === Infinity) { globalPdMin = 0; globalPdMax = 1; }
 
-  // Compute global GND power density range — only GND meshes
+  // Compute global GND power density range — ground-return meshes only
   let globalGndPdMin = Infinity, globalGndPdMax = -Infinity;
   for (let li = 0; li < resultData.layerSolutions.length; li++) {
     for (const m of resultData.layerSolutions[li].meshes) {
-      let mMax = -Infinity;
-      for (const p of m.potentials) { if (p != null && isFinite(p) && p > mMax) mMax = p; }
-      if (mMax >= vccVoltage * 0.3) continue; // Skip VCC meshes
+      if (meshIsRail(m, vccVoltage)) continue;
       const pd = m.powerDensities || [];
       for (const v of pd) {
         if (v != null && isFinite(v) && v > 0) {
@@ -1412,11 +1430,14 @@ function buildLayerBuffers(ls, li, globalVMin, globalVMax, globalPdMin, globalPd
   const gndLogMin = globalGndPdMin > 0 ? Math.log10(globalGndPdMin) : (globalGndPdMax > 0 ? Math.log10(globalGndPdMax) - 1 : -50);
   const gndLogMax = globalGndPdMax > 0 ? Math.log10(globalGndPdMax) : (globalGndPdMin > 0 ? Math.log10(globalGndPdMin) + 1 : -50);
   const gndLogRange = gndLogMax - gndLogMin;
+  // meshIsGnd[mi] means "not the rail being analysed" — the ground return, and
+  // in a single-net view any other rail too. meshVoltageRanges is built in the
+  // same loop over ls.meshes, so mi indexes both.
   const meshIsGnd = [];
   const gndPdVerts = new Float32Array(powerDensities.length * 3);
   for (let mi = 0; mi < meshVoltageRanges.length; mi++) {
     const mvr = meshVoltageRanges[mi];
-    const isGnd = mvr.vMax < vccVoltage * 0.3;
+    const isGnd = !meshIsRail(ls.meshes[mi], vccVoltage);
     meshIsGnd.push(isGnd);
     for (let i = 0; i < mvr.count; i++) {
       const idx = mvr.start + i;
@@ -2275,6 +2296,19 @@ function findNetworkNameAt(wx, wy, layerIdx) {
       const lb = ((cy-ay)*(wx-cx) + (ax-cx)*(wy-cy)) / denom;
       const lc = 1 - la - lb;
       if (la >= -0.001 && lb >= -0.001 && lc >= -0.001) {
+        // The backend labels every mesh with its net, so report that instead of
+        // guessing from the potential the cursor happens to sit at. Voltage
+        // matching mislabels copper whenever the solve is off, and it named the
+        // ground plane as a rail while a rail resting at 0 V read as ground.
+        const meshNet = typeof m.net === 'string' ? m.net.trim() : '';
+        if (meshNet !== '') {
+          if (meshNet.toUpperCase().includes('GND')) return meshNet;
+          for (const ni of networkInfoData) {
+            if (ni.gnd_net && sameNetName(ni.gnd_net, meshNet)) return meshNet + ' (GND)';
+          }
+          return meshNet;
+        }
+
         // Interpolate voltage at the cursor position for accurate net detection.
         const va = m.potentials[tv[0]], vb = m.potentials[tv[1]], vc = m.potentials[tv[2]];
         if (va == null || vb == null || vc == null) continue;

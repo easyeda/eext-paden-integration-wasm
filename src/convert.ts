@@ -353,6 +353,7 @@ export class PcbDataConverter {
 				meshes: (ls?.meshes ?? []).map(m => ({
 					vertices: (m?.vertices ?? []).map(p => ({ x: p[0], y: p[1] })),
 					triangles: (m?.triangles ?? []).map(t => [t.vertices[0], t.vertices[1], t.vertices[2]]),
+					net: m?.net ?? '',
 					potentials: m?.potentials ?? [],
 					powerDensities: m?.power_densities ?? [],
 					currentDensities: m?.current_densities || [],

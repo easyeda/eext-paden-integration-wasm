@@ -35,11 +35,15 @@ type MeshTriangleOutput struct {
 
 // MeshOutput matches Python's MeshOutput.
 type MeshOutput struct {
-	Vertices         [][]float64          `json:"vertices"`
-	Triangles        []MeshTriangleOutput `json:"triangles"`
-	Potentials       []float64            `json:"potentials"`
-	PowerDensities   []float64            `json:"power_densities"`
-	CurrentDensities [][]float64          `json:"current_densities"`
+	Vertices  [][]float64          `json:"vertices"`
+	Triangles []MeshTriangleOutput `json:"triangles"`
+	// Net is the net this mesh belongs to, "" when unknown. Without it the
+	// viewer cannot tell a rail mesh from a ground-plane mesh, so it colours the
+	// entire copper layer instead of the analysed net.
+	Net              string      `json:"net"`
+	Potentials       []float64   `json:"potentials"`
+	PowerDensities   []float64   `json:"power_densities"`
+	CurrentDensities [][]float64 `json:"current_densities"`
 }
 
 // DisconnectedMeshOutput matches Python's DisconnectedMeshOutput.
@@ -162,9 +166,14 @@ func serializeLayerSolutions(sol *solver.Solution, transform *[4]float64) []Laye
 			if mi < len(ls.Potentials) {
 				pot = ls.Potentials[mi]
 			}
+			meshNet := ""
+			if mi < len(ls.MeshNets) {
+				meshNet = ls.MeshNets[mi]
+			}
 			lso.Meshes = append(lso.Meshes, MeshOutput{
 				Vertices:         vertices,
 				Triangles:        triangles,
+				Net:              meshNet,
 				Potentials:       sanitizeFloats(pot),
 				PowerDensities:   sanitizeFloats(pd),
 				CurrentDensities: sanitizeFloatsVec(cd),
