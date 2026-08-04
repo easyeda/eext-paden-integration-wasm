@@ -22,3 +22,8 @@
 .eslintcache
 debug.log
 test/
+docs/
+.claude/
+.github/
+CLAUDE.md
+
