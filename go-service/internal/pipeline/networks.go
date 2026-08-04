@@ -188,7 +188,26 @@ func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stac
 			nearestA, okA := findViaSnapPoint(spec.Point, a.layer, net)
 			nearestB, okB := findViaSnapPoint(spec.Point, b.layer, net)
 			if !okA || !okB {
-				d.Info(fmt.Sprintf("Via '%s' (%.3f,%.3f): no '%s' copper on layer pair '%s'/'%s'", net, spec.Point.X, spec.Point.Y, net, a.layer.Name, b.layer.Name))
+				// Name the side that failed and why. Reporting only the layer
+				// pair leaves it ambiguous whether the net has no copper there,
+				// whether the area floor rejected it, or whether the copper is
+				// merely distant -- which are three different bugs.
+				side := "both layers"
+				var why string
+				switch {
+				case !okA && okB:
+					side = fmt.Sprintf("'%s'", a.layer.Name)
+					why = describeViaSnapFailure(spec.Point, a.layer, net)
+				case okA && !okB:
+					side = fmt.Sprintf("'%s'", b.layer.Name)
+					why = describeViaSnapFailure(spec.Point, b.layer, net)
+				default:
+					why = fmt.Sprintf("'%s': %s; '%s': %s",
+						a.layer.Name, describeViaSnapFailure(spec.Point, a.layer, net),
+						b.layer.Name, describeViaSnapFailure(spec.Point, b.layer, net))
+				}
+				d.Info(fmt.Sprintf("Via '%s' (%.3f,%.3f): cannot attach on %s (pair '%s'/'%s') -- %s",
+					net, spec.Point.X, spec.Point.Y, side, a.layer.Name, b.layer.Name, why))
 				continue
 			}
 
@@ -371,6 +390,41 @@ func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet 
 		}
 	}
 	return best.pt, true
+}
+
+// describeViaSnapFailure explains why findViaSnapPoint could not attach a via to
+// a layer: no polygon carries the net, the ones that do are all below the area
+// floor, or the nearest same-net copper is simply far away. Only called on the
+// failure path, so the extra scan costs nothing in the common case.
+func describeViaSnapFailure(pt geometry.Point, layer *problem.Layer, targetNet string) string {
+	sameNet, passArea := 0, 0
+	minDist := math.Inf(1)
+	var largest float64
+	for i, poly := range layer.Shape {
+		if !polygonMatchesNet(layer, i, targetNet) {
+			continue
+		}
+		sameNet++
+		if a := polygonArea(poly); a > largest {
+			largest = a
+		}
+		if polygonArea(poly) >= viaMinPolygonAreaIn2 {
+			passArea++
+		}
+		for _, ring := range poly {
+			for j := 0; j < len(ring); j++ {
+				np := nearestPointOnSegment(pt, ring[j], ring[(j+1)%len(ring)])
+				if dd := math.Hypot(np.X-pt.X, np.Y-pt.Y); dd < minDist {
+					minDist = dd
+				}
+			}
+		}
+	}
+	if sameNet == 0 {
+		return fmt.Sprintf("no '%s' polygon among %d on this layer", targetNet, len(layer.Shape))
+	}
+	return fmt.Sprintf("%d '%s' polygon(s), %d above the %.5f in^2 floor (largest %.5f), nearest boundary %.4f in",
+		sameNet, targetNet, passArea, viaMinPolygonAreaIn2, largest, minDist)
 }
 
 // findViaSnapPoint snaps a via to same-net copper on a layer. It first accepts
