@@ -219,10 +219,19 @@ func buildViaNetworks(specs []viaSpec, layerDict map[string]*problem.Layer, stac
 	return networks
 }
 
-func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerIDToName map[int]string, transform *[4]float64, d *DiagCollector) []*problem.Network {
+func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerIDToName map[int]string, transform *[4]float64, targetNets map[string]bool, d *DiagCollector) []*problem.Network {
 	var networks []*problem.Network
+	offNet := 0
 	for _, t := range cfg.Tracks {
 		if t.Net == "" || t.Width <= 0 {
+			continue
+		}
+		// Tracks on nets outside the analysis have no copper of their own in
+		// layerDict, so snapping would fall back to whatever copper is nearest
+		// and stamp a near-zero resistor between unrelated rails (e.g. shorting
+		// 3V3 to GND).  Skip them outright.
+		if targetNets != nil && !targetNets[t.Net] {
+			offNet++
 			continue
 		}
 		layerName := layerIDToName[t.Layer]
@@ -235,8 +244,8 @@ func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerID
 		}
 		p1 := transformPoint(t.X1, t.Y1, transform)
 		p2 := transformPoint(t.X2, t.Y2, transform)
-		nearest1, ok1 := findNearestPointOnLayer(p1, layer, t.Net)
-		nearest2, ok2 := findNearestPointOnLayer(p2, layer, t.Net)
+		nearest1, ok1 := findNearestPointOnLayer(p1, layer, t.Net, true)
+		nearest2, ok2 := findNearestPointOnLayer(p2, layer, t.Net, true)
 		if !ok1 || !ok2 {
 			in1, label1 := pointInAnyPolygon(p1, layer)
 			in2, label2 := pointInAnyPolygon(p2, layer)
@@ -270,14 +279,32 @@ func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerID
 		}
 		networks = append(networks, net)
 	}
+	if offNet > 0 {
+		d.Info(fmt.Sprintf("Track networks: skipped %d track(s) on non-analysis nets", offNet))
+	}
 	return networks
 }
 
-// Small same-net polygons around drills can be isolated annular rings rather than connected pours.
-const viaMinPolygonAreaMM2 = 1.0
+// Small same-net polygons around drills can be isolated annular rings rather
+// than connected pours.  polygonArea() works in the ODB++ coordinate space,
+// which is inches, so the threshold must be in in^2 -- using a raw 1.0 here
+// meant 645 mm^2, larger than most boards, which rejected every candidate and
+// left vias unconnected.
+const viaMinPolygonAreaIn2 = 1.0 / 645.16 // 1 mm^2
 
-// findNearestPointOnLayer snaps a terminal to same-net copper, falling back to any net.
-func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet string) (geometry.Point, bool) {
+// padSnapTolIn bounds how far a pad may be pulled to reach copper.  A pad only
+// needs to bridge the clearance gap to its pour, or -- for a THT pad sitting in
+// a punched hole -- the hole radius, so ~1 mm covers both with margin.  The
+// coordinate space is inches: a raw 0.5 meant 12.7 mm, a quarter of a 51 mm
+// board, which let pads snap onto foreign nets and shorted rails together
+// through the ideal 0 V sources that tie the pads of one net into one node.
+const padSnapTolIn = 1.0 / 25.4 // 1 mm
+
+// findNearestPointOnLayer snaps a terminal to same-net copper.  When strict is
+// false it falls back to the nearest copper of any net, which is what THT pads
+// sitting inside a pour hole rely on.  Callers that would create a bogus
+// electrical path by bridging two different nets must pass strict=true.
+func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet string, strict bool) (geometry.Point, bool) {
 	// Exact containment in a polygon of the requested net.
 	for i, poly := range layer.Shape {
 		if !polygonMatchesNet(layer, i, targetNet) {
@@ -324,7 +351,7 @@ func findNearestPointOnLayer(pt geometry.Point, layer *problem.Layer, targetNet 
 	}
 
 	bestCandidates := candidates(targetNet)
-	if len(bestCandidates) == 0 && targetNet != "" {
+	if len(bestCandidates) == 0 && targetNet != "" && !strict {
 		bestCandidates = candidates("")
 	}
 	if len(bestCandidates) == 0 {
@@ -362,7 +389,7 @@ func findViaSnapPoint(pt geometry.Point, layer *problem.Layer, targetNet string)
 	}
 	best := candidate{dist: math.Inf(1)}
 	for i, poly := range layer.Shape {
-		if !polygonMatchesNet(layer, i, targetNet) || polygonArea(poly) < viaMinPolygonAreaMM2 {
+		if !polygonMatchesNet(layer, i, targetNet) || polygonArea(poly) < viaMinPolygonAreaIn2 {
 			continue
 		}
 		for _, ring := range poly {
@@ -450,12 +477,20 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 			if pointOnLayer(p, l, pad.Net) {
 				c = problem.NewConnection(l, p)
 			} else {
-				nearest, ok := findNearestPointOnLayer(p, l, pad.Net)
+				nearest, ok := findNearestPointOnLayer(p, l, pad.Net, false)
 				if !ok {
 					return nil
 				}
 				dist := math.Hypot(nearest.X-p.X, nearest.Y-p.Y)
-				if dist > 0.5 {
+				if dist > padSnapTolIn {
+					return nil
+				}
+				// Snapping onto another net's copper shorts the two rails: the
+				// pads of one net are tied together by ideal 0 V sources, so a
+				// single foreign landing drags that whole net to this potential.
+				if in, label := pointInAnyPolygon(nearest, l); in && label != "" && label != pad.Net {
+					d.Warn(fmt.Sprintf("Pad '%s' on '%s' snapped onto '%s' copper at (%.3f,%.3f), dist=%.4f in: rejected to avoid a rail short",
+						pad.Net, l.Name, label, nearest.X, nearest.Y, dist))
 					return nil
 				}
 				c = problem.NewConnection(l, nearest)
@@ -481,14 +516,16 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 			// layers, so connecting to multiple layers is expected; the tolerance
 			// keeps the snap close enough that it lands on the same-net copper.
 			if len(conns) == 0 {
-				const snapTol = 0.5
 				for _, layer := range layerDict {
-					nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net)
+					nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net, false)
 					if !ok {
 						continue
 					}
 					dist := math.Hypot(nearest.X-pt.X, nearest.Y-pt.Y)
-					if dist <= snapTol {
+					if in, label := pointInAnyPolygon(nearest, layer); in && label != "" && label != pad.Net {
+						continue
+					}
+					if dist <= padSnapTolIn {
 						c := problem.NewConnection(layer, nearest)
 						c.Kind = kind
 						conns = append(conns, c)
@@ -502,7 +539,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 				var bestPt geometry.Point
 				bestDist := math.Inf(1)
 				for _, layer := range layerDict {
-					nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net)
+					nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net, false)
 					if !ok {
 						continue
 					}
@@ -529,7 +566,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 			var bestPt geometry.Point
 			bestDist := math.Inf(1)
 			for _, l := range layerDict {
-				nearest, ok := findNearestPointOnLayer(pt, l, pad.Net)
+				nearest, ok := findNearestPointOnLayer(pt, l, pad.Net, false)
 				if !ok {
 					continue
 				}
@@ -550,7 +587,7 @@ func buildUserNetworks(cfg Config, layerDict map[string]*problem.Layer, transfor
 		if c := tryConnect(layer, pt); c != nil {
 			return []*problem.Connection{c}
 		}
-		nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net)
+		nearest, ok := findNearestPointOnLayer(pt, layer, pad.Net, false)
 		if !ok {
 			return nil
 		}

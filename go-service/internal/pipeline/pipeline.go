@@ -93,9 +93,11 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 	// EasyEDA canvas.  ODB++ only annotates a subset of features; the override
 	// labels otherwise-unlabeled polygons that fall inside a live pour so the
 	// preview and solver see the correct net.
-	overrideNetLabelsWithLiveGeometry(parsedODB, cfg.CopperPours, cfg.Pads, cfg.Tracks, layerIDToName, transform, d)
+	logNetCoverage("ODB-before-override", parsedODB, targetNets, d)
+	overrideNetLabelsWithLiveGeometry(parsedODB, cfg.CopperPours, cfg.Pads, cfg.Vias, cfg.Tracks, layerIDToName, transform, targetNets, d)
 	// Re-propagate so the newly-seeded labels spread to touching polygons.
 	repropagateNetLabels(parsedODB, layerNames, targetNets, d)
+	logNetCoverage("ODB-after-override", parsedODB, targetNets, d)
 
 	// Now build the solver layers from the (possibly corrected) ODB++ data.
 	parsed := parsedODB.Layers
@@ -322,7 +324,7 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 	d.Info(fmt.Sprintf("Step 5 (user networks) done in %v", time.Since(t0)))
 	t0 = time.Now()
 	d.Info("Step 5b: Track networks")
-	trackNetworks := buildTrackNetworks(cfg, layerDict, layerIDToName, transform, d)
+	trackNetworks := buildTrackNetworks(cfg, layerDict, layerIDToName, transform, targetNets, d)
 	d.Info(fmt.Sprintf("Track networks: %d", len(trackNetworks)))
 
 	allNetworks := append(viaNetworks, userNetworks...)
@@ -373,10 +375,29 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 
 	gni := sol.SolverInfo.GroundNodeCurrent
 	rn := sol.SolverInfo.ResidualNorm
-	if math.IsNaN(gni) || math.IsNaN(rn) {
-		return nil, d, fmt.Errorf("singular matrix (ground_current=%v, residual=%v)", gni, rn)
+	if math.IsNaN(gni) || math.IsNaN(rn) || math.IsInf(gni, 0) || math.IsInf(rn, 0) {
+		return nil, d, fmt.Errorf("矩阵奇异，无法求解 (ground_current=%v, residual=%v)", gni, rn)
 	}
-	d.Info(fmt.Sprintf("Solve OK: ground_current=%.6e, residual=%.6e", gni, rn))
+
+	// KCL sanity check.  The ground node must return roughly the current that
+	// the loads inject.  A gross mismatch means the assembled circuit is not
+	// the one the user configured -- typically copper of two different rails
+	// bridged by a near-zero resistance -- and the potentials are meaningless
+	// even though the solve itself reported no error.
+	var totalLoad float64
+	for _, ld := range cfg.Loads {
+		totalLoad += math.Abs(ld.Current)
+	}
+	// Deliberately loose: only catch results that are physically absurd, not
+	// merely poorly converged.
+	limit := math.Max(1000*totalLoad, 1.0)
+	if math.Abs(gni) > limit {
+		return nil, d, fmt.Errorf(
+			"求解结果不可信：接地电流 %.3e A 远超负载电流 %.3e A，电路中可能存在短路（残差 %.3e）",
+			gni, totalLoad, rn)
+	}
+
+	d.Info(fmt.Sprintf("Solve OK: ground_current=%.6e, residual=%.6e, total_load=%.6e", gni, rn, totalLoad))
 
 	// Attach diagnostics context and ODB++ drill overlay geometry.
 	drillVias := parsedODB.DrillPoints
@@ -738,31 +759,36 @@ func computeCoordinateTransform(bounds *Bounds, layers []*problem.Layer, allCopp
 	easyedaCy := (bounds.MinY + bounds.MaxY) / 2
 	copperCx := (allBounds.MinX + allBounds.MaxX) / 2
 	copperCy := (allBounds.MinY + allBounds.MaxY) / 2
-	ox := copperCx - easyedaCx
-	oy := copperCy - easyedaCy
 
-	// EasyEDA PCB primitives and ODB++ exports are both supposed to live in the
-	// same millimetre coordinate system. In practice some ODB++ exporters shift
-	// the board away from the design origin, in which case aligning the copper
-	// centroid with the EasyEDA pad/via centroid brings the overlay back onto
-	// the PCB canvas. If the centroids already agree (within tolerance) keep
-	// the transform identity to avoid jittering perfectly aligned boards.
-	tol := 0.001
-	if math.Abs(ox) < tol && math.Abs(oy) < tol {
-		d.Info(fmt.Sprintf("EasyEDA bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
-			bounds.MinX, bounds.MaxX, bounds.MinY, bounds.MaxY))
-		d.Info(fmt.Sprintf("ODB bounds:    X=[%.2f,%.2f] Y=[%.2f,%.2f]",
-			allBounds.MinX, allBounds.MaxX, allBounds.MinY, allBounds.MaxY))
-		d.Info("Transform: shared EasyEDA/ODB coordinates, using identity")
-		return &[4]float64{1, 1, 0, 0}
+	// EasyEDA primitives are always in millimetres. ODB++ archives exported by
+	// EasyEDA Pro are currently in inches. Detect the unit by comparing the
+	// EasyEDA and ODB bounds; if the ODB extent is ~25.4x smaller, treat ODB as
+	// inches and scale EasyEDA coordinates down by 1/25.4 so they map into the
+	// ODB coordinate system.
+	const inchToMm = 25.4
+	scale := 1.0
+	edbWidth := math.Abs(bounds.MaxX - bounds.MinX)
+	edbHeight := math.Abs(bounds.MaxY - bounds.MinY)
+	odbWidth := math.Abs(allBounds.MaxX - allBounds.MinX)
+	odbHeight := math.Abs(allBounds.MaxY - allBounds.MinY)
+	if odbWidth > 0 && odbHeight > 0 {
+		widthRatio := edbWidth / odbWidth
+		heightRatio := edbHeight / odbHeight
+		avgRatio := (widthRatio + heightRatio) / 2
+		if math.Abs(avgRatio-inchToMm) < 5.0 {
+			scale = 1 / inchToMm
+		}
 	}
+
+	ox := copperCx - easyedaCx*scale
+	oy := copperCy - easyedaCy*scale
 
 	d.Info(fmt.Sprintf("EasyEDA bounds: X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		bounds.MinX, bounds.MaxX, bounds.MinY, bounds.MaxY))
 	d.Info(fmt.Sprintf("ODB bounds:    X=[%.2f,%.2f] Y=[%.2f,%.2f]",
 		allBounds.MinX, allBounds.MaxX, allBounds.MinY, allBounds.MaxY))
-	d.Info(fmt.Sprintf("Transform: scale=(1.0000,1.0000), offset=(%.4f,%.4f)", ox, oy))
-	return &[4]float64{1, 1, ox, oy}
+	d.Info(fmt.Sprintf("Transform: scale=(%.4f,%.4f), offset=(%.4f,%.4f)", scale, scale, ox, oy))
+	return &[4]float64{scale, scale, ox, oy}
 }
 
 type orientPoint struct {
@@ -926,25 +952,28 @@ func transformPointRing(ring geometry.Ring, transform *[4]float64) geometry.Ring
 	return out
 }
 
-// overrideNetLabelsWithLiveGeometry labels otherwise-unlabeled ODB++ polygons
-// using live copper pour geometry from EasyEDA.  This fixes preview/solver
-// mismatches when the ODB++ exporter omits net labels for some features.
+// overrideNetLabelsWithLiveGeometry labels ODB++ polygons using live copper
+// pour, pad and track geometry from EasyEDA.  This fixes preview/solver
+// mismatches when the ODB++ exporter omits or mis-labels features.
 func overrideNetLabelsWithLiveGeometry(
 	odb *geometry.ODBData,
 	copperPours []CopperPour,
 	pads []Pad,
+	vias []Via,
 	tracks []Track,
 	layerIDToName map[int]string,
 	transform *[4]float64,
+	targetNets map[string]bool,
 	d *DiagCollector,
 ) {
-	if len(copperPours) == 0 && len(pads) == 0 && len(tracks) == 0 {
+	if len(copperPours) == 0 && len(pads) == 0 && len(vias) == 0 && len(tracks) == 0 {
 		return
 	}
 
 	type livePour struct {
 		net  string
 		poly geometry.Polygon
+		bbox geometry.Box
 	}
 	poursByLayer := make(map[string][]livePour)
 	for _, cp := range copperPours {
@@ -958,13 +987,13 @@ func overrideNetLabelsWithLiveGeometry(
 			holes[i] = transformPointRing(h, transform)
 		}
 		poly := append(geometry.Polygon{path}, holes...)
-		poursByLayer[layerName] = append(poursByLayer[layerName], livePour{net: cp.Net, poly: poly})
+		poursByLayer[layerName] = append(poursByLayer[layerName], livePour{net: cp.Net, poly: poly, bbox: poly.Bounds()})
 	}
 
 	type padHint struct {
-	net string
-	pt  geometry.Point
-	 tol float64
+		net string
+		pt  geometry.Point
+		tol float64
 	}
 	padsByLayer := make(map[string][]padHint)
 	for _, p := range pads {
@@ -973,73 +1002,187 @@ func overrideNetLabelsWithLiveGeometry(
 			continue
 		}
 		pt := transformPoint(p.X, p.Y, transform)
-		padsByLayer[layerName] = append(padsByLayer[layerName], padHint{net: p.Net, pt: pt, tol: 0.25})
+		// 0.05 inch ≈ 1.27 mm, enough to cover small pad-adjacent polygons
+		// without flooding nearby unrelated copper.
+		padsByLayer[layerName] = append(padsByLayer[layerName], padHint{net: p.Net, pt: pt, tol: 0.05})
 	}
 
-	type trackHint struct {
-	net    string
-	a      geometry.Point
-	b      geometry.Point
-	radius float64
+	// Build per-layer via points.  ODB++ sometimes leaves via pads unlabeled,
+	// which breaks inter-layer connectivity; label the polygons that contain
+	// each live via so the solver can snap to them.
+	type viaHint struct {
+		net string
+		pt  geometry.Point
 	}
-	tracksByLayer := make(map[string][]trackHint)
+	viasByLayer := make(map[string][]viaHint)
+	for _, v := range vias {
+		if !targetNets[v.Net] {
+			continue
+		}
+		pt := transformPoint(v.X, v.Y, transform)
+		for _, name := range v.LayerNames {
+			viasByLayer[name] = append(viasByLayer[name], viaHint{net: v.Net, pt: pt})
+		}
+	}
+
+	// Build per-layer track sample points.  Sampling along the live track
+	// line labels only the exact ODB++ trace polygons that the track
+	// passes through, avoiding the flooding caused by centroid-distance.
+	type trackSample struct {
+		net string
+		pt  geometry.Point
+	}
+	trackSamplesByLayer := make(map[string][]trackSample)
 	for _, t := range tracks {
+		if !targetNets[t.Net] {
+			continue
+		}
 		layerName := layerIDToName[t.Layer]
 		if layerName == "" {
 			continue
 		}
 		a := transformPoint(t.X1, t.Y1, transform)
 		b := transformPoint(t.X2, t.Y2, transform)
-		tracksByLayer[layerName] = append(tracksByLayer[layerName], trackHint{net: t.Net, a: a, b: b, radius: t.Width / 2})
+		dx := b.X - a.X
+		dy := b.Y - a.Y
+		length := math.Hypot(dx, dy)
+		if length == 0 {
+			continue
+		}
+		step := 0.1 // mm
+		if length < step {
+			trackSamplesByLayer[layerName] = append(trackSamplesByLayer[layerName], trackSample{net: t.Net, pt: a})
+		} else {
+			n := int(math.Ceil(length / step))
+			for k := 0; k <= n; k++ {
+				tt := float64(k) / float64(n)
+				pt := geometry.Point{X: a.X + dx*tt, Y: a.Y + dy*tt}
+				trackSamplesByLayer[layerName] = append(trackSamplesByLayer[layerName], trackSample{net: t.Net, pt: pt})
+			}
+		}
+	}
+
+	if d != nil {
+		pourCount := 0
+		for _, ps := range poursByLayer {
+			pourCount += len(ps)
+		}
+		padCount := 0
+		for _, ps := range padsByLayer {
+			padCount += len(ps)
+		}
+		sampleCount := 0
+		for _, ss := range trackSamplesByLayer {
+			sampleCount += len(ss)
+		}
+		d.Info(fmt.Sprintf("Live geometry hints: %d pours, %d pads, %d track samples", pourCount, padCount, sampleCount))
 	}
 
 	overrideLayer := func(name string, layer *geometry.Layer) {
 		pours := poursByLayer[name]
 		ps := padsByLayer[name]
-		trs := tracksByLayer[name]
-		if len(pours) == 0 && len(ps) == 0 && len(trs) == 0 {
+		trackSamples := trackSamplesByLayer[name]
+		if len(pours) == 0 && len(ps) == 0 && len(trackSamples) == 0 {
 			return
 		}
 		if layer.NetLabels == nil {
 			layer.NetLabels = make([]string, len(layer.Polygons))
 		}
+
+		// labelForPolygon returns the live net label implied by geometry plus a
+		// source tag.  Only pour and pad checks are authoritative here; tracks
+		// are handled by point sampling below.
+		labelForPolygon := func(poly geometry.Polygon) (string, string) {
+			if len(poly) == 0 {
+				return "", ""
+			}
+			centroid := polygonCentroid(poly)
+
+			// 1. Copper pour: polygon centroid sits inside the live pour.
+			for _, pour := range pours {
+				if !pour.bbox.Contains(centroid) {
+					continue
+				}
+				if pointInPolygonMesh(centroid, pour.poly) {
+					return pour.net, "pour"
+				}
+			}
+
+			// 2. Pad: the pad point lies inside the polygon.  Point-in-polygon
+			// handles large pours whose centroid is far from the seeding pad.
+			for _, p := range ps {
+				if pointInPolygonMesh(p.pt, poly) {
+					return p.net, "pad-inside"
+				}
+			}
+
+			// 3. Via: the via landing pad lies inside the polygon.  ODB++ often
+			// omits or mis-labels via pads, so the live via position is the
+			// authoritative hint for inter-layer connectivity.
+			for _, v := range viasByLayer[name] {
+				if pointInPolygonMesh(v.pt, poly) {
+					return v.net, "via-point"
+				}
+			}
+
+			return "", ""
+		}
+
 		updated := 0
+		bySource := map[string]int{}
 		for i, poly := range layer.Polygons {
-			if i < len(layer.NetLabels) && layer.NetLabels[i] != "" {
+			cur := ""
+			if i < len(layer.NetLabels) {
+				cur = layer.NetLabels[i]
+			}
+			live, source := labelForPolygon(poly)
+			if live == "" || !targetNets[live] {
 				continue
 			}
-			pt := polygonCentroid(poly)
-			label := ""
-			for _, pour := range pours {
-				if pointInPolygonMesh(pt, pour.poly) {
-					label = pour.net
-					break
-				}
+			// Keep existing labels unless they are empty or not one of the nets
+			// being analysed.  This prevents a mis-labelled ODB++ polygon from
+			// disappearing from the target net while still preserving labels
+			// that already belong to the analysis.
+			if cur != "" && cur != live && targetNets[cur] {
+				continue
 			}
-			if label == "" {
-				for _, p := range ps {
-					if math.Hypot(pt.X-p.pt.X, pt.Y-p.pt.Y) <= p.tol {
-						label = p.net
-						break
-					}
-				}
-			}
-			if label == "" {
-				for _, t := range trs {
-					dist := distanceToSegment(pt, t.a, t.b)
-					if dist <= t.radius+0.05 {
-						label = t.net
-						break
-					}
-				}
-			}
-			if label != "" {
-				layer.NetLabels[i] = label
+			if cur != live {
+				layer.NetLabels[i] = live
 				updated++
+				if source != "" {
+					bySource[source]++
+				}
 			}
 		}
+
+		// Label trace polygons by sampling points along live tracks.  This
+		// labels the exact trace geometry without touching adjacent large
+		// polygons.
+		if len(trackSamples) > 0 {
+			for _, sample := range trackSamples {
+				for i, poly := range layer.Polygons {
+					cur := ""
+					if i < len(layer.NetLabels) {
+						cur = layer.NetLabels[i]
+					}
+					if cur == sample.net {
+						continue
+					}
+					if cur != "" && targetNets[cur] {
+						continue
+					}
+					if pointInPolygonMesh(sample.pt, poly) {
+						layer.NetLabels[i] = sample.net
+						updated++
+						bySource["track-sample"]++
+						break
+					}
+				}
+			}
+		}
+
 		if updated > 0 && d != nil {
-			d.Info(fmt.Sprintf("Live geometry override: layer '%s' labeled %d polygon(s)", name, updated))
+			d.Info(fmt.Sprintf("Live geometry override: layer '%s' labeled %d polygon(s) %v", name, updated, bySource))
 		}
 	}
 
@@ -1081,6 +1224,7 @@ func repropagateNetLabels(odb *geometry.ODBData, layerNames []string, targetNets
 	}
 
 	// Rebuild Layers from the corrected AllLayers, filtering by target nets.
+	selectedNetCounts := map[string]int{}
 	for _, name := range layerNames {
 		allLayer, ok := odb.AllLayers[name]
 		if !ok {
@@ -1098,6 +1242,9 @@ func repropagateNetLabels(odb *geometry.ODBData, layerNames []string, targetNets
 			}
 			selectedPolys = append(selectedPolys, poly)
 			selectedLabels = append(selectedLabels, label)
+			if label != "" {
+				selectedNetCounts[label]++
+			}
 		}
 		if len(selectedPolys) > 0 {
 			odb.Layers[name] = geometry.Layer{
@@ -1111,6 +1258,66 @@ func repropagateNetLabels(odb *geometry.ODBData, layerNames []string, targetNets
 	}
 	if d != nil {
 		d.Info(fmt.Sprintf("Re-propagated net labels across %d layer(s)", len(layerNames)))
+		if len(selectedNetCounts) > 0 {
+			var parts []string
+			for net, cnt := range selectedNetCounts {
+				parts = append(parts, fmt.Sprintf("%s:%d", net, cnt))
+			}
+			d.Info(fmt.Sprintf("Selected polygon counts: %s", strings.Join(parts, " ")))
+		}
+	}
+}
+
+// logNetCoverage logs per-target-net polygon counts and total area per layer.
+func logNetCoverage(prefix string, odb *geometry.ODBData, targetNets map[string]bool, d *DiagCollector) {
+	if d == nil {
+		return
+	}
+	for name, layer := range odb.AllLayers {
+		counts := map[string]int{}
+		areas := map[string]float64{}
+		var minX, minY, maxX, maxY float64
+		first := true
+		for i, poly := range layer.Polygons {
+			net := ""
+			if i < len(layer.NetLabels) {
+				net = layer.NetLabels[i]
+			}
+			if !targetNets[net] {
+				continue
+			}
+			counts[net]++
+			areas[net] += poly.Area()
+			b := poly.Bounds()
+			if first {
+				minX, minY, maxX, maxY = b.MinX, b.MinY, b.MaxX, b.MaxY
+				first = false
+			} else {
+				if b.MinX < minX {
+					minX = b.MinX
+				}
+				if b.MinY < minY {
+					minY = b.MinY
+				}
+				if b.MaxX > maxX {
+					maxX = b.MaxX
+				}
+				if b.MaxY > maxY {
+					maxY = b.MaxY
+				}
+			}
+		}
+		if len(counts) == 0 {
+			continue
+		}
+		var parts []string
+		for net, cnt := range counts {
+			parts = append(parts, fmt.Sprintf("%s:%d area=%.3f", net, cnt, areas[net]))
+		}
+		if !first {
+			d.Info(fmt.Sprintf("%s layer '%s' net coverage: %s bounds=[%.2f,%.2f]x[%.2f,%.2f]",
+				prefix, name, strings.Join(parts, " "), minX, maxX, minY, maxY))
+		}
 	}
 }
 

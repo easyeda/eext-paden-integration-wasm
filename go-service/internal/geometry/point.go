@@ -59,3 +59,8 @@ func (b Box) Height() float64 {
 func (b Box) Area() float64 {
 	return b.Width() * b.Height()
 }
+
+// Contains reports whether the box contains the given point (inclusive).
+func (b Box) Contains(p Point) bool {
+	return p.X >= b.MinX && p.X <= b.MaxX && p.Y >= b.MinY && p.Y <= b.MaxY
+}
