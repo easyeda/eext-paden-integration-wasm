@@ -388,13 +388,19 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 	for _, ld := range cfg.Loads {
 		totalLoad += math.Abs(ld.Current)
 	}
-	// Deliberately loose: only catch results that are physically absurd, not
-	// merely poorly converged.
+	// Deliberately loose: only catch results that are physically absurd.
+	//
+	// Do not cite ResidualNorm here as evidence. It is measured against the
+	// pre-Dirichlet matrix, so the boundary reaction currents at constrained
+	// nodes make it legitimately large even when CG converged. Reporting it as a
+	// residual reads as "the solve diverged" and sends debugging down the wrong
+	// path; the ground-current imbalance below is the actual KCL violation.
 	limit := math.Max(1000*totalLoad, 1.0)
 	if math.Abs(gni) > limit {
 		return nil, d, fmt.Errorf(
-			"求解结果不可信：接地电流 %.3e A 远超负载电流 %.3e A，电路中可能存在短路（残差 %.3e）",
-			gni, totalLoad, rn)
+			"求解结果不可信：接地回流电流 %.3e A 远超负载电流 %.3e A，"+
+				"说明电路中存在短路（不同网络的铜皮被连成了一体）",
+			math.Abs(gni), totalLoad)
 	}
 
 	d.Info(fmt.Sprintf("Solve OK: ground_current=%.6e, residual=%.6e, total_load=%.6e", gni, rn, totalLoad))

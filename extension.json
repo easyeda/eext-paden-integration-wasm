@@ -3,7 +3,7 @@
 	"uuid": "d1a7827995f44a09b5993afafc430cda",
 	"displayName": "PADEN仿真(WASM版)",
 	"description": "通过Go编写 PADEN 计算逻辑，并在WASM环境中运行，实现 PCB 电源分配网络，DC压降等分析。",
-	"version": "1.1.3",
+	"version": "1.1.4",
 	"publisher": "EasyEDA",
 	"engines": {
 		"eda": "^3.2.0"

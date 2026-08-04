@@ -253,13 +253,18 @@ func buildTrackNetworks(cfg Config, layerDict map[string]*problem.Layer, layerID
 				t.Net, layerName, p1.X, p1.Y, in1, label1, p2.X, p2.Y, in2, label2))
 			continue
 		}
-		d.Info(fmt.Sprintf("Track '%s' on '%s': connected (%.3f,%.3f)->(%.3f,%.3f) via (%.3f,%.3f)->(%.3f,%.3f) R=%.6f",
-			t.Net, layerName, p1.X, p1.Y, p2.X, p2.Y, nearest1.X, nearest1.Y, nearest2.X, nearest2.Y, math.Hypot(p2.X-p1.X, p2.Y-p1.Y)/(layer.Conductance*t.Width)))
-		length := math.Hypot(p2.X-p1.X, p2.Y-p1.Y)
+		// R = (L/W) / (sigma*t) only cancels when L and W share a unit. p1/p2 are
+		// transformed into ODB space (inches) while Width and Conductance come
+		// from the frontend in mm, which understated every track by 25.4x. Take
+		// the length from the untransformed config coordinates, which are mm like
+		// the width, so this holds whatever unit the ODB archive uses.
+		length := math.Hypot(t.X2-t.X1, t.Y2-t.Y1)
 		if length <= 1e-9 {
 			continue
 		}
 		res := length / (layer.Conductance * t.Width)
+		d.Info(fmt.Sprintf("Track '%s' on '%s': connected (%.3f,%.3f)->(%.3f,%.3f) via (%.3f,%.3f)->(%.3f,%.3f) L=%.3fmm R=%.6f",
+			t.Net, layerName, p1.X, p1.Y, p2.X, p2.Y, nearest1.X, nearest1.Y, nearest2.X, nearest2.Y, length, res))
 		if res <= 0 || math.IsInf(res, 0) {
 			continue
 		}

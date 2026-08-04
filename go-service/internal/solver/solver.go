@@ -523,12 +523,15 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 		grid := make(map[cellKey][]int)
 		bounds := make([]geometry.Box, n)
 		vertexCounts := make([]int, n)
-		// Simplify polygons before adjacency testing — Gerber pours ship with
-		// hundreds of collinear vertices that 200× the cost of the O(V×V)
-		// adjacency test. 0.1 mm tolerance is finer than any pad/via pad
-		// radius, so real overlaps still register.
+		// Simplify polygons before adjacency testing — pours ship with hundreds
+		// of collinear vertices that 200× the cost of the O(V×V) adjacency test.
+		// The coordinate space is inches, so a bare 0.1 meant 2.54 mm: whole
+		// pours collapsed to 2-4 vertices, holes vanished, and the crude blobs
+		// left behind reported false adjacency between different nets. Those
+		// components were then meshed as one region, welding rails together
+		// through shared FEM vertices.
 		simplified := make([]geometry.Polygon, n)
-		const simplifyTol = 0.1
+		const simplifyTol = 0.1 / 25.4 // 0.1 mm
 		// Pick a cell size proportional to the median extent — too small and
 		// each polygon lands in many cells (slow insertion), too large and
 		// every polygon collides with every other (back to O(N^2)).
