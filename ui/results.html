@@ -476,17 +476,53 @@ let vccVoltage = 1.2;
 const sameNetName = (a, b) => typeof a === 'string' && typeof b === 'string'
   && a.trim().toUpperCase() === b.trim().toUpperCase();
 
+// Set when at least one mesh label matches a configured net, i.e. selecting by
+// label will actually select something. Net names cross a process boundary here
+// (ODB++ labels on one side, the user's rail config on the other) and have
+// disagreed before, so if they ever do again, selecting by label would mark every
+// mesh as "not the rail", skip all of them in voltage view and leave a blank
+// canvas with nothing explaining why. Fall back to the old heuristic instead.
+let netLabelsUsable = false;
+
+function evaluateNetLabelUsability() {
+  let labelled = 0;
+  let matching = 0;
+  const seen = new Set();
+  for (const ls of (resultData && resultData.layerSolutions ? resultData.layerSolutions : [])) {
+    for (const m of (ls.meshes || [])) {
+      const net = m && typeof m.net === 'string' ? m.net.trim() : '';
+      if (net === '') continue;
+      labelled++;
+      seen.add(net);
+      if (activeNetName) {
+        if (sameNetName(net, activeNetName)) matching++;
+      }
+      else {
+        for (const ni of networkInfoData) {
+          if (ni && sameNetName(net, ni.name)) { matching++; break; }
+        }
+      }
+    }
+  }
+  netLabelsUsable = matching > 0;
+  const msg = `[网络标签] 带标签mesh=${labelled}, 匹配目标网络=${matching}, 标签集=${[...seen].join('/') || '无'}, 目标=${activeNetName || '(全部)'} -> ${netLabelsUsable ? '按标签着色' : '标签不可用，回退到电压判据'}`;
+  console.log('[Results] ' + msg);
+  meshDiagLines.push(msg);
+  if (labelled > 0 && matching === 0) {
+    console.warn('[Results] mesh net labels never match the configured net; colouring by potential instead');
+  }
+}
+
 // Does this mesh carry the rail being analysed, as opposed to the ground return?
 //
-// Prefer the net label the backend now attaches to every mesh. The old test --
-// "max potential below 30% of Vcc means ground" -- infers the net from the very
-// numbers it is meant to help interpret, so it fails in both directions: a short
+// Prefer the net label the backend attaches to every mesh. The old test -- "max
+// potential below 30% of Vcc means ground" -- infers the net from the very
+// numbers it is meant to help interpret, so it failed in both directions: a short
 // lifted the ground plane to 1.99 V and it got painted as rail copper, and an
-// unpowered rail sitting at 0 V disappeared entirely. Fall back to the heuristic
-// only for results serialised before the net field existed.
+// unpowered rail sitting at 0 V disappeared entirely.
 function meshIsRail(m, vcc) {
   const net = m && typeof m.net === 'string' ? m.net.trim() : '';
-  if (net !== '') {
+  if (netLabelsUsable && net !== '') {
     if (activeNetName) return sameNetName(net, activeNetName);
     // "全部" view: every configured rail counts, the ground return does not.
     for (const ni of networkInfoData) {
@@ -858,6 +894,10 @@ function buildAllLayerBuffers() {
     _showLargeMeshWarning(totalVertices);
     return;  // Skip WebGL buffer building
   }
+
+  // Decide once whether mesh net labels can drive the rail/ground split, before
+  // anything calls meshIsRail.
+  evaluateNetLabelUsability();
 
   // Compute global voltage range over rail meshes only, so the colour scale
   // spans the actual IR drop rather than the whole 0 V..Vcc gap between rail
