@@ -411,16 +411,11 @@ func findViaSnapPoint(pt geometry.Point, layer *problem.Layer, targetNet string)
 }
 
 func polygonArea(poly geometry.Polygon) float64 {
-	var area float64
-	for i, ring := range poly {
-		a := ring.Area()
-		if i == 0 {
-			area += a
-		} else {
-			area -= a
-		}
-	}
-	return math.Abs(area)
+	// Ring.Area() is signed and EnsureOrientation leaves holes clockwise, so
+	// "area -= a" used to *add* every hole. That inflated an annular via ring by
+	// ~4.6x -- exactly the shape viaMinPolygonArea exists to reject -- letting
+	// isolated rings pass as if they were real pours.
+	return math.Abs(poly.Area())
 }
 
 // polygonMatchesNet reports whether the polygon at index i should be considered

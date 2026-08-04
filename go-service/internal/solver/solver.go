@@ -1345,16 +1345,10 @@ func logNetworkInfo(stage string, networks []*problem.Network) {
 }
 
 func polygonArea(poly geometry.Polygon) float64 {
-	var area float64
-	for i, ring := range poly {
-		a := ring.Area()
-		if i == 0 {
-			area += a
-		} else {
-			area -= a
-		}
-	}
-	return area
+	// Ring.Area() is signed and EnsureOrientation leaves holes clockwise, so
+	// "area -= a" used to *add* every hole, overstating the copper area that
+	// drives the initial mesh sizing.
+	return math.Abs(poly.Area())
 }
 
 func pointInPolygonMesh(p geometry.Point, poly geometry.Polygon) bool {

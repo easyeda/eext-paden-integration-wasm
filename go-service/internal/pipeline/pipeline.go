@@ -667,16 +667,17 @@ func mirrorMultiPolygonX(mp geometry.MultiPolygon, cx float64) geometry.MultiPol
 }
 
 func polygonSignedArea(poly geometry.Polygon) float64 {
-	var area float64
-	for i, ring := range poly {
-		a := ring.Area()
-		if i == 0 {
-			area += a
-		} else {
-			area -= a
-		}
+	if len(poly) == 0 {
+		return 0
 	}
-	return area
+	// Ring.Area() is signed, and EnsureOrientation leaves holes clockwise, so
+	// "area -= ring.Area()" used to *add* every hole. Take the sign from the
+	// exterior ring and the magnitude from Polygon.Area(), which subtracts holes
+	// by absolute value.
+	if poly[0].Area() < 0 {
+		return -poly.Area()
+	}
+	return poly.Area()
 }
 
 func logLayerPolygonSummary(layers []*problem.Layer, d *DiagCollector) {

@@ -45,16 +45,12 @@ func (l *Layer) Bounds() geometry.Box {
 
 // Area returns the total area of all polygons in the layer.
 func (l *Layer) Area() float64 {
+	// Ring.Area() is signed and EnsureOrientation leaves holes clockwise, so
+	// summing signed ring areas with "area -= a" used to *add* every hole.
+	// Polygon.Area() subtracts holes by absolute value.
 	var area float64
 	for _, poly := range l.Shape {
-		for i, ring := range poly {
-			a := ring.Area()
-			if i == 0 {
-				area += a
-			} else {
-				area -= a
-			}
-		}
+		area += poly.Area()
 	}
 	return area
 }
