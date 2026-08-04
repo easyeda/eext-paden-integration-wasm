@@ -1,11 +1,10 @@
 name: Build and Release
 
 on:
-  # 自动构建已暂停：如需恢复，取消下面 push 触发器的注释
-  # push:
-  #   branches:
-  #     - main
-  #     - master
+  push:
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 permissions:
