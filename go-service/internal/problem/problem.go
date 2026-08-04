@@ -80,14 +80,18 @@ type Connection struct {
 	DisplayPoint *geometry.Point
 	NodeID       *NodeID
 	Kind         string  // "via", "source", "load", "track", "gnd", "pad"
+	Net          string  // net this terminal belongs to; empty = unknown
 	Diameter     float64 // outer diameter, only used for via rendering
 }
 
-// NewConnection creates a connection with a fresh NodeID.
-func NewConnection(layer *Layer, point geometry.Point) *Connection {
+// NewConnection creates a connection with a fresh NodeID. net is required (pass
+// "" only when genuinely unknown) so the solver can avoid binding a terminal to
+// copper of a different net, which welds the two nets at one FEM vertex.
+func NewConnection(layer *Layer, point geometry.Point, net string) *Connection {
 	return &Connection{
 		Layer:  layer,
 		Point:  point,
+		Net:    net,
 		NodeID: NewNodeID(),
 	}
 }

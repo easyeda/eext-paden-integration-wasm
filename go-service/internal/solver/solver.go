@@ -418,13 +418,45 @@ func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []
 			}
 
 			// Find the geom on this layer that contains the connection point.
+			//
+			// Prefer a polygon of the terminal's own net. pointHitsGeom accepts a
+			// point up to 0.05 (1.27 mm in this inch space) outside the polygon,
+			// so taking the first geometric hit let a GND terminal bind to 3V3
+			// copper sitting under a millimetre away. Both terminals then shared
+			// one FEM vertex and welded the rails together -- observed as global
+			// vertex 65 carrying both nets while being the 3.3 V source's P node.
 			pt := mesh.Point{X: conn.Point.X, Y: conn.Point.Y}
 			gi := -1
 			if conn.Layer != nil && li >= 0 && li < len(prob.Layers) {
-				for i, poly := range prob.Layers[li].Shape {
-					if pointHitsGeom(conn.Point, poly) {
-						gi = i
-						break
+				shape := prob.Layers[li].Shape
+				labels := prob.Layers[li].NetLabels
+				netOf := func(i int) string {
+					if i < len(labels) {
+						return labels[i]
+					}
+					return ""
+				}
+				// Pass 1: same net. Pass 2 (only when the net is unknown or has
+				// no copper here): any net, preserving the old behaviour rather
+				// than dropping the terminal.
+				if conn.Net != "" {
+					for i, poly := range shape {
+						if netOf(i) == conn.Net && pointHitsGeom(conn.Point, poly) {
+							gi = i
+							break
+						}
+					}
+				}
+				if gi < 0 {
+					for i, poly := range shape {
+						if pointHitsGeom(conn.Point, poly) {
+							if conn.Net != "" && netOf(i) != "" && netOf(i) != conn.Net {
+								fmt.Printf("[PADEN solver] conn '%s' (%.3f,%.3f) on %s: only '%s' copper within tolerance, binding anyway\n",
+									conn.Net, conn.Point.X, conn.Point.Y, conn.Layer.Name, netOf(i))
+							}
+							gi = i
+							break
+						}
 					}
 				}
 			}
@@ -432,7 +464,7 @@ func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []
 				// The point is not inside any polygon on this layer. This can
 				// happen when the connection was snapped to a boundary in the
 				// pipeline. Use the nearest geom's mesh as a fallback.
-				gi = nearestGeomOnLayer(conn.Point, li, prob.Layers[li].Shape)
+				gi = nearestGeomOnLayer(conn.Point, li, prob.Layers[li].Shape, prob.Layers[li].NetLabels, conn.Net)
 				fmt.Printf("[PADEN solver] conn %s (%.3f,%.3f) not inside any polygon, nearest geom=%d\n",
 					conn.Layer.Name, conn.Point.X, conn.Point.Y, gi)
 			}
@@ -467,17 +499,40 @@ func buildNodeIndexer(prob *problem.Problem, meshes []*mesh.Mesh, meshToLayer []
 	return ni
 }
 
-func nearestGeomOnLayer(pt geometry.Point, li int, geoms []geometry.Polygon) int {
-	best := -1
-	bestDist := math.Inf(1)
-	for i, poly := range geoms {
-		d := distanceToPolygon(pt, poly)
-		if d < bestDist {
-			bestDist = d
-			best = i
+// nearestGeomOnLayer picks the polygon a terminal should bind to when no
+// polygon contains it. Restrict the search to the terminal's own net when that
+// net has copper on this layer, so a stray terminal cannot be pulled onto a
+// different rail; fall back to the globally nearest polygon otherwise.
+func nearestGeomOnLayer(pt geometry.Point, li int, geoms []geometry.Polygon, labels []string, net string) int {
+	nearestIn := func(sameNetOnly bool) (int, float64) {
+		best := -1
+		bestDist := math.Inf(1)
+		for i, poly := range geoms {
+			if sameNetOnly {
+				label := ""
+				if i < len(labels) {
+					label = labels[i]
+				}
+				if label != net {
+					continue
+				}
+			}
+			d := distanceToPolygon(pt, poly)
+			if d < bestDist {
+				bestDist = d
+				best = i
+			}
+		}
+		return best, bestDist
+	}
+
+	if net != "" {
+		if i, _ := nearestIn(true); i >= 0 {
+			return i
 		}
 	}
-	return best
+	i, _ := nearestIn(false)
+	return i
 }
 
 func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) map[[2]int]bool {

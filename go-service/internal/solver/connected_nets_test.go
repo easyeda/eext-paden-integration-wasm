@@ -42,8 +42,8 @@ func buildIslandInPour(pourNet, islandNet string) *problem.Problem {
 
 	// One connection landing inside the island, so the island's component is the
 	// one reachable from the network.
-	c1 := problem.NewConnection(layer, geometry.Point{X: 1.05, Y: 0.45})
-	c2 := problem.NewConnection(layer, geometry.Point{X: 1.06, Y: 0.46})
+	c1 := problem.NewConnection(layer, geometry.Point{X: 1.05, Y: 0.45}, islandNet)
+	c2 := problem.NewConnection(layer, geometry.Point{X: 1.06, Y: 0.46}, islandNet)
 	net := &problem.Network{
 		Connections: []*problem.Connection{c1, c2},
 		Elements: []problem.LumpedElement{
@@ -103,6 +103,39 @@ func TestFindConnectedPairsKeepsNetsApart(t *testing.T) {
 			got := connected[[2]int{0, pourIdx}]
 			if got != tc.wantPourMerge {
 				t.Errorf("pour merged with island = %v, want %v: %s", got, tc.wantPourMerge, tc.why)
+			}
+		})
+	}
+}
+
+// A terminal that falls outside every polygon must not be pulled onto a
+// different net's copper just because that copper happens to be closer. Binding
+// across nets makes both terminals share one FEM vertex, which is a short.
+func TestNearestGeomOnLayerPrefersOwnNet(t *testing.T) {
+	// geom 0: GND, near the probe point. geom 1: 3V3, further away.
+	geoms := []geometry.Polygon{
+		{ring([2]float64{0, 0}, [2]float64{0.1, 0}, [2]float64{0.1, 0.1}, [2]float64{0, 0.1})},
+		{ring([2]float64{0.5, 0}, [2]float64{0.6, 0}, [2]float64{0.6, 0.1}, [2]float64{0.5, 0.1})},
+	}
+	labels := []string{"GND", "3V3"}
+	probe := geometry.Point{X: 0.2, Y: 0.05} // 0.1 from GND, 0.3 from 3V3
+
+	tests := []struct {
+		name string
+		net  string
+		want int
+		why  string
+	}{
+		{"own net wins over proximity", "3V3", 1, "binding to the nearer GND copper would short the rails"},
+		{"own net when it is also nearest", "GND", 0, "no reason to look further"},
+		{"unknown net falls back to nearest", "", 0, "cannot attribute, so keep the old geometric behaviour"},
+		{"net absent from layer falls back", "1V1", 0, "dropping the terminal would disconnect the network"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nearestGeomOnLayer(probe, 0, geoms, labels, tc.net); got != tc.want {
+				t.Errorf("nearestGeomOnLayer(net=%q) = %d, want %d: %s", tc.net, got, tc.want, tc.why)
 			}
 		})
 	}
