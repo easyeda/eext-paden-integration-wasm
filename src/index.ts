@@ -343,22 +343,36 @@ export async function showResults(): Promise<void> {
 
 function buildDebugPdnConfig(easyedaData: EasyEDA_PcbData): PdnConfig {
 	const targetNet = '3V3';
-	const sourcePads = easyedaData.pads.filter(p => p.ref_des === 'J2');
-	const loadPads = easyedaData.pads.filter(p => p.ref_des === 'H1');
+	const gndNet = 'GND';
+
+	// Pad specs carry no net of their own, so convert.ts stamps every source pad
+	// with the rail net. Filtering by ref_des alone would hand it J2's GND pins
+	// as 3V3 terminals, and the ideal 0 V sources that tie a rail's pads into one
+	// node would then drag GND up to 3.3 V and short the two rails.
+	const padsOf = (refDes: string, net: string) =>
+		easyedaData.pads.filter(p => p.ref_des === refDes && p.net === net);
+
+	const sourcePads = padsOf('J2', targetNet);
+	const sourceGndPads = padsOf('J2', gndNet);
+	const loadPads = padsOf('H1', targetNet);
+	const loadGndPads = padsOf('H1', gndNet);
 
 	if (sourcePads.length === 0)
-		throw new Error('未找到 J2 焊盘，无法自动构建调试配置');
+		throw new Error(`未找到 J2 上的 ${targetNet} 焊盘，无法自动构建调试配置`);
 	if (loadPads.length === 0)
-		throw new Error('未找到 H1 焊盘，无法自动构建调试配置');
+		throw new Error(`未找到 H1 上的 ${targetNet} 焊盘，无法自动构建调试配置`);
 
-	const layerNameOf = (pad: EasyEDA_Pad) => {
-		if (pad.layer != null && easyedaData.layerNames[pad.layer])
-			return easyedaData.layerNames[pad.layer];
-		// 通孔焊盘默认使用顶层
-		return easyedaData.layerNames[1];
+	// A pad spec has no is_tht flag of its own: convert.ts derives it from an
+	// empty layer name. Naming a layer for a through-hole pad would confine it to
+	// that one layer, so the source could never feed the bottom copper.
+	const toPadSpec = (pad: EasyEDA_Pad) => {
+		const isTht = pad.layer == null || pad.hole_diameter > 0;
+		return {
+			x: pad.x,
+			y: pad.y,
+			layer: isTht ? '' : (easyedaData.layerNames[pad.layer!] ?? ''),
+		};
 	};
-
-	const toPadSpec = (pad: EasyEDA_Pad) => ({ x: pad.x, y: pad.y, layer: layerNameOf(pad) });
 
 	const layerCuThickness: Record<number, number> = {};
 	for (const id of Object.keys(easyedaData.layerNames).map(Number)) {
@@ -370,10 +384,12 @@ function buildDebugPdnConfig(easyedaData: EasyEDA_PcbData): PdnConfig {
 			{
 				net: targetNet,
 				voltage: 3.3,
+				gnd_net: gndNet,
 				sources: [
 					{
 						ref_des: 'J2',
 						pads: sourcePads.map(toPadSpec),
+						gnd_pads: sourceGndPads.map(toPadSpec),
 					},
 				],
 				loads: [
@@ -381,6 +397,7 @@ function buildDebugPdnConfig(easyedaData: EasyEDA_PcbData): PdnConfig {
 						ref_des: 'H1',
 						current: 0.1,
 						pads: loadPads.map(toPadSpec),
+						gnd_pads: loadGndPads.map(toPadSpec),
 					},
 				],
 			},
