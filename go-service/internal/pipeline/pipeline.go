@@ -98,6 +98,7 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 	// Re-propagate so the newly-seeded labels spread to touching polygons.
 	repropagateNetLabels(parsedODB, layerNames, targetNets, d)
 	logNetCoverage("ODB-after-override", parsedODB, targetNets, d)
+	log3V3Polygons(parsedODB, layerNames, d)
 
 	// Now build the solver layers from the (possibly corrected) ODB++ data.
 	parsed := parsedODB.Layers
@@ -1277,6 +1278,34 @@ func repropagateNetLabels(odb *geometry.ODBData, layerNames []string, targetNets
 				parts = append(parts, fmt.Sprintf("%s:%d", net, cnt))
 			}
 			d.Info(fmt.Sprintf("Selected polygon counts: %s", strings.Join(parts, " ")))
+		}
+	}
+}
+
+// log3V3Polygons logs each 3V3 polygon's bbox and area per layer, after the
+// live-geometry override. The user reported a large 3V3 region that "covers the
+// wrong copper", so we need to see exactly which polygons were labelled 3V3 and
+// where they sit before trusting the attribution.
+func log3V3Polygons(odb *geometry.ODBData, layerNames []string, d *DiagCollector) {
+	if d == nil {
+		return
+	}
+	for _, name := range layerNames {
+		layer, ok := odb.Layers[name]
+		if !ok {
+			continue
+		}
+		for i, poly := range layer.Polygons {
+			net := ""
+			if i < len(layer.NetLabels) {
+				net = layer.NetLabels[i]
+			}
+			if net != "3V3" {
+				continue
+			}
+			b := poly.Bounds()
+			d.Info(fmt.Sprintf("3V3 poly[%d] on '%s': rings=%d area=%.5f bbox=[%.2f,%.2f]x[%.2f,%.2f]",
+				i, name, len(poly), poly.Area(), b.MinX, b.MaxX, b.MinY, b.MaxY))
 		}
 	}
 }
