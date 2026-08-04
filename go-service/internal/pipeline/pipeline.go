@@ -275,11 +275,17 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 		layer.NetLabels = labels
 	}
 
-	// Remove sub-resolution slivers produced by net-based separation. Keep the
-	// threshold small enough that real small pads/traces (>= ~0.01 mm^2) survive.
+	// Remove sub-resolution slivers produced by net-based separation. The
+	// polygons live in the ODB++ inch space, so a raw 1e-3 here meant 0.645 mm^2,
+	// 64.5x the 0.01 mm^2 the comment intends. At that size every pad (0.6 mm^2
+	// is 0.36 mm^2) and short trace was dropped, so they had no mesh, no hover
+	// label and no gradient anywhere on them; and via pads (thin annular rings)
+	// vanished too, which is why the bottom 3V3 rail never connected to the
+	// source. Drop only what is genuinely sub-resolution.
+	const tinyPolygonAreaIn2 = 0.01 / 645.16 // 0.01 mm^2
 	for _, layer := range layers {
 		before := len(layer.Shape)
-		newShape, newLabels := removeTinyPolygonsWithLabels(layer.Shape, layer.NetLabels, 1e-3)
+		newShape, newLabels := removeTinyPolygonsWithLabels(layer.Shape, layer.NetLabels, tinyPolygonAreaIn2)
 		layer.Shape = newShape
 		layer.NetLabels = newLabels
 		if removed := before - len(layer.Shape); removed > 0 {
