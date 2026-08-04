@@ -517,6 +517,35 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 			}
 		}
 
+		// Refuse to weld copper belonging to two different nets. Components are
+		// otherwise built from geometry alone, so any proximity test that spans
+		// the clearance between two rails merges them into one component, meshes
+		// them as a single region and shorts them through shared FEM vertices.
+		// pipeline.go groups by net before its own Union for exactly this reason
+		// ("merging polygons before net inference would weld adjacent
+		// different-net pours"); this function had no equivalent guard.
+		var netLabels []string
+		if li < len(prob.Layers) {
+			netLabels = prob.Layers[li].NetLabels
+		}
+		netOf := func(i int) string {
+			if i < len(netLabels) {
+				return netLabels[i]
+			}
+			return ""
+		}
+		crossNetBlocked := 0
+		mergeable := func(i, j int) bool {
+			a, b := netOf(i), netOf(j)
+			// An empty label means the net is unknown, so fall back to geometry
+			// rather than fragmenting copper we cannot attribute.
+			if a == "" || b == "" || a == b {
+				return true
+			}
+			crossNetBlocked++
+			return false
+		}
+
 		// Spatial grid: hash polygons by their bounding-box cells so we only
 		// test pairs that actually share space.
 		type cellKey = [2]int
@@ -600,7 +629,11 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 					}
 					tested++
 					adjStart := time.Now()
-					if polygonsAdjacent(simplified[ia], simplified[ib]) {
+					// Order matters: test geometry first so crossNetBlocked counts
+					// real adjacencies that were refused, not every distant pair
+					// that happens to differ in net. Same number of expensive
+					// calls as before.
+					if polygonsAdjacent(simplified[ia], simplified[ib]) && mergeable(ia, ib) {
 						union(ia, ib)
 					}
 					adjSeconds += time.Since(adjStart).Seconds()
@@ -608,7 +641,7 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 				}
 			}
 		}
-		fmt.Printf("[PADEN solver] layer %d grid: %d polys, %d candidate pairs, %d adj tests in %.3fs (cell=%.3f)\n", li, n, tested, adjCalls, adjSeconds, cellSize)
+		fmt.Printf("[PADEN solver] layer %d grid: %d polys, %d candidate pairs, %d adj tests in %.3fs (cell=%.3f), cross-net merges blocked=%d\n", li, n, tested, adjCalls, adjSeconds, cellSize, crossNetBlocked)
 
 		compMap := make(map[int]int)
 		for i := 0; i < n; i++ {
