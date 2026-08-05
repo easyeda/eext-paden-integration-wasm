@@ -66,6 +66,7 @@ func Solve(prob *problem.Problem) (*Solution, error) {
 		return nil, fmt.Errorf("no connected copper regions")
 	}
 	fmt.Printf("[PADEN solver] findConnectedPairs: %v\n", time.Since(tSolve))
+	log3V3Connectedness(prob, layerGeoms, connected)
 	tSolve = time.Now()
 
 	// Generate meshes with iterative coarsening until the vertex budget is met.
@@ -805,6 +806,35 @@ func findConnectedPairs(prob *problem.Problem, layerGeoms [][]geometry.Polygon) 
 	}
 
 	return connected
+}
+
+// log3V3Connectedness reports, per 3V3 polygon, whether the solver welded it
+// into a component that touches the source/load network. This is the ground
+// truth for "which 3V3 copper should show a voltage gradient" — an island
+// (not connected) has no potential, so it renders as 孤立铜皮 with no gradient.
+func log3V3Connectedness(prob *problem.Problem, layerGeoms [][]geometry.Polygon, connected map[[2]int]bool) {
+	for li, layer := range prob.Layers {
+		geoms := layerGeoms[li]
+		connCount := 0
+		for gi, geom := range geoms {
+			net := ""
+			if gi < len(layer.NetLabels) {
+				net = layer.NetLabels[gi]
+			}
+			if net != "3V3" {
+				continue
+			}
+			isConn := connected[[2]int{li, gi}]
+			if isConn {
+				connCount++
+			}
+			b := geom.Bounds()
+			fmt.Printf("[PADEN solver] 3V3[%d] on '%s': %s area=%.5f bbox=[%.2f,%.2f]x[%.2f,%.2f]\n",
+				gi, layer.Name, map[bool]string{true: "CONNECTED", false: "ISLAND"}[isConn],
+				geom.Area(), b.MinX, b.MaxX, b.MinY, b.MaxY)
+		}
+		fmt.Printf("[PADEN solver] 3V3 on '%s': %d/%d polygons connected to source/load\n", layer.Name, connCount, len(geoms))
+	}
 }
 
 func pointHitsGeom(p geometry.Point, geom geometry.Polygon) bool {

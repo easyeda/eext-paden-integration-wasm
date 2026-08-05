@@ -170,9 +170,12 @@ func Analyze(odbTgz []byte, configJSON string) (*solver.Solution, *DiagCollector
 		d.Info("No board outline found")
 	}
 
-	// 2a. Subtract ODB++ drill holes from every copper layer.
+	// 2a. Subtract ODB++ drill holes from every copper layer. Drills that land
+	// on a pad the config declares as SMD (is_tht=false) are excluded so the pad
+	// keeps its intended solid copper area instead of being cut into a ring by a
+	// through-hole that does not belong to it.
 	tSub = time.Now()
-	drillHoles := parsedODB.DrillHoles
+	drillHoles := filterExemptDrills(parsedODB.DrillHoles, collectNonTHTPadCenters(cfg))
 	d.Info(fmt.Sprintf("Step 2b (ODB++ drill holes: %d polygons) done in %v", len(drillHoles), time.Since(tSub)))
 	if len(drillHoles) > 0 {
 		d.Info(fmt.Sprintf("Subtracting %d drill-hole polygon(s) from all copper layers", len(drillHoles)))
@@ -921,6 +924,59 @@ func buildStackup(thickness map[string]float64, layers []*problem.Layer) []float
 		}
 	}
 	return stackup
+}
+
+// collectNonTHTPadCenters returns every pad centre declared in the config as
+// SMD (non-plated, is_tht=false). These pads must not be carved into ring pads
+// by ODB++ drills that belong to them.
+func collectNonTHTPadCenters(cfg Config) []geometry.Point {
+	var centers []geometry.Point
+	add := func(p Pad) {
+		if !p.IsTHT {
+			centers = append(centers, geometry.Pt(p.X, p.Y))
+		}
+	}
+	collect := func(pads []Pad) {
+		for _, p := range pads {
+			add(p)
+		}
+	}
+	collect(cfg.Pads)
+	for _, src := range cfg.Sources {
+		collect(src.Pads)
+		collect(src.GndPads)
+	}
+	for _, ld := range cfg.Loads {
+		collect(ld.Pads)
+		collect(ld.GndPads)
+	}
+	return centers
+}
+
+// filterExemptDrills drops the ODB++ drill holes that sit on an SMD pad centre.
+// A drill hole is a single closed ring whose bounding-box centre is its centre;
+// it is removed when it falls within 0.05mm of a non-THT pad.
+func filterExemptDrills(drillHoles geometry.MultiPolygon, exempt []geometry.Point) geometry.MultiPolygon {
+	if len(exempt) == 0 {
+		return drillHoles
+	}
+	var kept geometry.MultiPolygon
+	for _, hole := range drillHoles {
+		c := hole.Bounds().Center()
+		skip := false
+		for _, p := range exempt {
+			dx, dy := c.X-p.X, c.Y-p.Y
+			if dx*dx+dy*dy < 0.0025 { // within 0.05mm
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		kept = append(kept, hole)
+	}
+	return kept
 }
 
 // subtractDrillHolesFromCopper returns a new copy of the copper polygons with
